@@ -105,6 +105,3 @@ if __name__ == "__main__":
     print(f"Instance: {explained_instance}")
     # importances, variances = explainer.explain(explained_instance, ideal_or(explained_instance))
     explainer.explain(explained_instance, label=1)
-
-    from transformers import BertTokenizer
-    tokenizer = BertTokenizer.from_pretrained("bert-base-multilingual-uncased")
