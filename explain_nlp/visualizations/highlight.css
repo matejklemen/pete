@@ -1,0 +1,43 @@
+.examples-container {
+    padding-top: 5%;
+    padding-left: 5%;
+    padding-right: 5%;
+}
+.examples {
+    border: 1px solid black;
+}
+
+.example {
+    padding-top: 10px;
+    padding-left: 5%;
+    padding-right: 5%;
+    padding-bottom: 10px;
+}
+
+.example span {
+    padding: 5px;
+    line-height: 30px;
+}
+
+.example span:hover {
+    outline: 2px solid black;
+    outline-offset: -2px;
+}
+
+.slide-container {
+    background-color: #003B6F;
+    opacity: 0.4;
+    border-radius: 10px;
+    position: fixed;
+    top: 20px;
+    left: 10px;
+    padding-left: 20px;
+    padding-right: 20px;
+    text-align: center;
+    color: #ffffff;
+    font-size: 24px;
+}
+
+.slide-container:hover {
+    opacity: 1;
+}
