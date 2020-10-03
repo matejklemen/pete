@@ -39,7 +39,7 @@ class IMEExplainer:
         samples = torch.zeros((2 * num_samples, num_features), dtype=instance.dtype)
         for idx_sample in range(num_samples):
             indices = indices[torch.randperm(num_features)]
-            feature_pos = torch.nonzero(indices == idx_feature, as_tuple=False)
+            feature_pos = int(torch.nonzero(indices == idx_feature, as_tuple=False))
             idx_rand = int(torch.randint(self.sample_data.shape[0], size=()))
 
             # With feature `idx_feature` set
