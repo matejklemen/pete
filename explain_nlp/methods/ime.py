@@ -19,10 +19,11 @@ class IMEExplainer:
         self.sample_data = sample_data
         self.num_features = self.sample_data.shape[1]
 
-    def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor, num_samples: int):
+    def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor, num_samples: int,
+                                    perturbable_mask: torch.Tensor):
         # Note: instance is currently supposed to be of shape [1, num_features]
         num_features = int(instance.shape[1])
-        indices = torch.arange(num_features)
+        indices = torch.arange(num_features)[perturbable_mask[0]]
 
         if num_features != self.num_features:
             raise ValueError(f"Number of features in instance ({num_features}) "
@@ -30,17 +31,17 @@ class IMEExplainer:
 
         samples = torch.zeros((2 * num_samples, num_features), dtype=instance.dtype)
         for idx_sample in range(num_samples):
-            indices = indices[torch.randperm(num_features)]
+            indices = indices[torch.randperm(indices.shape[0])]
             feature_pos = int(torch.nonzero(indices == idx_feature, as_tuple=False))
             idx_rand = int(torch.randint(self.sample_data.shape[0], size=()))
 
             # With feature `idx_feature` set
-            samples[2 * idx_sample, :] = self.sample_data[idx_rand]
-            samples[2 * idx_sample, indices[:feature_pos + 1]] = instance[0, indices[:feature_pos + 1]]
+            samples[2 * idx_sample, :] = instance
+            samples[2 * idx_sample, indices[feature_pos + 1:]] = self.sample_data[idx_rand, indices[feature_pos + 1:]]
 
             # With feature `idx_feature` randomized
-            samples[2 * idx_sample + 1, :] = self.sample_data[idx_rand]
-            samples[2 * idx_sample + 1, indices[:feature_pos]] = instance[0, indices[:feature_pos]]
+            samples[2 * idx_sample + 1, :] = instance
+            samples[2 * idx_sample + 1, indices[feature_pos:]] = self.sample_data[idx_rand, indices[feature_pos:]]
 
         scores = self.model(samples)
         scores_with = scores[::2]
@@ -80,8 +81,8 @@ class IMEExplainer:
                              "when calling explain() for specific instance")
 
         # If user doesn't specify a mask of perturbable features, assume every feature can be perturbed
-        perturbable_mask = kwargs.get("perturbable_mask", torch.ones((1, num_features), dtype=torch.bool))[0]
-        perturbable_inds = torch.arange(num_features)[perturbable_mask]
+        perturbable_mask = kwargs.get("perturbable_mask", torch.ones((1, num_features), dtype=torch.bool))
+        perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
         num_perturbable = perturbable_inds.shape[0]
 
         min_samples_per_feature = kwargs.get("min_samples_per_feature", 100)
@@ -89,17 +90,18 @@ class IMEExplainer:
         assert max_samples >= num_perturbable * min_samples_per_feature
 
         samples_per_feature = torch.zeros(num_features, dtype=torch.long)
-        samples_per_feature[perturbable_mask] = min_samples_per_feature
+        samples_per_feature[perturbable_mask[0]] = min_samples_per_feature
         # Artificially assign 1 sample to features which won't be perturbed, just to ensure safe division
         # (no samples will actually be taken for non-perturbable inputs)
-        samples_per_feature[torch.logical_not(perturbable_mask)] = 1
+        samples_per_feature[torch.logical_not(perturbable_mask[0])] = 1
 
         taken_samples = num_perturbable * min_samples_per_feature  # cumulative sum
 
         # Initial pass: every feature will use at least `min_samples_per_feature` samples
         for idx_feature in perturbable_inds.tolist():
             curr_mean, curr_var = self.estimate_feature_importance(idx_feature, instance,
-                                                                   num_samples=int(samples_per_feature[idx_feature]))
+                                                                   num_samples=int(samples_per_feature[idx_feature]),
+                                                                   perturbable_mask=perturbable_mask)
             importance_means[idx_feature] = curr_mean[label]
             importance_vars[idx_feature] = curr_var[label]
 
@@ -107,7 +109,9 @@ class IMEExplainer:
             var_diffs = (importance_vars / samples_per_feature) - (importance_vars / (samples_per_feature + 1))
             idx_feature = int(torch.argmax(var_diffs))
 
-            curr_imp, _ = self.estimate_feature_importance(idx_feature, instance, num_samples=1)
+            curr_imp, _ = self.estimate_feature_importance(idx_feature, instance,
+                                                           num_samples=1,
+                                                           perturbable_mask=perturbable_mask)
             curr_imp = curr_imp[label]
             samples_per_feature[idx_feature] += 1
             taken_samples += 1
@@ -123,7 +127,7 @@ class IMEExplainer:
 
         # Convert from variance of the differences (sigma^2) to variance of the importances (sigma^2 / m)
         importance_vars /= samples_per_feature
-        samples_per_feature[torch.logical_not(perturbable_mask)] = 0
+        samples_per_feature[torch.logical_not(perturbable_mask[0])] = 0
 
         return importance_means, importance_vars
 
@@ -136,5 +140,6 @@ if __name__ == "__main__":
     explainer = IMEExplainer(model_func=dummy_func,
                              sample_data=torch.randint(10, size=(10, 3)))
 
-    importances, _ = explainer.explain(torch.tensor([[1, 4, 0]]), min_samples_per_feature=10, max_samples=1_000)
+    importances, _ = explainer.explain(torch.tensor([[1, 4, 0]]), perturbable_mask=torch.tensor([[True, False, True]]),
+                                       min_samples_per_feature=10, max_samples=1_000)
     print(importances)
