@@ -61,7 +61,7 @@ class IMEExplainer:
             Predicted label for instance. Leave at 0 if prediction is a regression score.
         kwargs:
             Optional parameters:
-            [1] perturbable_mask (torch.Tensor): mask, specifying features that can be perturbed;
+            [1] perturbable_mask (torch.Tensor (shape: [1, num_features])): mask, specifying features that can be perturbed;
             [2] min_samples_per_feature (int): minimum samples to be taken for explaining each perturbable feature;
             [3] max_samples (int): maximum samples to be taken combined across all perturbable features;
             [4] model_func (function): function that returns classification/regression scores for instances - overrides
@@ -80,7 +80,7 @@ class IMEExplainer:
                              "when calling explain() for specific instance")
 
         # If user doesn't specify a mask of perturbable features, assume every feature can be perturbed
-        perturbable_mask = kwargs.get("perturbable_mask", torch.ones(num_features, dtype=torch.bool))
+        perturbable_mask = kwargs.get("perturbable_mask", torch.ones((1, num_features), dtype=torch.bool))[0]
         perturbable_inds = torch.arange(num_features)[perturbable_mask]
         num_perturbable = perturbable_inds.shape[0]
 
