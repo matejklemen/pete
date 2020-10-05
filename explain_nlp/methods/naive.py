@@ -24,9 +24,9 @@ class ExactShapleyExplainer:
         Args
         ----
         instance: torch.Tensor (shape: [1, num_features])
-
+            Instance from which values for fixed features are taken.
         fixed_features: torch.Tensor (shape: [num_features])
-            Indices of features whose values are fixed to values from `instance`
+            Indices of features whose values are fixed to values from `instance`.
 
         Example
         -------
