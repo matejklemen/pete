@@ -4,16 +4,17 @@ from transformers import BertTokenizer, BertForMaskedLM
 
 
 # in BERT pretraining, 15% of the tokens are masked - increasing this number decreases the available context and
-# likely the generated sequences
+# likely the quality of generated sequences
 MLM_MASK_PROPORTION = 0.15
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 
 class IMEMaskedLMExplainer:
-    def __init__(self, model_func=None, pretrained_name_or_path="bert-base-uncased"):
+    def __init__(self, model_func=None, pretrained_name_or_path="bert-base-uncased", batch_size=16):
         self.model = model_func
         self.mlm_generator = BertForMaskedLM.from_pretrained(pretrained_name_or_path).to(DEVICE)
+        self.mlm_batch_size = batch_size
         self.tokenizer = BertTokenizer.from_pretrained(pretrained_name_or_path)
         self.mlm_generator.eval()
 
@@ -21,48 +22,71 @@ class IMEMaskedLMExplainer:
                                     perturbable_mask: torch.Tensor):
         # Note: instance is currently supposed to be of shape [1, num_features]
         num_features = int(instance.shape[1])
-        indices = torch.arange(num_features)[perturbable_mask[0]]
+        perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
+        num_perturbable = int(perturbable_inds.shape[0])
+        indices = perturbable_inds.clone()
 
         samples = torch.zeros((2 * num_samples, num_features), dtype=instance.dtype)
         for idx_sample in range(num_samples):
             indices = indices[torch.randperm(indices.shape[0])]
             feature_pos = int(torch.nonzero(indices == idx_feature, as_tuple=False))
 
-            # TODO: do masked language modeling after this loop, in larger batches (to speed up things)
-            perturbed_features = indices[feature_pos:]
-            samples[2 * idx_sample: 2 * idx_sample + 2, :] = instance
-            boundary = max(int(MLM_MASK_PROPORTION * perturbed_features.shape[0]), 1)
+            # With feature `idx_feature` set
+            samples[2 * idx_sample, :] = instance
+            samples[2 * idx_sample, indices[feature_pos + 1:]] = self.tokenizer.mask_token_id
 
-            # Do first step manually to ensure the current feature gets perturbed to a unique value
-            curr_masked_indices = perturbed_features[: boundary]
-            samples[2 * idx_sample: 2 * idx_sample + 2, curr_masked_indices] = self.tokenizer.mask_token_id
-            with torch.no_grad():
-                res = self.mlm_generator(samples[2 * idx_sample: 2 * idx_sample + 2].to(DEVICE),
-                                         return_dict=True)
-            logits = res["logits"].cpu()
-            preds = torch.argmax(logits, dim=-1)
-            # the two samples are perturbed in the same way to minimize potential effect of other features
-            samples[2 * idx_sample: 2 * idx_sample + 2, curr_masked_indices] = preds[0, curr_masked_indices]
+            # With feature `idx_feature` randomized
+            samples[2 * idx_sample + 1, :] = instance
+            samples[2 * idx_sample + 1, indices[feature_pos:]] = self.tokenizer.mask_token_id
 
-            # Ensure that the feature `idx_feature` gets perturbed by essentially doing a top-p sampling among
-            # tokens that are not equal to current feature value
-            curr_feature_logits = logits[0, idx_feature]
-            curr_feature_logits[instance[0, idx_feature]] = -float("inf")
-            probabilities = F.softmax(curr_feature_logits, dim=-1)
-            next_token = torch.multinomial(probabilities, 1)
+        # predicting `batch_size` examples at a time, but creating twice as many samples at a time
+        # (they only differ in feature `idx_feature`)
+        eff_batch_size = self.mlm_batch_size * 2
+        max_masked_tokens = max(int(MLM_MASK_PROPORTION * num_features), 1)
 
-            samples[2 * idx_sample, idx_feature] = instance[0, idx_feature]
-            samples[2 * idx_sample + 1, idx_feature] = next_token
+        num_batches = (samples.shape[0] + eff_batch_size - 1) // eff_batch_size
+        num_chunks = (num_perturbable + max_masked_tokens - 1) // max_masked_tokens
 
-            num_chunks = (perturbed_features.shape[0] - boundary + boundary - 1) // boundary
-            for i in range(1, 1 + num_chunks):
-                curr_masked_indices = perturbed_features[i * boundary: (i + 1) * boundary]
-                samples[2 * idx_sample: 2 * idx_sample + 2, curr_masked_indices] = self.tokenizer.mask_token_id
+        for idx_batch in range(num_batches):
+            s_batch, e_batch = idx_batch * eff_batch_size, (idx_batch + 1) * eff_batch_size
+            curr_samples = samples[s_batch: e_batch]
+            curr_batch = curr_samples[1::2].to(DEVICE)
+            _local_batch = instance.repeat_interleave(curr_batch.shape[0], dim=0).to(DEVICE)
+            feature_predictions = None  # store predictions for `idx_feature` here
+
+            for idx_chunk in range(num_chunks):
+                s_chunk, e_chunk = idx_chunk * max_masked_tokens, (idx_chunk + 1) * max_masked_tokens
+                curr_perturbed = perturbable_inds[s_chunk: e_chunk]
+                min_perturbed, max_perturbed = curr_perturbed[0], curr_perturbed[-1]
+
+                # Mask a chunk of the tokens
+                _local_batch[:, curr_perturbed] = curr_batch[:, curr_perturbed]
+
                 with torch.no_grad():
-                    res = self.mlm_generator(samples[2 * idx_sample: 2 * idx_sample + 2].to(DEVICE),
-                                             return_dict=True)
-                preds = torch.argmax(res["logits"].cpu(), dim=-1)
-                samples[2 * idx_sample: 2 * idx_sample + 2, curr_masked_indices] = preds[0, curr_masked_indices]
+                    res = self.mlm_generator(_local_batch, return_dict=True)
+
+                preds = torch.argmax(res["logits"], dim=-1)
+                predict_mask = curr_batch == self.tokenizer.mask_token_id
+                predict_mask[:, :min_perturbed] = False
+                predict_mask[:, max_perturbed + 1:] = False
+
+                _local_batch[predict_mask] = preds[predict_mask]
+
+                # Ensure `idx_feature` gets perturbed to a different value;
+                # save the predictions for `idx_feature` for later, continue MLM with ground truth value
+                # TODO: should we continue with the predicted tokens here instead?
+                if min_perturbed <= idx_feature <= max_perturbed:
+                    curr_feature_logits = res["logits"][:, idx_feature]
+                    curr_feature_logits[:, instance[0, idx_feature]] = -float("inf")
+                    probabilities = F.softmax(curr_feature_logits, dim=-1)
+                    feature_predictions = torch.multinomial(probabilities, 1)
+                    _local_batch[:, idx_feature] = instance[0, idx_feature].to(DEVICE)
+
+            _local_batch = _local_batch.cpu()
+            # Examples are intertwined: one with fixed feature value and one without
+            samples[s_batch: e_batch: 2] = _local_batch
+            samples[s_batch + 1: e_batch: 2] = _local_batch
+            samples[s_batch + 1: e_batch: 2, idx_feature] = feature_predictions[:, 0]
 
         scores = self.model(samples)
         scores_with = scores[::2]
@@ -162,7 +186,11 @@ if __name__ == "__main__":
 
     explainer = IMEMaskedLMExplainer(model_func=dummy_func,
                                      pretrained_name_or_path="bert-base-uncased")
+    from transformers import BertTokenizer
 
-    importances, _ = explainer.explain(torch.tensor([[1, 4, 0]]),
-                                       min_samples_per_feature=10, max_samples=1_000)
+    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+    example = tokenizer.encode_plus("My name is Iron Man", return_tensors="pt", return_special_tokens_mask=True)
+    importances, _ = explainer.explain(example["input_ids"],
+                                       perturbable_mask=torch.logical_not(example["special_tokens_mask"]),
+                                       min_samples_per_feature=10)
     print(importances)
