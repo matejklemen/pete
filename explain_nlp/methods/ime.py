@@ -23,25 +23,31 @@ class IMEExplainer:
                                     perturbable_mask: torch.Tensor):
         # Note: instance is currently supposed to be of shape [1, num_features]
         num_features = int(instance.shape[1])
-        indices = torch.arange(num_features)[perturbable_mask[0]]
+        perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
+        num_perturbable = int(perturbable_inds.shape[0])
 
         if num_features != self.num_features:
             raise ValueError(f"Number of features in instance ({num_features}) "
                              f"does not match number of features in sampling data ({self.num_features})")
 
-        samples = torch.zeros((2 * num_samples, num_features), dtype=instance.dtype)
+        # Simulate batched permutation sampling
+        probas = torch.zeros((num_samples, num_features))
+        probas[:, perturbable_inds] = 1 / num_perturbable
+        indices = torch.multinomial(probas, num_samples=num_perturbable)
+        feature_pos = torch.nonzero(indices == idx_feature, as_tuple=False)
+
+        samples = instance.repeat((2 * num_samples, 1))
         for idx_sample in range(num_samples):
-            indices = indices[torch.randperm(indices.shape[0])]
-            feature_pos = int(torch.nonzero(indices == idx_feature, as_tuple=False))
+            curr_feature_pos = int(feature_pos[idx_sample, 1])
             idx_rand = int(torch.randint(self.sample_data.shape[0], size=()))
 
             # With feature `idx_feature` set
-            samples[2 * idx_sample, :] = instance
-            samples[2 * idx_sample, indices[feature_pos + 1:]] = self.sample_data[idx_rand, indices[feature_pos + 1:]]
+            samples[2 * idx_sample, indices[idx_sample, curr_feature_pos + 1:]] = \
+                self.sample_data[idx_rand, indices[idx_sample, curr_feature_pos + 1:]]
 
             # With feature `idx_feature` randomized
-            samples[2 * idx_sample + 1, :] = instance
-            samples[2 * idx_sample + 1, indices[feature_pos:]] = self.sample_data[idx_rand, indices[feature_pos:]]
+            samples[2 * idx_sample + 1, indices[idx_sample, curr_feature_pos:]] = \
+                self.sample_data[idx_rand, indices[idx_sample, curr_feature_pos:]]
 
         scores = self.model(samples)
         scores_with = scores[::2]
