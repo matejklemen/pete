@@ -11,6 +11,7 @@ from tqdm import tqdm
 from transformers import BertTokenizer, BertForSequenceClassification
 
 from explain_nlp.methods.ime import IMEExplainer, estimate_max_samples
+from explain_nlp.methods.ime_mlm import IMEMaskedLMExplainer
 from explain_nlp.visualizations.highlight import highlight_plot
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -159,11 +160,13 @@ if __name__ == "__main__":
         all_labels = []
         all_importances = []
 
+        i = 0
+
         for curr_example in DataLoader(test_set, batch_size=1, shuffle=False):
             @torch.no_grad()
             def _model_wrapper(data: torch.Tensor):
                 num_examples = data.shape[0]
-                batch_size = min(args.batch_size, data.shape[0])
+                batch_size = min(args.batch_size, num_examples)
                 aux_inputs = {
                     "token_type_ids": curr_example["token_type_ids"].repeat_interleave(batch_size, dim=0).to(DEVICE),
                     "attention_mask": curr_example["attention_mask"].repeat_interleave(batch_size, dim=0).to(DEVICE)
@@ -173,9 +176,10 @@ if __name__ == "__main__":
                 all_scores = []
                 for idx_batch in range(num_batches):
                     input_ids = data[idx_batch * batch_size: (idx_batch + 1) * batch_size]
+                    curr_batch_size = input_ids.shape[0]
                     output = model(input_ids=input_ids.to(DEVICE),
-                                   token_type_ids=aux_inputs["token_type_ids"],
-                                   attention_mask=aux_inputs["attention_mask"],
+                                   token_type_ids=aux_inputs["token_type_ids"][: curr_batch_size],
+                                   attention_mask=aux_inputs["attention_mask"][: curr_batch_size],
                                    return_dict=True)
                     all_scores.append(torch.nn.functional.softmax(output["logits"], dim=-1))
 
@@ -187,12 +191,10 @@ if __name__ == "__main__":
             probas = _model_wrapper(_curr_example["input_ids"])
             predicted_label = int(torch.argmax(probas))
             t1 = time()
-            explainer = IMEExplainer(model_func=_model_wrapper,
-                                     sample_data=train_set.input_ids)
+            explainer = IMEMaskedLMExplainer(model_func=_model_wrapper)
             imps, vars = explainer.explain(curr_example["input_ids"],
                                            label=predicted_label,
-                                           min_samples_per_feature=100,
-                                           max_samples=args.max_seq_len * 100,
+                                           min_samples_per_feature=10,
                                            perturbable_mask=torch.logical_not(curr_example["special_tokens_mask"]))
             t2 = time()
             all_sequences.append(tokenizer.convert_ids_to_tokens(curr_example["input_ids"][0]))
@@ -200,7 +202,8 @@ if __name__ == "__main__":
             all_labels.append(int(curr_example["labels"]))
             print(f"Time taken: {t2 - t1: .4f}s")
 
-            required_samples = int(estimate_max_samples(vars * 100, alpha=0.95, max_abs_error=0.01))
+            required_samples = int(estimate_max_samples(vars * 10, alpha=0.95, max_abs_error=0.01))
             print(f"Required samples: {required_samples}")
+            break
 
-        highlight_plot(all_sequences, all_labels, all_importances, path="./visualize_imdb.html")
+        highlight_plot(all_sequences, all_labels, all_importances, path="./visualize_mlm.html")
