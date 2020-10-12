@@ -1,5 +1,5 @@
 function visualizeExample(sequence, label, importances) {
-	// TODO: display the actual importances somewhere (make sure to round them to a few decimals though)
+	// TODO: softmax the importances internally to ensure we can always use that number as the alpha channel in RGBA
 	let examples_div = document.getElementsByClassName("examples")[0];
 
 	let minImportance = importances.reduce((currMin, currValue) => currValue < currMin? currValue: currMin);

@@ -23,7 +23,7 @@ def highlight_plot(sequences: list, labels: list, importances: list, path: str =
             raise ValueError(f"Example #{i}: importance not provided for each sequence element "
                              f"({len(curr_seq)} sequence elements != {len(curr_imps)} )")
 
-        viz_calls.append(f"visualizeExample({curr_seq}, {curr_label}, {curr_imps});")
+        viz_calls.append(f'visualizeExample({curr_seq}, "{curr_label}", {curr_imps});')
     viz_calls = "\n".join(viz_calls)
 
     visualization = \

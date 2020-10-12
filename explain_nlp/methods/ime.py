@@ -1,23 +1,18 @@
 import torch
-import logging
-
-
-def estimate_feature_samples(contribution_variances: torch.Tensor, alpha: float, max_abs_error: float):
-    normal = torch.distributions.Normal(0, 1)
-    z_score = normal.icdf(torch.tensor(1.0 - alpha / 2))
-
-    return ((z_score ** 2 * contribution_variances) / max_abs_error ** 2).int()
-
-
-def estimate_max_samples(contribution_variances: torch.Tensor, alpha: float, max_abs_error: float):
-    return torch.sum(estimate_feature_samples(contribution_variances, alpha, max_abs_error))
+from copy import deepcopy
 
 
 class IMEExplainer:
-    def __init__(self, sample_data, model_func=None):
+    def __init__(self, sample_data, model_func=None,
+                 return_variance=False, return_num_samples=False, return_samples=False, return_scores=False):
         self.model = model_func
         self.sample_data = sample_data
         self.num_features = self.sample_data.shape[1]
+
+        self.return_variance = return_variance
+        self.return_num_samples = return_num_samples
+        self.return_samples = return_samples
+        self.return_scores = return_scores
 
     def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor, num_samples: int,
                                     perturbable_mask: torch.Tensor):
@@ -55,7 +50,18 @@ class IMEExplainer:
         assert scores_with.shape[0] == scores_without.shape[0]
         diff = scores_with - scores_without
 
-        return torch.mean(diff, dim=0), torch.var(diff, dim=0)
+        results = {
+            "diff_mean": torch.mean(diff, dim=0),
+            "diff_var": torch.var(diff, dim=0)
+        }
+
+        if self.return_samples:
+            results["samples"] = samples
+
+        if self.return_scores:
+            results["scores"] = scores
+
+        return results
 
     def explain(self, instance: torch.Tensor, label: int = 0, **kwargs):
         """ Explain a prediction for instance.
@@ -74,10 +80,6 @@ class IMEExplainer:
             [4] model_func (function): function that returns classification/regression scores for instances - overrides
                                         the model_func provided when instantiating explainer.
         """
-        num_features = int(instance.shape[1])
-        importance_means = torch.zeros(num_features, dtype=torch.float32)
-        importance_vars = torch.zeros(num_features, dtype=torch.float32)
-
         model_func = kwargs.get("model_func", None)
         if model_func is not None:
             self.model = model_func
@@ -85,6 +87,17 @@ class IMEExplainer:
         if self.model is None:
             raise ValueError("Model function must be specified either when instantiating explainer or "
                              "when calling explain() for specific instance")
+
+        num_features = int(instance.shape[1])
+        importance_means = torch.zeros(num_features, dtype=torch.float32)
+        importance_vars = torch.zeros(num_features, dtype=torch.float32)
+
+        empty_metadata = {}
+        if self.return_samples:
+            empty_metadata["samples"] = []
+        if self.return_scores:
+            empty_metadata["scores"] = []
+        feature_debug_data = [deepcopy(empty_metadata) for _ in range(num_features)]
 
         # If user doesn't specify a mask of perturbable features, assume every feature can be perturbed
         perturbable_mask = kwargs.get("perturbable_mask", torch.ones((1, num_features), dtype=torch.bool))
@@ -105,22 +118,34 @@ class IMEExplainer:
 
         # Initial pass: every feature will use at least `min_samples_per_feature` samples
         for idx_feature in perturbable_inds.tolist():
-            curr_mean, curr_var = self.estimate_feature_importance(idx_feature, instance,
-                                                                   num_samples=int(samples_per_feature[idx_feature]),
-                                                                   perturbable_mask=perturbable_mask)
-            importance_means[idx_feature] = curr_mean[label]
-            importance_vars[idx_feature] = curr_var[label]
+            res = self.estimate_feature_importance(idx_feature, instance,
+                                                   num_samples=int(samples_per_feature[idx_feature]),
+                                                   perturbable_mask=perturbable_mask)
+            importance_means[idx_feature] = res["diff_mean"][label]
+            importance_vars[idx_feature] = res["diff_var"][label]
+
+            if self.return_samples:
+                feature_debug_data[idx_feature]["samples"].append(res["samples"])
+
+            if self.return_scores:
+                feature_debug_data[idx_feature]["scores"].append(res["scores"])
 
         while taken_samples < max_samples:
             var_diffs = (importance_vars / samples_per_feature) - (importance_vars / (samples_per_feature + 1))
             idx_feature = int(torch.argmax(var_diffs))
 
-            curr_imp, _ = self.estimate_feature_importance(idx_feature, instance,
-                                                           num_samples=1,
-                                                           perturbable_mask=perturbable_mask)
-            curr_imp = curr_imp[label]
+            res = self.estimate_feature_importance(idx_feature, instance,
+                                                   num_samples=1,
+                                                   perturbable_mask=perturbable_mask)
+            curr_imp = res["diff_mean"][label]
             samples_per_feature[idx_feature] += 1
             taken_samples += 1
+
+            if self.return_samples:
+                feature_debug_data[idx_feature]["samples"].append(res["samples"])
+
+            if self.return_scores:
+                feature_debug_data[idx_feature]["scores"].append(res["scores"])
 
             # Incremental mean and variance calculation - http://datagenetics.com/blog/november22017/index.html
             updated_mean = importance_means[idx_feature] + \
@@ -135,7 +160,25 @@ class IMEExplainer:
         importance_vars /= samples_per_feature
         samples_per_feature[torch.logical_not(perturbable_mask[0])] = 0
 
-        return importance_means, importance_vars
+        results = {
+            "importance": importance_means
+        }
+
+        if self.return_variance:
+            results["var"] = importance_vars
+
+        if self.return_num_samples:
+            results["num_samples"] = samples_per_feature
+
+        if self.return_samples:
+            results["samples"] = [torch.cat(feature_data["samples"]) if feature_data["samples"] else None
+                                  for feature_data in feature_debug_data]
+
+        if self.return_scores:
+            results["scores"] = [torch.cat(feature_data["scores"]) if feature_data["scores"] else None
+                                 for feature_data in feature_debug_data]
+
+        return results
 
 
 if __name__ == "__main__":
@@ -144,8 +187,12 @@ if __name__ == "__main__":
         return torch.randn((X.shape[0], 2))
 
     explainer = IMEExplainer(model_func=dummy_func,
-                             sample_data=torch.randint(10, size=(10, 3)))
+                             sample_data=torch.randint(10, size=(10, 3)),
+                             return_variance=True,
+                             return_num_samples=True,
+                             return_samples=True,
+                             return_scores=True)
 
-    importances, _ = explainer.explain(torch.tensor([[1, 4, 0]]), perturbable_mask=torch.tensor([[True, False, True]]),
-                                       min_samples_per_feature=10, max_samples=1_000)
-    print(importances)
+    res = explainer.explain(torch.tensor([[1, 4, 0]]), perturbable_mask=torch.tensor([[True, True, True]]),
+                            min_samples_per_feature=10, max_samples=1_000)
+    print(res["importance"])
