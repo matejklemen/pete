@@ -12,10 +12,11 @@ DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cp
 
 
 class IMEMaskedLMExplainer:
-    def __init__(self, model_func=None, pretrained_name_or_path="bert-base-uncased", batch_size=16,
+    def __init__(self, model_func=None, pretrained_name_or_path="bert-base-uncased", batch_size=16, top_p=0.9,
                  return_variance=False, return_num_samples=False, return_samples=False, return_scores=False):
         self.model = model_func
         self.mlm_batch_size = batch_size
+        self.top_p = top_p
 
         self.return_variance = return_variance
         self.return_num_samples = return_num_samples
@@ -62,7 +63,6 @@ class IMEMaskedLMExplainer:
             curr_samples = samples[s_batch: e_batch]
             curr_batch = curr_samples[1::2].to(DEVICE)
             _local_batch = instance.repeat_interleave(curr_batch.shape[0], dim=0).to(DEVICE)
-            feature_predictions = None  # store predictions for `idx_feature` here
 
             for idx_chunk in range(num_chunks):
                 s_chunk, e_chunk = idx_chunk * max_masked_tokens, (idx_chunk + 1) * max_masked_tokens
@@ -82,21 +82,36 @@ class IMEMaskedLMExplainer:
 
                 _local_batch[predict_mask] = preds[predict_mask]
 
-                # Ensure `idx_feature` gets perturbed to a different value;
-                # save the predictions for `idx_feature` for later, continue MLM with ground truth value
-                # TODO: should we continue with the predicted tokens here instead?
+                # Increase chance that `idx_feature` gets perturbed to a different value by using top-p sampling
                 if min_perturbed <= idx_feature <= max_perturbed:
                     curr_feature_logits = res["logits"][:, idx_feature]
-                    curr_feature_logits[:, instance[0, idx_feature]] = -float("inf")
-                    probabilities = F.softmax(curr_feature_logits, dim=-1)
-                    feature_predictions = torch.multinomial(probabilities, 1)
-                    _local_batch[:, idx_feature] = instance[0, idx_feature].to(DEVICE)
+
+                    if self.top_p:
+                        sorted_logits, sorted_indices = torch.sort(curr_feature_logits, descending=True)
+                        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+                        sorted_indices_to_remove = cumulative_probs > self.top_p
+                        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                        sorted_indices_to_remove[..., 0] = 0
+
+                        nonzero_rowcols = torch.nonzero(sorted_indices_to_remove, as_tuple=False)
+                        rows = nonzero_rowcols[:, 0]
+                        cols = nonzero_rowcols[:, 1]
+                        tokens_to_remove = sorted_indices[rows, cols]
+                        curr_feature_logits[rows, tokens_to_remove] = -float("inf")
+
+                        # curr_feature_logits[:, instance[0, idx_feature]] = -float("inf")
+                        probabilities = F.softmax(curr_feature_logits, dim=-1)
+                        feature_predictions = torch.multinomial(probabilities, 1)
+                    else:
+                        feature_predictions = torch.argmax(curr_feature_logits, dim=-1, keepdim=True)
+
+                    _local_batch[:, idx_feature] = feature_predictions[:, 0]
 
             _local_batch = _local_batch.cpu()
             # Examples are intertwined: one with fixed feature value and one without
             samples[s_batch: e_batch: 2] = _local_batch
+            samples[s_batch: e_batch: 2, idx_feature] = instance[0, idx_feature]
             samples[s_batch + 1: e_batch: 2] = _local_batch
-            samples[s_batch + 1: e_batch: 2, idx_feature] = feature_predictions[:, 0]
 
         scores = self.model(samples)
         scores_with = scores[::2]
@@ -133,8 +148,6 @@ class IMEMaskedLMExplainer:
             [4] model_func (function): function that returns classification/regression scores for instances - overrides
                                         the model_func provided when instantiating explainer.
         """
-        # print("Original instance:")
-        # print(self.tokenizer.decode(instance[0]))
 
         model_func = kwargs.get("model_func", None)
         if model_func is not None:
