@@ -199,7 +199,7 @@ if __name__ == "__main__":
                     ime_mlm_gen_samples.append([tokenizer.convert_ids_to_tokens(sample)
                                                 for sample in curr_samples.tolist()])
 
-        ime_data = {
+        ime_mlm_data = {
             "importance": ime_mlm_res["importance"].tolist(),
             "var": ime_mlm_res["var"].tolist(),
             "num_samples": ime_mlm_res["num_samples"].tolist(),
@@ -214,7 +214,7 @@ if __name__ == "__main__":
             "sequence": sequence_tokens,
             "predicted_label": IDX_TO_LABEL[predicted_label],
             "actual_label": IDX_TO_LABEL[actual_label],
-            "ime_data": ime_data
+            "ime_mlm_data": ime_mlm_data
         }
 
         examples_log.append(example_data)
