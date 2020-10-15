@@ -90,11 +90,11 @@ if __name__ == "__main__":
     train_set = ImdbDataset(reviews=train_df["review"].values,
                             labels=train_df["label"].values,
                             tokenizer=tokenizer, max_seq_len=args.max_seq_len)
-    dev_set = ImdbDataset(reviews=dev_df["review"],
-                          labels=dev_df["label"],
+    dev_set = ImdbDataset(reviews=dev_df["review"].values,
+                          labels=dev_df["label"].values,
                           tokenizer=tokenizer, max_seq_len=args.max_seq_len)
 
-    # Train a model to be interpreted by re-running this script with --mode='interpret'
+    # Train a model to be interpreted later
     if args.mode == "train":
         os.makedirs(args.model_save_dir, exist_ok=True)
 
@@ -150,7 +150,7 @@ if __name__ == "__main__":
                     print(f"Stopping early because the dev accuracy did not increase for {args.early_stopping_rounds} rounds")
                     exit(0)
 
-    # Interpret an existing model
+    # Interpret existing model
     else:
         test_set = ImdbDataset(reviews=test_df["review"].values,
                                labels=test_df["label"].values,
