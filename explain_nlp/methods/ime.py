@@ -1,6 +1,8 @@
 import torch
 from copy import deepcopy
 
+from explain_nlp.methods.utils import estimate_max_samples
+
 
 class IMEExplainer:
     def __init__(self, sample_data, model_func=None,
@@ -130,6 +132,14 @@ class IMEExplainer:
             if self.return_scores:
                 feature_debug_data[idx_feature]["scores"].append(res["scores"])
 
+        confidence_interval = kwargs.get("confidence_interval", None)
+        max_abs_error = kwargs.get("max_abs_error", None)
+        constraint_given = confidence_interval is not None and max_abs_error is not None
+        if constraint_given:
+            max_samples = int(estimate_max_samples(importance_vars,
+                                                   alpha=(1 - confidence_interval),
+                                                   max_abs_error=max_abs_error))
+
         while taken_samples < max_samples:
             var_diffs = (importance_vars / samples_per_feature) - (importance_vars / (samples_per_feature + 1))
             idx_feature = int(torch.argmax(var_diffs))
@@ -161,7 +171,8 @@ class IMEExplainer:
         samples_per_feature[torch.logical_not(perturbable_mask[0])] = 0
 
         results = {
-            "importance": importance_means
+            "importance": importance_means,
+            "taken_samples": max_samples
         }
 
         if self.return_variance:
@@ -194,5 +205,5 @@ if __name__ == "__main__":
                              return_scores=True)
 
     res = explainer.explain(torch.tensor([[1, 4, 0]]), perturbable_mask=torch.tensor([[True, True, True]]),
-                            min_samples_per_feature=10, max_samples=1_000)
+                            min_samples_per_feature=10, max_samples=1_000, confidence_interval=0.95, max_abs_error=0.001)
     print(res["importance"])

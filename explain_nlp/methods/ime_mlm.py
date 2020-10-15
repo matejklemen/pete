@@ -6,6 +6,8 @@ from copy import deepcopy
 
 # in BERT pretraining, 15% of the tokens are masked - increasing this number decreases the available context and
 # likely the quality of generated sequences
+from explain_nlp.methods.utils import estimate_max_samples
+
 MLM_MASK_PROPORTION = 0.15
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -199,6 +201,14 @@ class IMEMaskedLMExplainer:
             if self.return_scores:
                 feature_debug_data[idx_feature]["scores"].append(res["scores"])
 
+        confidence_interval = kwargs.get("confidence_interval", None)
+        max_abs_error = kwargs.get("max_abs_error", None)
+        constraint_given = confidence_interval is not None and max_abs_error is not None
+        if constraint_given:
+            max_samples = int(estimate_max_samples(importance_vars,
+                                                   alpha=(1 - confidence_interval),
+                                                   max_abs_error=max_abs_error))
+
         while taken_samples < max_samples:
             var_diffs = (importance_vars / samples_per_feature) - (importance_vars / (samples_per_feature + 1))
             idx_feature = int(torch.argmax(var_diffs))
@@ -230,7 +240,8 @@ class IMEMaskedLMExplainer:
         samples_per_feature[torch.logical_not(perturbable_mask[0])] = 0
 
         results = {
-            "importance": importance_means
+            "importance": importance_means,
+            "taken_samples": max_samples
         }
 
         if self.return_variance:
@@ -267,5 +278,5 @@ if __name__ == "__main__":
     example = tokenizer.encode_plus("My name is Iron Man", return_tensors="pt", return_special_tokens_mask=True)
     res = explainer.explain(example["input_ids"],
                             perturbable_mask=torch.logical_not(example["special_tokens_mask"]),
-                            min_samples_per_feature=10)
+                            min_samples_per_feature=10, max_abs_error=0.01, confidence_interval=0.95)
     print(res["importance"])
