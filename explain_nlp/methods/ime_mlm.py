@@ -34,7 +34,7 @@ class IMEMaskedLMExplainer:
         self.sample_data = None
 
     def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor, num_samples: int,
-                                    perturbable_mask: torch.Tensor, **kwargs):
+                                    perturbable_mask: torch.Tensor):
         # Note: instance is currently supposed to be of shape [1, num_features]
         num_features = int(instance.shape[1])
         perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
@@ -138,6 +138,7 @@ class IMEMaskedLMExplainer:
             [4] model_func (function): function that returns classification/regression scores for instances - overrides
                                         the model_func provided when instantiating explainer.
         """
+        self.generate_samples(instance, **kwargs)
 
         model_func = kwargs.get("model_func", None)
         if model_func is not None:
@@ -162,9 +163,6 @@ class IMEMaskedLMExplainer:
         perturbable_mask = kwargs.get("perturbable_mask", torch.ones((1, num_features), dtype=torch.bool))
         perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
         num_perturbable = perturbable_inds.shape[0]
-        kwargs["perturbable_mask"] = perturbable_mask
-
-        self.generate_samples(instance, **kwargs)
 
         min_samples_per_feature = kwargs.get("min_samples_per_feature", 100)
         max_samples = kwargs.get("max_samples", num_perturbable * min_samples_per_feature)
@@ -182,7 +180,7 @@ class IMEMaskedLMExplainer:
         for idx_feature in perturbable_inds.tolist():
             res = self.estimate_feature_importance(idx_feature, instance,
                                                    num_samples=int(samples_per_feature[idx_feature]),
-                                                   **kwargs)
+                                                   perturbable_mask=perturbable_mask)
             importance_means[idx_feature] = res["diff_mean"][label]
             importance_vars[idx_feature] = res["diff_var"][label]
 
@@ -206,7 +204,7 @@ class IMEMaskedLMExplainer:
 
             res = self.estimate_feature_importance(idx_feature, instance,
                                                    num_samples=1,
-                                                   **kwargs)
+                                                   perturbable_mask=perturbable_mask)
             curr_imp = res["diff_mean"][label]
             samples_per_feature[idx_feature] += 1
             taken_samples += 1
