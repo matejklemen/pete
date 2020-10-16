@@ -16,6 +16,10 @@ class IMEExplainer:
         self.return_samples = return_samples
         self.return_scores = return_scores
 
+    def update_sample_data(self, new_data: torch.Tensor):
+        self.sample_data = new_data
+        self.num_features = new_data.shape[1]
+
     def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor, num_samples: int,
                                     perturbable_mask: torch.Tensor):
         # Note: instance is currently supposed to be of shape [1, num_features]
