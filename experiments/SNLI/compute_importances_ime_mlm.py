@@ -25,6 +25,7 @@ parser.add_argument("--max_seq_len", type=int, default=41)
 parser.add_argument("--model_batch_size", type=int, default=4)
 parser.add_argument("--generator_batch_size", type=int, default=4)
 
+parser.add_argument("--num_generated_samples", type=int, default=100)
 parser.add_argument("--min_samples_per_feature", type=int, default=100,
                     help="Minimum number of samples that get created for each feature for initial variance estimation")
 parser.add_argument("--confidence_interval", type=float, default=0.99)
@@ -121,7 +122,8 @@ if __name__ == "__main__":
 
     ime_mlm = IMEMaskedLMExplainer(pretrained_name_or_path=args.generator_dir, batch_size=args.generator_batch_size,
                                    return_scores=True, return_num_samples=True,
-                                   return_samples=args.return_generated_samples, return_variance=True)
+                                   return_samples=args.return_generated_samples, return_variance=True,
+                                   num_generated_samples=args.num_generated_samples)
 
     examples_log = []
     ime_mlm_importances = []
@@ -170,22 +172,18 @@ if __name__ == "__main__":
         predicted_label = int(torch.argmax(probas))
         actual_label = int(curr_example["labels"])
 
-        ime_mlm_res = ime_mlm.explain(curr_example["input_ids"],
-                                      label=predicted_label,
-                                      min_samples_per_feature=args.min_samples_per_feature,
-                                      model_func=_model_wrapper,
-                                      perturbable_mask=torch.logical_not(curr_example["special_tokens_mask"]))
-        ime_mlm_est_samples = int(estimate_max_samples(ime_mlm_res["var"] * args.min_samples_per_feature, alpha=alpha,
-                                                       max_abs_error=args.max_abs_error))
-        print(f"[IME+MLM] Estimated samples required: {ime_mlm_est_samples}")
         t1 = time()
         ime_mlm_res = ime_mlm.explain(curr_example["input_ids"],
                                       label=predicted_label,
                                       min_samples_per_feature=args.min_samples_per_feature,
-                                      max_samples=ime_mlm_est_samples,
+                                      confidence_interval=args.confidence_interval,
+                                      max_abs_error=args.max_abs_error,
                                       model_func=_model_wrapper,
-                                      perturbable_mask=torch.logical_not(curr_example["special_tokens_mask"]))
+                                      perturbable_mask=torch.logical_not(curr_example["special_tokens_mask"]),
+                                      token_type_ids=curr_example["token_type_ids"],
+                                      attention_mask=curr_example["attention_mask"])
         t2 = time()
+        print(f"[IME+MLM] Taken samples: {ime_mlm_res['taken_samples']}")
         print(f"[IME+MLM] Time taken: {t2 - t1}")
 
         sequence_tokens = tokenizer.convert_ids_to_tokens(curr_example["input_ids"][0])  # type: list
@@ -206,7 +204,7 @@ if __name__ == "__main__":
             "samples": ime_mlm_gen_samples,
             "scores": [[] if scores is None else scores.tolist()
                        for scores in ime_mlm_res["scores"]] if args.return_model_scores else [],
-            "est_samples": ime_mlm_est_samples,
+            "est_samples": ime_mlm_res["taken_samples"],
             "time_taken": t2 - t1
         }
 

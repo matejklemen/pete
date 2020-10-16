@@ -14,8 +14,9 @@ DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cp
 
 
 class IMEMaskedLMExplainer:
-    def __init__(self, model_func=None, pretrained_name_or_path="bert-base-uncased", batch_size=16, top_p=0.9,
-                 return_variance=False, return_num_samples=False, return_samples=False, return_scores=False):
+    def __init__(self, model_func=None, pretrained_name_or_path="bert-base-uncased", batch_size=2, top_p=0.9,
+                 return_variance=False, return_num_samples=False, return_samples=False, return_scores=False,
+                 num_generated_samples=10):
         self.model = model_func
         self.mlm_batch_size = batch_size
         self.top_p = top_p
@@ -29,8 +30,11 @@ class IMEMaskedLMExplainer:
         self.tokenizer = BertTokenizer.from_pretrained(pretrained_name_or_path)
         self.mlm_generator.eval()
 
+        self.num_generated_samples = num_generated_samples
+        self.sample_data = None
+
     def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor, num_samples: int,
-                                    perturbable_mask: torch.Tensor):
+                                    perturbable_mask: torch.Tensor, **kwargs):
         # Note: instance is currently supposed to be of shape [1, num_features]
         num_features = int(instance.shape[1])
         perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
@@ -45,75 +49,15 @@ class IMEMaskedLMExplainer:
         samples = instance.repeat((2 * num_samples, 1))
         for idx_sample in range(num_samples):
             curr_feature_pos = int(feature_pos[idx_sample, 1])
+            idx_rand = int(torch.randint(self.num_generated_samples, size=()))
 
             # With feature `idx_feature` set
-            samples[2 * idx_sample, indices[idx_sample, curr_feature_pos + 1:]] = self.tokenizer.mask_token_id
+            samples[2 * idx_sample, indices[idx_sample, curr_feature_pos + 1:]] = \
+                self.sample_data[idx_rand, indices[idx_sample, curr_feature_pos + 1:]]
 
             # With feature `idx_feature` randomized
-            samples[2 * idx_sample + 1, indices[idx_sample, curr_feature_pos:]] = self.tokenizer.mask_token_id
-
-        # predicting `batch_size` examples at a time, but creating twice as many samples at a time
-        # (they only differ in feature `idx_feature`)
-        eff_batch_size = self.mlm_batch_size * 2
-        max_masked_tokens = max(int(MLM_MASK_PROPORTION * num_features), 1)
-
-        num_batches = (samples.shape[0] + eff_batch_size - 1) // eff_batch_size
-        num_chunks = (num_perturbable + max_masked_tokens - 1) // max_masked_tokens
-
-        for idx_batch in range(num_batches):
-            s_batch, e_batch = idx_batch * eff_batch_size, (idx_batch + 1) * eff_batch_size
-            curr_samples = samples[s_batch: e_batch]
-            curr_batch = curr_samples[1::2].to(DEVICE)
-            _local_batch = instance.repeat_interleave(curr_batch.shape[0], dim=0).to(DEVICE)
-
-            for idx_chunk in range(num_chunks):
-                s_chunk, e_chunk = idx_chunk * max_masked_tokens, (idx_chunk + 1) * max_masked_tokens
-                curr_perturbed = perturbable_inds[s_chunk: e_chunk]
-                min_perturbed, max_perturbed = curr_perturbed[0], curr_perturbed[-1]
-
-                # Mask a chunk of the tokens
-                _local_batch[:, curr_perturbed] = curr_batch[:, curr_perturbed]
-
-                with torch.no_grad():
-                    res = self.mlm_generator(_local_batch, return_dict=True)
-
-                preds = torch.argmax(res["logits"], dim=-1)
-                predict_mask = curr_batch == self.tokenizer.mask_token_id
-                predict_mask[:, :min_perturbed] = False
-                predict_mask[:, max_perturbed + 1:] = False
-
-                _local_batch[predict_mask] = preds[predict_mask]
-
-                # Increase chance that `idx_feature` gets perturbed to a different value by using top-p sampling
-                if min_perturbed <= idx_feature <= max_perturbed:
-                    curr_feature_logits = res["logits"][:, idx_feature]
-
-                    if self.top_p:
-                        sorted_logits, sorted_indices = torch.sort(curr_feature_logits, descending=True)
-                        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-                        sorted_indices_to_remove = cumulative_probs > self.top_p
-                        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-                        sorted_indices_to_remove[..., 0] = 0
-
-                        nonzero_rowcols = torch.nonzero(sorted_indices_to_remove, as_tuple=False)
-                        rows = nonzero_rowcols[:, 0]
-                        cols = nonzero_rowcols[:, 1]
-                        tokens_to_remove = sorted_indices[rows, cols]
-                        curr_feature_logits[rows, tokens_to_remove] = -float("inf")
-
-                        # curr_feature_logits[:, instance[0, idx_feature]] = -float("inf")
-                        probabilities = F.softmax(curr_feature_logits, dim=-1)
-                        feature_predictions = torch.multinomial(probabilities, 1)
-                    else:
-                        feature_predictions = torch.argmax(curr_feature_logits, dim=-1, keepdim=True)
-
-                    _local_batch[:, idx_feature] = feature_predictions[:, 0]
-
-            _local_batch = _local_batch.cpu()
-            # Examples are intertwined: one with fixed feature value and one without
-            samples[s_batch: e_batch: 2] = _local_batch
-            samples[s_batch: e_batch: 2, idx_feature] = instance[0, idx_feature]
-            samples[s_batch + 1: e_batch: 2] = _local_batch
+            samples[2 * idx_sample + 1, indices[idx_sample, curr_feature_pos:]] = \
+                self.sample_data[idx_rand, indices[idx_sample, curr_feature_pos:]]
 
         scores = self.model(samples)
         scores_with = scores[::2]
@@ -132,6 +76,50 @@ class IMEMaskedLMExplainer:
             results["scores"] = scores
 
         return results
+
+    def generate_samples(self, instance: torch.Tensor, perturbable_mask: torch.Tensor, **kwargs):
+        num_features = int(instance.shape[1])
+        perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
+        num_perturbable = perturbable_inds.shape[0]
+        masked_samples = instance.repeat((self.num_generated_samples, 1))
+
+        # Mask and predict all tokens, one token at a time, in different order - slightly diverse greedy decoding
+        probas = torch.zeros((self.num_generated_samples, num_features))
+        probas[:, perturbable_inds] = 1 / num_perturbable
+        indices = torch.multinomial(probas, num_samples=num_perturbable)
+
+        token_type_ids = kwargs.get("token_type_ids")
+        attention_mask = kwargs.get("attention_mask")
+
+        for i in range(num_perturbable):
+            curr_masked = indices[:, i]
+            masked_samples[torch.arange(self.num_generated_samples), curr_masked] = self.tokenizer.mask_token_id
+
+            aux_data = {
+                "token_type_ids": token_type_ids.repeat((self.mlm_batch_size, 1)).to(DEVICE),
+                "attention_mask": attention_mask.repeat((self.mlm_batch_size, 1)).to(DEVICE)
+            }
+
+            num_batches = (self.num_generated_samples + self.mlm_batch_size - 1) // self.mlm_batch_size
+            for idx_batch in range(num_batches):
+                s_batch, e_batch = idx_batch * self.mlm_batch_size, (idx_batch + 1) * self.mlm_batch_size
+                curr_input_ids = masked_samples[s_batch: e_batch]
+                curr_batch_size = curr_input_ids.shape[0]
+
+                generator_data = {
+                    "input_ids": curr_input_ids.to(DEVICE),
+                    "token_type_ids": aux_data["token_type_ids"][: curr_batch_size],
+                    "attention_mask": aux_data["attention_mask"][: curr_batch_size]
+                }
+
+                res = self.mlm_generator(**generator_data, return_dict=True)
+                logits = res["logits"][torch.arange(curr_batch_size), curr_masked[s_batch: e_batch]]
+                greedy_preds = torch.argmax(logits, dim=-1, keepdim=True)  # shape: [curr_batch_size, 1]
+
+                masked_samples[torch.arange(s_batch, s_batch + curr_batch_size),
+                               curr_masked[s_batch: e_batch]] = greedy_preds[:, 0].cpu()
+
+        self.sample_data = masked_samples
 
     def explain(self, instance: torch.Tensor, label: int = 0, **kwargs):
         """ Explain a prediction for instance.
@@ -174,6 +162,9 @@ class IMEMaskedLMExplainer:
         perturbable_mask = kwargs.get("perturbable_mask", torch.ones((1, num_features), dtype=torch.bool))
         perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
         num_perturbable = perturbable_inds.shape[0]
+        kwargs["perturbable_mask"] = perturbable_mask
+
+        self.generate_samples(instance, **kwargs)
 
         min_samples_per_feature = kwargs.get("min_samples_per_feature", 100)
         max_samples = kwargs.get("max_samples", num_perturbable * min_samples_per_feature)
@@ -191,7 +182,7 @@ class IMEMaskedLMExplainer:
         for idx_feature in perturbable_inds.tolist():
             res = self.estimate_feature_importance(idx_feature, instance,
                                                    num_samples=int(samples_per_feature[idx_feature]),
-                                                   perturbable_mask=perturbable_mask)
+                                                   **kwargs)
             importance_means[idx_feature] = res["diff_mean"][label]
             importance_vars[idx_feature] = res["diff_var"][label]
 
@@ -215,7 +206,7 @@ class IMEMaskedLMExplainer:
 
             res = self.estimate_feature_importance(idx_feature, instance,
                                                    num_samples=1,
-                                                   perturbable_mask=perturbable_mask)
+                                                   **kwargs)
             curr_imp = res["diff_mean"][label]
             samples_per_feature[idx_feature] += 1
             taken_samples += 1
@@ -271,12 +262,16 @@ if __name__ == "__main__":
                                      return_samples=True,
                                      return_scores=True,
                                      return_variance=True,
-                                     return_num_samples=True)
+                                     return_num_samples=True,
+                                     num_generated_samples=100,
+                                     batch_size=8)
     from transformers import BertTokenizer
 
     tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-    example = tokenizer.encode_plus("My name is Iron Man", return_tensors="pt", return_special_tokens_mask=True)
+    example = tokenizer.encode_plus("My name is Iron Man", "I am Iron Man", return_tensors="pt",
+                                    return_special_tokens_mask=True, max_length=15, padding="max_length")
     res = explainer.explain(example["input_ids"],
                             perturbable_mask=torch.logical_not(example["special_tokens_mask"]),
-                            min_samples_per_feature=10, max_abs_error=0.01, confidence_interval=0.95)
+                            min_samples_per_feature=10,
+                            token_type_ids=example["token_type_ids"], attention_mask=example["attention_mask"])
     print(res["importance"])

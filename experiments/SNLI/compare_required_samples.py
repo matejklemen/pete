@@ -28,7 +28,8 @@ parser.add_argument("--max_seq_len", type=int, default=41)
 parser.add_argument("--generator_batch_size", type=int, default=8)
 parser.add_argument("--model_batch_size", type=int, default=8)
 
-parser.add_argument("--min_samples_per_feature", type=int, default=100,
+parser.add_argument("--num_generated_samples", type=int, default=100)
+parser.add_argument("--min_samples_per_feature", type=int, default=10,
                     help="Minimum number of samples that get created for each feature for initial variance estimation")
 parser.add_argument("--confidence_interval", type=float, default=0.99)
 parser.add_argument("--max_abs_error", type=float, default=0.01)
@@ -36,7 +37,7 @@ parser.add_argument("--max_abs_error", type=float, default=0.01)
 parser.add_argument("--return_generated_samples", action="store_true")
 parser.add_argument("--return_model_scores", action="store_true")
 
-parser.add_argument("--experiment_dir", type=str, default=None)
+parser.add_argument("--experiment_dir", type=str, default="debug")
 parser.add_argument("--save_every_n_examples", type=int, default=5,
                     help="Save experiment data every N examples in order to avoid losing data on longer computations")
 
@@ -128,11 +129,12 @@ if __name__ == "__main__":
                           tokenizer=tokenizer,
                           max_seq_len=args.max_seq_len)
 
-    ime = IMEExplainer(sample_data=train_set.input_ids, return_scores=True, return_num_samples=True,
+    ime = IMEExplainer(sample_data=train_set.input_ids, return_scores=args.return_model_scores, return_num_samples=True,
                        return_samples=args.return_generated_samples, return_variance=True)
     ime_mlm = IMEMaskedLMExplainer(pretrained_name_or_path=args.generator_dir, batch_size=args.generator_batch_size,
-                                   return_scores=True, return_num_samples=True,
-                                   return_samples=args.return_generated_samples, return_variance=True)
+                                   return_scores=args.return_model_scores, return_num_samples=True,
+                                   return_samples=args.return_generated_samples, return_variance=True,
+                                   num_generated_samples=args.num_generated_samples)
 
     examples_log = []
     ime_importances = []
@@ -185,7 +187,9 @@ if __name__ == "__main__":
                                       label=predicted_label,
                                       min_samples_per_feature=args.min_samples_per_feature,
                                       model_func=_model_wrapper,
-                                      perturbable_mask=torch.logical_not(curr_example["special_tokens_mask"]))
+                                      perturbable_mask=torch.logical_not(curr_example["special_tokens_mask"]),
+                                      token_type_ids=curr_example["token_type_ids"],
+                                      attention_mask=curr_example["attention_mask"])
         t4 = time()
 
         ime_mlm_est_samples = int(estimate_max_samples(ime_mlm_res["var"] * args.min_samples_per_feature,
