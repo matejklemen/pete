@@ -1,27 +1,35 @@
+from typing import Optional
+
 import torch
 from copy import deepcopy
 
+from explain_nlp.methods.modeling import InterpretableModel
 from explain_nlp.methods.utils import estimate_max_samples
 
 
 class IMEExplainer:
-    def __init__(self, sample_data, model_func=None,
-                 return_variance=False, return_num_samples=False, return_samples=False, return_scores=False):
-        self.model = model_func
+    def __init__(self, sample_data: torch.Tensor, model: InterpretableModel, confidence_interval: Optional[int] = None,
+                 max_abs_error: Optional[int] = None, return_variance: bool = False, return_num_samples: bool = False,
+                 return_samples: bool = False, return_scores: bool = False):
+        self.model = model
         self.sample_data = sample_data
         self.num_features = self.sample_data.shape[1]
+        self.confidence_interval = confidence_interval
+        self.max_abs_error = max_abs_error
 
         self.return_variance = return_variance
         self.return_num_samples = return_num_samples
         self.return_samples = return_samples
         self.return_scores = return_scores
 
+        self.error_constraint_given = self.confidence_interval is not None and self.max_abs_error is not None
+
     def update_sample_data(self, new_data: torch.Tensor):
         self.sample_data = new_data
         self.num_features = new_data.shape[1]
 
     def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor, num_samples: int,
-                                    perturbable_mask: torch.Tensor):
+                                    perturbable_mask: torch.Tensor, **modeling_kwargs):
         # Note: instance is currently supposed to be of shape [1, num_features]
         num_features = int(instance.shape[1])
         perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
@@ -50,7 +58,7 @@ class IMEExplainer:
             samples[2 * idx_sample + 1, indices[idx_sample, curr_feature_pos:]] = \
                 self.sample_data[idx_rand, indices[idx_sample, curr_feature_pos:]]
 
-        scores = self.model(samples)
+        scores = self.model.score(samples, **modeling_kwargs)
         scores_with = scores[::2]
         scores_without = scores[1::2]
         assert scores_with.shape[0] == scores_without.shape[0]
@@ -69,8 +77,10 @@ class IMEExplainer:
 
         return results
 
-    def explain(self, instance: torch.Tensor, label: int = 0, **kwargs):
-        """ Explain a prediction for instance.
+    def explain(self, instance: torch.Tensor, label: int = 0, perturbable_mask: Optional[torch.Tensor] = None,
+                min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None,
+                **modeling_kwargs):
+        """ Explain a prediction for given instance.
 
         Args
         ----
@@ -78,22 +88,14 @@ class IMEExplainer:
             Instance that is being explained.
         label: int (default: 0)
             Predicted label for instance. Leave at 0 if prediction is a regression score.
-        kwargs:
-            Optional parameters:
-            [1] perturbable_mask (torch.Tensor (shape: [1, num_features])): mask, specifying features that can be perturbed;
-            [2] min_samples_per_feature (int): minimum samples to be taken for explaining each perturbable feature;
-            [3] max_samples (int): maximum samples to be taken combined across all perturbable features;
-            [4] model_func (function): function that returns classification/regression scores for instances - overrides
-                                        the model_func provided when instantiating explainer.
+        perturbable_mask: torch.Tensor (shape: [1, num_features])
+            Mask, specifying features that can be perturbed. If not given, all features of instance are assumed to be
+            perturbable.
+        min_samples_per_feature: int
+            Minimum samples to be taken for each perturbable feature.
+        max_samples: int
+            Maximum samples to be taken combined across all perturbable features.
         """
-        model_func = kwargs.get("model_func", None)
-        if model_func is not None:
-            self.model = model_func
-
-        if self.model is None:
-            raise ValueError("Model function must be specified either when instantiating explainer or "
-                             "when calling explain() for specific instance")
-
         num_features = int(instance.shape[1])
         importance_means = torch.zeros(num_features, dtype=torch.float32)
         importance_vars = torch.zeros(num_features, dtype=torch.float32)
@@ -105,20 +107,19 @@ class IMEExplainer:
             empty_metadata["scores"] = []
         feature_debug_data = [deepcopy(empty_metadata) for _ in range(num_features)]
 
-        # If user doesn't specify a mask of perturbable features, assume every feature can be perturbed
-        perturbable_mask = kwargs.get("perturbable_mask", torch.ones((1, num_features), dtype=torch.bool))
-        perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
+        eff_perturbable_mask = perturbable_mask if perturbable_mask is not None \
+            else torch.ones((1, num_features), dtype=torch.bool)
+        perturbable_inds = torch.arange(num_features)[eff_perturbable_mask[0]]
         num_perturbable = perturbable_inds.shape[0]
 
-        min_samples_per_feature = kwargs.get("min_samples_per_feature", 100)
-        max_samples = kwargs.get("max_samples", num_perturbable * min_samples_per_feature)
-        assert max_samples >= num_perturbable * min_samples_per_feature
+        eff_max_samples = max_samples if max_samples is not None else (num_perturbable * min_samples_per_feature)
+        assert eff_max_samples >= num_perturbable * min_samples_per_feature
 
         samples_per_feature = torch.zeros(num_features, dtype=torch.long)
-        samples_per_feature[perturbable_mask[0]] = min_samples_per_feature
+        samples_per_feature[eff_perturbable_mask[0]] = min_samples_per_feature
         # Artificially assign 1 sample to features which won't be perturbed, just to ensure safe division
         # (no samples will actually be taken for non-perturbable inputs)
-        samples_per_feature[torch.logical_not(perturbable_mask[0])] = 1
+        samples_per_feature[torch.logical_not(eff_perturbable_mask[0])] = 1
 
         taken_samples = num_perturbable * min_samples_per_feature  # cumulative sum
 
@@ -126,7 +127,7 @@ class IMEExplainer:
         for idx_feature in perturbable_inds.tolist():
             res = self.estimate_feature_importance(idx_feature, instance,
                                                    num_samples=int(samples_per_feature[idx_feature]),
-                                                   perturbable_mask=perturbable_mask)
+                                                   perturbable_mask=eff_perturbable_mask, **modeling_kwargs)
             importance_means[idx_feature] = res["diff_mean"][label]
             importance_vars[idx_feature] = res["diff_var"][label]
 
@@ -136,21 +137,18 @@ class IMEExplainer:
             if self.return_scores:
                 feature_debug_data[idx_feature]["scores"].append(res["scores"])
 
-        confidence_interval = kwargs.get("confidence_interval", None)
-        max_abs_error = kwargs.get("max_abs_error", None)
-        constraint_given = confidence_interval is not None and max_abs_error is not None
-        if constraint_given:
-            max_samples = int(estimate_max_samples(importance_vars,
-                                                   alpha=(1 - confidence_interval),
-                                                   max_abs_error=max_abs_error))
+        if self.error_constraint_given:
+            eff_max_samples = int(estimate_max_samples(importance_vars,
+                                                       alpha=(1 - self.confidence_interval),
+                                                       max_abs_error=self.max_abs_error))
 
-        while taken_samples < max_samples:
+        while taken_samples < eff_max_samples:
             var_diffs = (importance_vars / samples_per_feature) - (importance_vars / (samples_per_feature + 1))
             idx_feature = int(torch.argmax(var_diffs))
 
             res = self.estimate_feature_importance(idx_feature, instance,
                                                    num_samples=1,
-                                                   perturbable_mask=perturbable_mask)
+                                                   perturbable_mask=eff_perturbable_mask, **modeling_kwargs)
             curr_imp = res["diff_mean"][label]
             samples_per_feature[idx_feature] += 1
             taken_samples += 1
@@ -172,11 +170,11 @@ class IMEExplainer:
 
         # Convert from variance of the differences (sigma^2) to variance of the importances (sigma^2 / m)
         importance_vars /= samples_per_feature
-        samples_per_feature[torch.logical_not(perturbable_mask[0])] = 0
+        samples_per_feature[torch.logical_not(eff_perturbable_mask[0])] = 0
 
         results = {
             "importance": importance_means,
-            "taken_samples": max_samples
+            "taken_samples": eff_max_samples
         }
 
         if self.return_variance:
@@ -197,17 +195,20 @@ class IMEExplainer:
 
 
 if __name__ == "__main__":
-    # dummy call example, only for debugging purpose
-    def dummy_func(X):
-        return torch.randn((X.shape[0], 2))
+    from explain_nlp.methods.modeling import InterpretableDummy
 
-    explainer = IMEExplainer(model_func=dummy_func,
-                             sample_data=torch.randint(10, size=(10, 3)),
+    model = InterpretableDummy()
+    explainer = IMEExplainer(model=model,
+                             sample_data=torch.tensor([model.to_internal("doctor john disco")["input_ids"][0].tolist(),
+                                                       model.to_internal("banana broccoli banana")["input_ids"][0].tolist(),
+                                                       model.to_internal("broccoli coffee paper")["input_ids"][0].tolist(),
+                                                       model.to_internal("<UNK> coffee bin")["input_ids"][0].tolist()]),
                              return_variance=True,
                              return_num_samples=True,
                              return_samples=True,
                              return_scores=True)
 
-    res = explainer.explain(torch.tensor([[1, 4, 0]]), perturbable_mask=torch.tensor([[True, True, True]]),
-                            min_samples_per_feature=10, max_samples=1_000, confidence_interval=0.95, max_abs_error=0.001)
+    res = explainer.explain(model.to_internal("broccoli bin coffee")["input_ids"], label=0,
+                            perturbable_mask=torch.tensor([[True, True, True]]),
+                            min_samples_per_feature=10, max_samples=1_000)
     print(res["importance"])

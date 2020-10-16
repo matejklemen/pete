@@ -1,18 +1,23 @@
 import unittest
 import torch
 from explain_nlp.methods.ime import IMEExplainer
+from explain_nlp.methods.modeling import InterpretableDummy
 from explain_nlp.methods.utils import estimate_feature_samples, estimate_max_samples
 
 
 class TestIMEExplainer(unittest.TestCase):
+    def setUp(self):
+        self.model = InterpretableDummy()
+        self.sample_data = torch.tensor([self.model.to_internal("doctor john disco")["input_ids"][0].tolist(),
+                                         self.model.to_internal("banana broccoli banana")["input_ids"][0].tolist(),
+                                         self.model.to_internal("broccoli coffee paper")["input_ids"][0].tolist(),
+                                         self.model.to_internal("<UNK> coffee bin")["input_ids"][0].tolist()])
+        self.sample_input = self.model.to_internal("broccoli bin coffee")["input_ids"]
+
     def test_return_options(self):
         """ Test that the correct things are returned based on keywords used at instantiation time """
-        def _model_func(data: torch.Tensor):
-            return torch.randn((data.shape[0], 2))
-
-        explainer1 = IMEExplainer(sample_data=torch.tensor([[1, 2, 3], [4, 5, 6]]),
-                                  model_func=_model_func)
-        res1 = explainer1.explain(instance=torch.tensor([[0, 1, 2]]),
+        explainer1 = IMEExplainer(sample_data=self.sample_data, model=self.model)
+        res1 = explainer1.explain(instance=self.sample_input,
                                   min_samples_per_feature=10,
                                   max_samples=100)
 
@@ -23,10 +28,10 @@ class TestIMEExplainer(unittest.TestCase):
         self.assertIsInstance(res1["taken_samples"], int)
         self.assertTrue(res1["importance"].shape[0] == 3)
 
-        explainer2 = IMEExplainer(sample_data=torch.tensor([[1, 2, 3], [4, 5, 6]]), model_func=_model_func,
+        explainer2 = IMEExplainer(sample_data=self.sample_data, model=self.model,
                                   return_scores=True, return_num_samples=True, return_variance=True,
                                   return_samples=True)
-        res2 = explainer2.explain(instance=torch.tensor([[0, 1, 2]]),
+        res2 = explainer2.explain(instance=self.sample_input,
                                   perturbable_mask=torch.tensor([[False, True, True]]),
                                   min_samples_per_feature=10,
                                   max_samples=100)
@@ -46,13 +51,10 @@ class TestIMEExplainer(unittest.TestCase):
 
     def test_unperturbable_feature(self):
         """ Test that features marked as unperturbable do not take up samples """
-        def _model_func(data: torch.Tensor):
-            return torch.randn((data.shape[0], 2))
-
-        explainer = IMEExplainer(sample_data=torch.tensor([[1, 2, 3], [4, 5, 6]]), model_func=_model_func,
+        explainer = IMEExplainer(sample_data=self.sample_data, model=self.model,
                                  return_scores=True, return_num_samples=True, return_variance=True,
                                  return_samples=True)
-        res = explainer.explain(instance=torch.tensor([[0, 1, 2]]),
+        res = explainer.explain(instance=self.sample_input,
                                 perturbable_mask=torch.tensor([[False, True, True]]),
                                 min_samples_per_feature=10)
 
@@ -62,7 +64,7 @@ class TestIMEExplainer(unittest.TestCase):
         self.assertEqual(res["num_samples"][1], 10)
 
     def test_required_samples(self):
-        alpha = 0.05  # 95% CI
+        alpha = 1 - 0.95  # 95% CI
 
         # Not rigorously tested due to high influence of floating point errors when `max_abs_error` is low
         estimate1 = estimate_feature_samples(torch.tensor([0.0, 0.0, 0.0]), alpha, max_abs_error=0.1)
@@ -75,20 +77,10 @@ class TestIMEExplainer(unittest.TestCase):
         self.assertEqual(int(estimate3), 22)
 
     def test_exceptions_on_invalid_input(self):
-        # No model function provided, either at instantiation time or at explanation time
-        explainer1 = IMEExplainer(sample_data=torch.tensor([[1, 2, 3],
-                                                            [4, 5, 6]]))
-        self.assertRaises(ValueError,
-                          lambda: explainer1.explain(instance=torch.tensor([[0, 1, 2]])))
-
-        def _model_func(data: torch.Tensor):
-            return torch.randn((data.shape[0], 2))
-
         # Specified a minimum of 10 samples per features, but specified only 20 max samples in total
         # (10 samples * 3 features = 30 samples, which is lower than 20 max samples)
-        explainer2 = IMEExplainer(sample_data=torch.tensor([[1, 2, 3], [4, 5, 6]]),
-                                  model_func=_model_func)
+        explainer2 = IMEExplainer(sample_data=self.sample_data, model=self.model)
         self.assertRaises(AssertionError,
-                          lambda: explainer2.explain(instance=torch.tensor([[0, 1, 2]]),
+                          lambda: explainer2.explain(instance=self.sample_input,
                                                      min_samples_per_feature=10,
                                                      max_samples=20))
