@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 from transformers import BertTokenizer, BertForMaskedLM
 
@@ -5,20 +7,25 @@ from explain_nlp.methods.ime import IMEExplainer
 
 # in BERT pretraining, 15% of the tokens are masked - increasing this number decreases the available context and
 # likely the quality of generated sequences
+from explain_nlp.methods.modeling import InterpretableModel, InterpretableBertForSequenceClassification
+
 MLM_MASK_PROPORTION = 0.15
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 
 class IMEMaskedLMExplainer(IMEExplainer):
-    def __init__(self, model_func=None, pretrained_name_or_path="bert-base-uncased", batch_size=2, top_p=0.9,
-                 return_variance=False, return_num_samples=False, return_samples=False, return_scores=False,
-                 num_generated_samples=10):
+    def __init__(self, model: InterpretableModel, pretrained_name_or_path: Optional[str] = "bert-base-uncased",
+                 batch_size: Optional[int] = 2, top_p: Optional[float] = 0.9, confidence_interval: Optional[int] = None,
+                 max_abs_error: Optional[int] = None, num_generated_samples: Optional[int] = 10,
+                 return_variance: Optional[bool] = False, return_num_samples: Optional[bool] = False,
+                 return_samples: Optional[bool] = False, return_scores: Optional[bool] = False):
         # IME requires sampling data so we give it dummy data and later override it with generated data
         dummy_sample_data = torch.empty((0, 0), dtype=torch.long)
-        super().__init__(sample_data=dummy_sample_data, model_func=model_func,
-                         return_variance=return_variance, return_num_samples=return_num_samples,
-                         return_samples=return_samples, return_scores=return_scores)
+        super().__init__(sample_data=dummy_sample_data, model=model, confidence_interval=confidence_interval,
+                         max_abs_error=max_abs_error, return_variance=return_variance,
+                         return_num_samples=return_num_samples, return_samples=return_samples,
+                         return_scores=return_scores)
 
         self.num_generated_samples = num_generated_samples
         self.mlm_batch_size = batch_size
@@ -72,32 +79,34 @@ class IMEMaskedLMExplainer(IMEExplainer):
 
         self.update_sample_data(masked_samples)
 
-    def explain(self, instance: torch.Tensor, label: int = 0, **kwargs):
-        perturbable_mask = kwargs.get("perturbable_mask", torch.ones((1, instance.shape[1]), dtype=torch.bool))
-        kwargs["perturbable_mask"] = perturbable_mask
-        self.generate_samples(instance, **kwargs)
-        return super().explain(instance, label, **kwargs)
+    def explain(self, instance: torch.Tensor, label: Optional[int] = 0, perturbable_mask: Optional[torch.Tensor] = None,
+                min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None,
+                **modeling_kwargs):
+        eff_perturbable_mask = perturbable_mask if perturbable_mask is not None \
+            else torch.ones((1, instance.shape[1]), dtype=torch.bool)
+        self.generate_samples(instance, perturbable_mask=eff_perturbable_mask, **modeling_kwargs)
+        return super().explain(instance, label, perturbable_mask=eff_perturbable_mask,
+                               min_samples_per_feature=min_samples_per_feature, max_samples=max_samples,
+                               **modeling_kwargs)
 
 
 if __name__ == "__main__":
-    # dummy call example, only for debugging purpose
-    def dummy_func(X):
-        return torch.randn((X.shape[0], 2))
-
-    explainer = IMEMaskedLMExplainer(model_func=dummy_func,
+    model = InterpretableBertForSequenceClassification(tokenizer_name="bert-base-uncased",
+                                                       model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/snli_bert_uncased",
+                                                       batch_size=4,
+                                                       device="cpu")
+    explainer = IMEMaskedLMExplainer(model=model,
                                      pretrained_name_or_path="bert-base-uncased",
                                      return_samples=True,
                                      return_scores=True,
                                      return_variance=True,
                                      return_num_samples=True,
-                                     num_generated_samples=100,
-                                     batch_size=8)
+                                     num_generated_samples=10,
+                                     batch_size=4)
 
-    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-    example = tokenizer.encode_plus("My name is Iron Man", "I am Iron Man", return_tensors="pt",
-                                    return_special_tokens_mask=True, max_length=15, padding="max_length")
+    example = model.to_internal(("My name is Iron Man", "I am Iron Man"))
     res = explainer.explain(example["input_ids"],
-                            perturbable_mask=torch.logical_not(example["special_tokens_mask"]),
-                            min_samples_per_feature=10,
+                            perturbable_mask=example["perturbable_mask"],
+                            min_samples_per_feature=3,
                             token_type_ids=example["token_type_ids"], attention_mask=example["attention_mask"])
     print(res["importance"])

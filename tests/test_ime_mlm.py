@@ -3,16 +3,17 @@ import unittest
 import torch
 
 from explain_nlp.methods.ime_mlm import IMEMaskedLMExplainer
+from explain_nlp.methods.modeling import InterpretableDummy
 
 
 class TestIMEMaskedLMExplainer(unittest.TestCase):
-    def test_return_options(self):
-        """ Test that the correct things are returned based on keywords used at instantiation time """
-        def _model_func(data: torch.Tensor):
-            return torch.randn((data.shape[0], 2))
+    def setUp(self):
+        self.model = InterpretableDummy()
+        self.sample_input = self.model.to_internal("broccoli bin coffee")["input_ids"]
 
-        explainer1 = IMEMaskedLMExplainer(model_func=_model_func)
-        res1 = explainer1.explain(instance=torch.tensor([[0, 1, 2]]),
+    def test_return_options(self):
+        explainer1 = IMEMaskedLMExplainer(model=self.model)
+        res1 = explainer1.explain(instance=self.sample_input,
                                   min_samples_per_feature=10,
                                   max_samples=100,
                                   token_type_ids=torch.tensor([[0, 0, 0]]),
@@ -25,7 +26,7 @@ class TestIMEMaskedLMExplainer(unittest.TestCase):
         self.assertIsInstance(res1["taken_samples"], int)
         self.assertTrue(res1["importance"].shape[0] == 3)
 
-        explainer2 = IMEMaskedLMExplainer(model_func=_model_func, return_scores=True, return_num_samples=True,
+        explainer2 = IMEMaskedLMExplainer(model=self.model, return_scores=True, return_num_samples=True,
                                           return_variance=True, return_samples=True)
         res2 = explainer2.explain(instance=torch.tensor([[0, 1, 2]]),
                                   perturbable_mask=torch.tensor([[False, True, True]]),
@@ -48,11 +49,7 @@ class TestIMEMaskedLMExplainer(unittest.TestCase):
         self.assertTrue(len(res2["scores"]) == 3)
 
     def test_unperturbable_feature(self):
-        """ Test that features marked as unperturbable do not take up samples """
-        def _model_func(data: torch.Tensor):
-            return torch.randn((data.shape[0], 2))
-
-        explainer = IMEMaskedLMExplainer(model_func=_model_func, return_scores=True, return_num_samples=True,
+        explainer = IMEMaskedLMExplainer(model=self.model, return_scores=True, return_num_samples=True,
                                          return_variance=True, return_samples=True)
         res = explainer.explain(instance=torch.tensor([[0, 1, 2]]),
                                 perturbable_mask=torch.tensor([[False, True, True]]),

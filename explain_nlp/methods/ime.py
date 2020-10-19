@@ -9,8 +9,9 @@ from explain_nlp.methods.utils import estimate_max_samples
 
 class IMEExplainer:
     def __init__(self, sample_data: torch.Tensor, model: InterpretableModel, confidence_interval: Optional[int] = None,
-                 max_abs_error: Optional[int] = None, return_variance: bool = False, return_num_samples: bool = False,
-                 return_samples: bool = False, return_scores: bool = False):
+                 max_abs_error: Optional[int] = None, return_variance: Optional[bool] = False,
+                 return_num_samples: Optional[bool] = False, return_samples: Optional[bool] = False,
+                 return_scores: Optional[bool] = False):
         self.model = model
         self.sample_data = sample_data
         self.num_features = self.sample_data.shape[1]
@@ -77,7 +78,7 @@ class IMEExplainer:
 
         return results
 
-    def explain(self, instance: torch.Tensor, label: int = 0, perturbable_mask: Optional[torch.Tensor] = None,
+    def explain(self, instance: torch.Tensor, label: Optional[int] = 0, perturbable_mask: Optional[torch.Tensor] = None,
                 min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None,
                 **modeling_kwargs):
         """ Explain a prediction for given instance.
