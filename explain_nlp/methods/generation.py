@@ -25,11 +25,12 @@ class SampleGenerator:
 class BertForMaskedLMGenerator(SampleGenerator):
     MLM_MAX_MASK_PROPORTION = 0.15
 
-    def __init__(self, tokenizer_name, model_name, batch_size=8, device="cuda", top_p: Optional[float] = None,
+    def __init__(self, tokenizer_name, model_name, batch_size=8, max_seq_len=64, device="cuda", top_p: Optional[float] = None,
                  masked_at_once: Optional[Union[int, float]] = 1, p_ensure_different: Optional[float] = 0.0):
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
         self.batch_size = batch_size
+        self.max_seq_len = max_seq_len
 
         self.top_p = top_p
         self.masked_at_once = masked_at_once
@@ -63,7 +64,8 @@ class BertForMaskedLMGenerator(SampleGenerator):
 
     def to_internal(self, text_data):
         res = self.tokenizer.batch_encode_plus(text_data, return_special_tokens_mask=True, return_tensors="pt",
-                                               padding="longest")
+                                               padding="max_length", max_length=self.max_seq_len,
+                                               truncation="longest_first")
         formatted_res = {
             "input_ids": res["input_ids"],
             "perturbable_mask": torch.logical_not(res["special_tokens_mask"]),
@@ -75,6 +77,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
 
         return formatted_res
 
+    @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor, num_samples: int,
                  **aux_data) -> torch.Tensor:
         num_features = int(input_ids.shape[1])

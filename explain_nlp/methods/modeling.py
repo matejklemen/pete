@@ -29,10 +29,11 @@ class InterpretableModel:
 
 
 class InterpretableBertForSequenceClassification(InterpretableModel):
-    def __init__(self, tokenizer_name, model_name, batch_size=8, device="cuda"):
+    def __init__(self, tokenizer_name, model_name, batch_size=8, max_seq_len=64, device="cuda"):
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
         self.batch_size = batch_size
+        self.max_seq_len = max_seq_len
 
         assert device in ["cpu", "cuda"]
         if device == "cuda" and not torch.cuda.is_available():
@@ -62,7 +63,8 @@ class InterpretableBertForSequenceClassification(InterpretableModel):
 
     def to_internal(self, text_data):
         res = self.tokenizer.batch_encode_plus(text_data, return_special_tokens_mask=True, return_tensors="pt",
-                                               padding="longest")
+                                               padding="max_length", max_length=self.max_seq_len,
+                                               truncation="longest_first")
         formatted_res = {
             "input_ids": res["input_ids"],
             "perturbable_mask": torch.logical_not(res["special_tokens_mask"]),
