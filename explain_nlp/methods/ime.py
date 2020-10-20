@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Union, Tuple
 
 import torch
 from copy import deepcopy
@@ -193,6 +193,19 @@ class IMEExplainer:
                                  for feature_data in feature_debug_data]
 
         return results
+
+    def explain_text(self, text_data: Union[str, Tuple[str, ...]], label: Optional[int] = 0,
+                     min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None):
+
+        # Convert instance being interpreted to representation of interpreted model
+        model_instance = self.model.to_internal([text_data])
+
+        res = self.explain(model_instance["input_ids"], label, perturbable_mask=model_instance["perturbable_mask"],
+                           min_samples_per_feature=min_samples_per_feature, max_samples=max_samples,
+                           **model_instance["aux_data"])
+        res["input"] = self.model.convert_ids_to_tokens(model_instance["input_ids"])[0]
+
+        return res
 
 
 if __name__ == "__main__":
