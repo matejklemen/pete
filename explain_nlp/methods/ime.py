@@ -8,8 +8,8 @@ from explain_nlp.methods.utils import estimate_max_samples
 
 
 class IMEExplainer:
-    def __init__(self, sample_data: torch.Tensor, model: InterpretableModel, confidence_interval: Optional[int] = None,
-                 max_abs_error: Optional[int] = None, return_variance: Optional[bool] = False,
+    def __init__(self, sample_data: torch.Tensor, model: InterpretableModel, confidence_interval: Optional[float] = None,
+                 max_abs_error: Optional[float] = None, return_variance: Optional[bool] = False,
                  return_num_samples: Optional[bool] = False, return_samples: Optional[bool] = False,
                  return_scores: Optional[bool] = False):
         self.model = model

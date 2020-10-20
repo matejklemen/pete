@@ -11,7 +11,7 @@ DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cp
 
 class IMEMaskedLMExplainer(IMEExplainer):
     def __init__(self, model: InterpretableModel, generator: SampleGenerator,
-                 confidence_interval: Optional[int] = None,  max_abs_error: Optional[int] = None,
+                 confidence_interval: Optional[float] = None,  max_abs_error: Optional[float] = None,
                  num_generated_samples: Optional[int] = 10, return_variance: Optional[bool] = False,
                  return_num_samples: Optional[bool] = False, return_samples: Optional[bool] = False,
                  return_scores: Optional[bool] = False):
