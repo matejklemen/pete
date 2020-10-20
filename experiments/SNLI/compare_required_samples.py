@@ -137,8 +137,8 @@ if __name__ == "__main__":
                                          masked_at_once=masked_at_once,
                                          p_ensure_different=args.p_ensure_different)
 
-    df_train = load_nli(args.train_path, sample_size=10).sample(frac=1.0).reset_index(drop=True)
-    df_test = load_nli(args.test_path, sample_size=5)
+    df_train = load_nli(args.train_path).sample(frac=1.0).reset_index(drop=True)
+    df_test = load_nli(args.test_path)
     train_set = NLIDataset(premises=df_train["sentence1"].values,
                            hypotheses=df_train["sentence2"].values,
                            labels=df_train["gold_label"].apply(lambda label_str: LABEL_TO_IDX[label_str]).values,
