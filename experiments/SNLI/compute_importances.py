@@ -3,9 +3,8 @@ import json
 from time import time
 import os
 
-import pandas as pd
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 
 from explain_nlp.methods.generation import BertForMaskedLMGenerator
 from explain_nlp.methods.ime import IMEExplainer
@@ -13,22 +12,24 @@ from explain_nlp.methods.ime_mlm import IMEMaskedLMExplainer
 from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
 from explain_nlp.visualizations.highlight import highlight_plot
 
+from data import load_nli, NLIDataset, LABEL_TO_IDX, IDX_TO_LABEL
+
 EXPERIMENT_DESCRIPTION = \
 """Compute importances with IME/IME+MLM. Ran on SNLI. See config.json for specific options."""
 
 parser = argparse.ArgumentParser()
 
 parser.add_argument("--method", type=str, choices=["ime", "ime_mlm"], default="ime_mlm")
-parser.add_argument("--train_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_train.txt",
+parser.add_argument("--train_path", type=str, default="/home/mklemen/local/ime-lm/data/snli/snli_1.0_train.txt",
                     help="Path to data to use for perturbing examples when using IME. ")
-parser.add_argument("--test_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_test.txt")
+parser.add_argument("--test_path", type=str, default="/home/mklemen/local/ime-lm/data/snli/snli_1.0_test_xs.txt")
 
-parser.add_argument("--model_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/snli_bert_uncased")
+parser.add_argument("--model_dir", type=str, default="/home/mklemen/local/ime-lm/examples/weights/snli_bert_uncased")
 parser.add_argument("--generator_dir", type=str, default="bert-base-uncased",
                     help="Path or handle of model to be used as a masked language modeling generator")
 parser.add_argument("--max_seq_len", type=int, default=41)
-parser.add_argument("--generator_batch_size", type=int, default=4)
-parser.add_argument("--model_batch_size", type=int, default=4)
+parser.add_argument("--generator_batch_size", type=int, default=128)
+parser.add_argument("--model_batch_size", type=int, default=64)
 parser.add_argument("--top_p", type=float, default=None)
 parser.add_argument("--masked_at_once", type=float, default=None,
                     help="Proportion of tokens to mask out at once during masked language modeling. By default, "
@@ -53,59 +54,7 @@ parser.add_argument("--save_every_n_examples", type=int, default=1,
 parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU")
 
 
-class NLIDataset(Dataset):
-    def __init__(self, premises, hypotheses, labels, tokenizer, max_seq_len=41):
-        self.input_ids = []
-        self.segments = []
-        self.attn_masks = []
-        self.special_tokens_masks = []
-        self.labels = []
-        self.max_seq_len = max_seq_len
-
-        for curr_premise, curr_hypothesis, curr_label in zip(premises, hypotheses, labels):
-            processed = tokenizer.encode_plus(curr_premise, curr_hypothesis, max_length=max_seq_len,
-                                              padding="max_length", truncation="longest_first",
-                                              return_special_tokens_mask=True)
-            self.input_ids.append(processed["input_ids"])
-            self.segments.append(processed["token_type_ids"])
-            self.attn_masks.append(processed["attention_mask"])
-            self.special_tokens_masks.append(processed["special_tokens_mask"])
-            self.labels.append(curr_label)
-
-        self.input_ids = torch.tensor(self.input_ids)
-        self.segments = torch.tensor(self.segments)
-        self.attn_masks = torch.tensor(self.attn_masks)
-        self.special_tokens_masks = torch.tensor(self.special_tokens_masks)
-        self.labels = torch.tensor(self.labels)
-
-    def __getitem__(self, idx):
-        return {
-            "input_ids": self.input_ids[idx],
-            "token_type_ids": self.segments[idx],
-            "attention_mask": self.attn_masks[idx],
-            "special_tokens_mask": self.special_tokens_masks[idx],
-            "labels": self.labels[idx]
-        }
-
-    def __len__(self):
-        return self.input_ids.shape[0]
-
-
-def load_nli(file_path, sample_size=None):
-    """ Common loader for SNLI/MultiNLI """
-    df = pd.read_csv(file_path, sep="\t", na_values=[""], nrows=sample_size, encoding="utf-8", quoting=3)
-    # Drop examples where one of the sentences is "n/a"
-    df = df.dropna(axis=0, how="any", subset=["sentence1", "sentence2"])
-    mask = df["gold_label"] != "-"
-    df = df.loc[mask].reset_index(drop=True)
-
-    return df
-
-
 if __name__ == "__main__":
-    LABEL_TO_IDX = {"entailment": 0, "neutral": 1, "contradiction": 2}
-    IDX_TO_LABEL = {i: label for label, i in LABEL_TO_IDX.items()}
-
     args = parser.parse_args()
     alpha = 1 - args.confidence_interval
     masked_at_once = args.masked_at_once if args.masked_at_once is not None else 1
@@ -181,6 +130,7 @@ if __name__ == "__main__":
         print(f"Loaded data for {len(examples_log)} existing examples!")
 
     start_from = len(examples_log)
+    print(f"Starting from example#{start_from}")
     for idx_example, curr_example in enumerate(DataLoader(test_set, batch_size=1, shuffle=False)):
         if idx_example < start_from:
             continue
