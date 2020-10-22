@@ -127,7 +127,7 @@ class IMEExplainer:
         # Initial pass: every feature will use at least `min_samples_per_feature` samples
         for idx_feature in perturbable_inds.tolist():
             res = self.estimate_feature_importance(idx_feature, instance,
-                                                   num_samples=int(samples_per_feature[idx_feature]),
+                                                   num_samples=samples_per_feature[idx_feature],
                                                    perturbable_mask=eff_perturbable_mask, **modeling_kwargs)
             importance_means[idx_feature] = res["diff_mean"][label]
             importance_vars[idx_feature] = res["diff_var"][label]
