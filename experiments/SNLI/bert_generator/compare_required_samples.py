@@ -6,6 +6,7 @@ from time import time
 import torch
 from torch.utils.data import DataLoader
 
+from experiments.SNLI.data import load_nli, NLIDataset
 from explain_nlp.methods.generation import BertForMaskedLMGenerator
 from explain_nlp.methods.ime import IMEExplainer
 from explain_nlp.methods.ime_mlm import IMEMaskedLMExplainer
@@ -19,13 +20,13 @@ specified by `confidence_interval` and `max_abs_error`. Ran on SNLI. See config.
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--train_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_train.txt")
-parser.add_argument("--test_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_test.txt")
+parser.add_argument("--test_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_test_xs.txt")
 parser.add_argument("--model_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/snli_bert_uncased")
 parser.add_argument("--generator_dir", type=str, default="bert-base-uncased",
                     help="Path or handle of model to be used as a masked language modeling generator")
 parser.add_argument("--max_seq_len", type=int, default=41)
-parser.add_argument("--generator_batch_size", type=int, default=8)
-parser.add_argument("--model_batch_size", type=int, default=8)
+parser.add_argument("--generator_batch_size", type=int, default=2)
+parser.add_argument("--model_batch_size", type=int, default=2)
 parser.add_argument("--top_p", type=float, default=None)
 parser.add_argument("--masked_at_once", type=float, default=None,
                     help="Proportion of tokens to mask out at once during masked language modeling. By default, "
@@ -36,8 +37,8 @@ parser.add_argument("--p_ensure_different", type=float, default=0.0,
 parser.add_argument("--num_generated_samples", type=int, default=100)
 parser.add_argument("--min_samples_per_feature", type=int, default=10,
                     help="Minimum number of samples that get created for each feature for initial variance estimation")
-parser.add_argument("--confidence_interval", type=float, default=0.99)
-parser.add_argument("--max_abs_error", type=float, default=0.01)
+parser.add_argument("--confidence_interval", type=float, default=0.5)
+parser.add_argument("--max_abs_error", type=float, default=0.1)
 
 parser.add_argument("--return_generated_samples", action="store_true")
 parser.add_argument("--return_model_scores", action="store_true")
