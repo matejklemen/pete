@@ -2,7 +2,7 @@ from typing import Tuple, Union, Dict, List, Optional
 from warnings import warn
 
 import torch
-from transformers import BertTokenizer, BertForMaskedLM
+from transformers import BertTokenizer, BertForMaskedLM, OpenAIGPTLMHeadModel, OpenAIGPTTokenizer
 
 from explain_nlp.methods.decoding import greedy_decoding, top_p_decoding
 
@@ -20,6 +20,135 @@ class SampleGenerator:
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor, num_samples: int,
                  **aux_data) -> torch.Tensor:
         raise NotImplementedError
+
+
+class GPTLMGenerator(SampleGenerator):
+    def __init__(self, tokenizer_name, model_name, batch_size=2, max_seq_len=42, device="cuda", top_p: Optional[float] = None,
+                masked_at_once: Optional[Union[int, float]] = 1, p_ensure_different: Optional[float] = 0.0):
+        self.tokenizer_name = tokenizer_name
+        self.model_name = model_name
+        self.batch_size = batch_size
+        self.max_seq_len = max_seq_len
+
+        self.top_p = top_p
+        self.masked_at_once = masked_at_once
+        self.p_ensure_different = p_ensure_different
+
+        assert device in ["cpu", "cuda"]
+        if device == "cuda" and not torch.cuda.is_available():
+            raise ValueError("Device is set to 'cuda', but no CUDA device could be found. If you want to run the model "
+                             "on CPU, set device to 'cpu'")
+        self.device = torch.device(device)
+
+        self.tokenizer = OpenAIGPTTokenizer.from_pretrained(self.tokenizer_name)
+        self.generator = OpenAIGPTLMHeadModel.from_pretrained(self.model_name).to(self.device)
+        self.generator.eval()
+
+        # Required to build sequence: <BOS> <seq1> [<SEP> <seq2>] <EOS>
+        assert self.tokenizer.bos_token_id is not None
+        assert self.tokenizer.sep_token_id is not None
+        assert self.tokenizer.eos_token_id is not None
+
+    def from_internal(self, encoded_data: torch.Tensor) -> List[Union[str, Tuple[str, ...]]]:
+        decoded_data = []
+        for idx_example in range(encoded_data.shape[0]):
+            sep_tokens = torch.nonzero(encoded_data[idx_example] == self.tokenizer.sep_token_id, as_tuple=False)
+
+            # Multiple sequences present: <BOS> <seq1> <SEP> <seq2> <EOS> -> (<seq1>, <seq2>)
+            if sep_tokens.shape[0] == 1:
+                bnd = int(sep_tokens[0])
+                seq1 = self.tokenizer.decode(encoded_data[idx_example, :bnd], skip_special_tokens=True)
+                seq2 = self.tokenizer.decode(encoded_data[idx_example, bnd + 1:], skip_special_tokens=True)
+                decoded_data.append((seq1, seq2))
+            else:
+                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example], skip_special_tokens=True))
+
+        return decoded_data
+
+    def to_internal(self, text_data: List[Union[str, Tuple[str, ...]]]) -> Dict:
+        formatted_text = []
+        for curr_text in text_data:
+            if isinstance(curr_text, str):
+                formatted_text.append(f"{self.tokenizer.bos_token} {curr_text} {self.tokenizer.eos_token}")
+            else:
+                formatted_text.append(f"{self.tokenizer.bos_token} {curr_text[0]} {self.tokenizer.sep_token} "
+                                      f"{curr_text[1]} {self.tokenizer.eos_token}")
+
+        res = self.tokenizer.batch_encode_plus(formatted_text, return_special_tokens_mask=True, return_tensors="pt",
+                                               padding="max_length", max_length=self.max_seq_len,
+                                               truncation="longest_first")
+
+        fixed_perturbable_mask = []
+        for idx_example in range(len(text_data)):
+            sequence = res["input_ids"][idx_example].tolist()
+            mask = res["special_tokens_mask"][idx_example].tolist()
+            fixed_perturbable = [not (is_special | (enc_token in self.tokenizer.all_special_ids))
+                                 for is_special, enc_token in zip(mask, sequence)]
+            fixed_perturbable_mask.append(fixed_perturbable)
+
+        formatted_res = {
+            "input_ids": res["input_ids"],
+            "perturbable_mask": torch.tensor(fixed_perturbable_mask),
+            "aux_data": {
+                "attention_mask": res["attention_mask"]
+            }
+        }
+
+        return formatted_res
+
+    @torch.no_grad()
+    def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor, num_samples: int,
+                 **aux_data) -> torch.Tensor:
+        num_features = int(input_ids.shape[1])
+
+        perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
+        num_perturbable = perturbable_inds.shape[0]
+        masked_samples = input_ids.repeat((num_samples, 1))
+
+        if self.top_p is None:
+            def decoding_strategy(logits, ensure_diff_from):
+                return greedy_decoding(logits, ensure_diff_from)
+
+            # Randomly decide which predictions to take at each step in order to ensure some diversity
+            # (otherwise we would get `num_samples` completely identical samples with greedy decoding)
+            probas = torch.zeros((num_samples, num_features))
+            probas[:, perturbable_inds] = 1 / num_perturbable
+            permuted_indices = torch.multinomial(probas, num_samples=num_perturbable)
+        else:
+            def decoding_strategy(logits, ensure_diff_from):
+                return top_p_decoding(logits, self.top_p, ensure_diff_from)
+
+            # Predict last tokens first and first tokens last to make use of as much context as possible
+            permuted_indices = perturbable_inds.repeat((num_samples, 1))
+
+        attention_mask = aux_data["attention_mask"]
+        generation_data = {
+            "attention_mask": attention_mask.repeat((self.batch_size, 1)).to(self.device)
+        }
+
+        for idx_chunk in range(num_perturbable):
+            curr_masked = permuted_indices[:, idx_chunk]
+            num_batches = (num_samples + self.batch_size - 1) // self.batch_size
+            for idx_batch in range(num_batches):
+                s_batch, e_batch = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
+                curr_input_ids = masked_samples[s_batch: e_batch]
+                curr_batch_size = curr_input_ids.shape[0]
+
+                res = self.generator(curr_input_ids.to(self.device),
+                                     attention_mask=generation_data["attention_mask"][: curr_batch_size],
+                                     return_dict=True)
+
+                curr_token_logits = res["logits"][torch.arange(curr_batch_size), curr_masked[s_batch: e_batch] - 1]
+                ensure_different = torch.rand(()) < self.p_ensure_different
+
+                curr_preds = decoding_strategy(curr_token_logits,
+                                               ensure_diff_from=input_ids[0, curr_masked[s_batch: e_batch]]
+                                               if ensure_different else None)
+
+                masked_samples[torch.arange(s_batch, s_batch + curr_batch_size),
+                               curr_masked[s_batch: e_batch]] = curr_preds[:, 0].cpu()
+
+        return masked_samples
 
 
 class BertForMaskedLMGenerator(SampleGenerator):
@@ -147,12 +276,18 @@ class BertForMaskedLMGenerator(SampleGenerator):
 
 
 if __name__ == "__main__":
-    generator = BertForMaskedLMGenerator(tokenizer_name="bert-base-uncased",
-                                         model_name="bert-base-uncased",
-                                         batch_size=2,
-                                         device="cpu")
+    generator = GPTLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/gpt_snli_lm_maxseqlen42",
+                               model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/gpt_snli_lm_maxseqlen42",
+                               batch_size=2,
+                               max_seq_len=42,
+                               top_p=0.9,
+                               device="cpu")
+    # generator = BertForMaskedLMGenerator(tokenizer_name="bert-base-uncased",
+    #                                      model_name="bert-base-uncased",
+    #                                      batch_size=2,
+    #                                      device="cpu")
 
-    seq = ("My name is Iron Man", "I am Iron Man")
+    seq = ("A patient is being worked on by doctors and nurses", "A man is sleeping.")
     encoded = generator.to_internal([seq])
 
     generator.generate(encoded["input_ids"], perturbable_mask=encoded["perturbable_mask"], num_samples=10,
