@@ -114,6 +114,7 @@ class IMEExplainer:
         num_perturbable = perturbable_inds.shape[0]
 
         eff_max_samples = max_samples if max_samples is not None else (num_perturbable * min_samples_per_feature)
+        assert min_samples_per_feature >= 2  # otherwise variance isn't defined
         assert eff_max_samples >= num_perturbable * min_samples_per_feature
 
         samples_per_feature = torch.zeros(num_features, dtype=torch.long)
