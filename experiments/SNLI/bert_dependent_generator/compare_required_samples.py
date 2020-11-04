@@ -55,6 +55,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     alpha = 1 - args.confidence_interval
     DEVICE = torch.device("cpu") if args.use_cpu else torch.device("cuda")
+    print(f"Used device: {DEVICE}")
 
     experiment_dir = args.experiment_dir
     if experiment_dir is None:
