@@ -89,7 +89,10 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         for data in text_data:
             # TODO: this is model-specific
             generator_masked_ids.append(self.generator.tokenizer.encode(data, add_special_tokens=False))
-        generator_masked_ids = torch.tensor(generator_masked_ids)
+
+        # Account for the possible changes in number of tokens
+        generator_masked_ids = self.generator.tokenizer.pad({"input_ids": generator_masked_ids}, padding="longest")
+        generator_masked_ids = torch.tensor(generator_masked_ids["input_ids"])
 
         input_ids = generator_instances["input_ids"]  # raw encoded (unmasked) input
         aux_data = generator_instances["aux_data"]
