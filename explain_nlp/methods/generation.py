@@ -7,6 +7,8 @@ from transformers import BertTokenizer, BertForMaskedLM, OpenAIGPTLMHeadModel, O
 from explain_nlp.methods.decoding import greedy_decoding, top_p_decoding
 
 
+# TODO: mask, mask_token_id properties
+# TODO: mask token in generator is not necessarily same as mask token in model (e.g. <MASK> vs [MASK])
 class SampleGenerator:
     def from_internal(self, encoded_data: torch.Tensor) -> List[Union[str, Tuple[str, ...]]]:
         """ Convert from internal generator representation to text."""
@@ -165,6 +167,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
         self.masked_at_once = masked_at_once
         self.p_ensure_different = p_ensure_different
 
+        assert self.batch_size > 1 and self.batch_size % 2 == 0
         assert device in ["cpu", "cuda"]
         if device == "cuda" and not torch.cuda.is_available():
             raise ValueError("Device is set to 'cuda', but no CUDA device could be found. If you want to run the model "
