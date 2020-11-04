@@ -32,7 +32,6 @@ parser.add_argument("--top_p", type=float, default=None)
 parser.add_argument("--p_ensure_different", type=float, default=0.0,
                     help="Probability of forcing a generated token to be different from the token in given data")
 
-parser.add_argument("--num_generated_samples", type=int, default=5)
 parser.add_argument("--min_samples_per_feature", type=int, default=10,
                     help="Minimum number of samples that get created for each feature for initial variance estimation")
 parser.add_argument("--confidence_interval", type=float, default=0.1)
@@ -55,7 +54,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     alpha = 1 - args.confidence_interval
-    masked_at_once = args.masked_at_once if args.masked_at_once is not None else 1
     DEVICE = torch.device("cpu") if args.use_cpu else torch.device("cuda")
 
     experiment_dir = args.experiment_dir
@@ -84,7 +82,7 @@ if __name__ == "__main__":
                                          max_seq_len=args.generator_max_seq_len,
                                          device="cpu" if args.use_cpu else "cuda",
                                          top_p=args.top_p,
-                                         masked_at_once=masked_at_once,
+                                         masked_at_once=1,
                                          p_ensure_different=args.p_ensure_different)
 
     df_train = load_nli(args.train_path).sample(frac=1.0).reset_index(drop=True)
