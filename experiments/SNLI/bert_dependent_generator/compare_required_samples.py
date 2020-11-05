@@ -24,7 +24,7 @@ parser.add_argument("--test_path", type=str, default="/home/matej/Documents/data
 parser.add_argument("--model_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/snli_bert_uncased")
 parser.add_argument("--generator_dir", type=str, default="bert-base-uncased",
                     help="Path or handle of model to be used as a language modeling generator")
-parser.add_argument("--generator_max_seq_len", type=int, default=42)
+parser.add_argument("--generator_max_seq_len", type=int, default=41)
 parser.add_argument("--model_max_seq_len", type=int, default=41)
 parser.add_argument("--generator_batch_size", type=int, default=2)
 parser.add_argument("--model_batch_size", type=int, default=2)
@@ -147,7 +147,7 @@ if __name__ == "__main__":
         t4 = time()
 
         ime_lm_est_samples = int(estimate_max_samples(ime_lm_res["var"] * ime_lm_res["num_samples"],
-                                                       alpha=alpha, max_abs_error=args.max_abs_error))
+                                                      alpha=alpha, max_abs_error=args.max_abs_error))
         print(f"[IME LM] Estimated samples required: {ime_lm_est_samples}")
         print(f"[IME LM] Time taken: {t4 - t3: .3f}s")
 
