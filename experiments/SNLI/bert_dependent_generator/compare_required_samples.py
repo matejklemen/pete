@@ -121,7 +121,12 @@ if __name__ == "__main__":
 
         print(f"Loaded data for {len(examples_log)} existing examples!")
 
+    start_from = len(examples_log)
+    print(f"Starting from example#{start_from}")
     for idx_example, curr_example in enumerate(DataLoader(test_set, batch_size=1, shuffle=False)):
+        if idx_example < start_from:
+            continue
+
         _curr_example = {k: v.to(DEVICE) for k, v in curr_example.items() if k not in {"labels", "special_tokens_mask"}}
         probas = model.score(**_curr_example)
         predicted_label = int(torch.argmax(probas, dim=-1))
