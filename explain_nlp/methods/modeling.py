@@ -5,8 +5,12 @@ import torch.nn.functional as F
 from transformers import BertTokenizer, BertForSequenceClassification
 
 
+# TODO: mask, mask_token_id properties
+# TODO: mask token in generator is not necessarily same as mask token in model (e.g. <MASK> vs [MASK])
 class InterpretableModel:
-    def from_internal(self, encoded_data: torch.Tensor) -> List[Union[str, Tuple[str, ...]]]:
+    def from_internal(self, encoded_data: torch.Tensor,
+                      skip_special_tokens: bool = True,
+                      take_as_single_sequence: bool = False) -> List[Union[str, Tuple[str, ...]]]:
         """ Convert from internal model representation to text."""
         raise NotImplementedError
 
@@ -45,19 +49,19 @@ class InterpretableBertForSequenceClassification(InterpretableModel):
         self.model = BertForSequenceClassification.from_pretrained(model_name).to(self.device)
         self.model.eval()
 
-    def from_internal(self, encoded_data):
+    def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False):
         decoded_data = []
         for idx_example in range(encoded_data.shape[0]):
             sep_tokens = torch.nonzero(encoded_data[idx_example] == self.tokenizer.sep_token_id, as_tuple=False)
 
             # Multiple sequences present: [CLS] <seq1> [SEP] <seq2> [SEP] -> (<seq1>, <seq2>)
-            if sep_tokens.shape[0] == 2:
+            if sep_tokens.shape[0] > 1 and not take_as_single_sequence:
                 bnd = int(sep_tokens[0])
-                seq1 = self.tokenizer.decode(encoded_data[idx_example, :bnd], skip_special_tokens=True)
-                seq2 = self.tokenizer.decode(encoded_data[idx_example, bnd + 1:], skip_special_tokens=True)
+                seq1 = self.tokenizer.decode(encoded_data[idx_example, :bnd], skip_special_tokens=skip_special_tokens)
+                seq2 = self.tokenizer.decode(encoded_data[idx_example, bnd + 1:], skip_special_tokens=skip_special_tokens)
                 decoded_data.append((seq1, seq2))
             else:
-                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example], skip_special_tokens=True))
+                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example], skip_special_tokens=skip_special_tokens))
 
         return decoded_data
 
@@ -109,7 +113,8 @@ class InterpretableDummy(InterpretableModel):
             self.tok2id[word] = i
             self.id2tok[i] = word
 
-    def from_internal(self, encoded_data: torch.Tensor) -> List[str]:
+    def from_internal(self, encoded_data: torch.Tensor, skip_special_tokens: bool = True,
+                      take_as_single_sequence: bool = False) -> List[str]:
         return [" ".join([self.id2tok[i] for i in sequence]) for sequence in encoded_data.tolist()]
 
     def to_internal(self, text_data: str) -> Dict:
