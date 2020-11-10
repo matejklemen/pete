@@ -28,12 +28,13 @@ class IMEMaskedLMExplainer(IMEExplainer):
     def explain_text(self, text_data: Union[str, Tuple[str, ...]], label: Optional[int] = 0,
                      min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None):
         # Convert to representation of generator
-        generator_instance = self.generator.to_internal([text_data])
+        generator_instance = self.generator.to_internal([text_data], [label])
 
         # Generate new samples in representation of generator
         generated_samples = self.generator.generate(input_ids=generator_instance["input_ids"],
                                                     perturbable_mask=generator_instance["perturbable_mask"],
                                                     num_samples=self.num_generated_samples,
+                                                    label=label,
                                                     **generator_instance["aux_data"])
 
         # Convert from representation of generator to text
