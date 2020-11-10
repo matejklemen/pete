@@ -1,24 +1,21 @@
 import argparse
-import json
-from time import time
 import os
+from time import time
 
 import torch
 from torch.utils.data import DataLoader
 
 from experiments.SNLI.data import load_nli, NLIDataset, LABEL_TO_IDX, IDX_TO_LABEL
+from explain_nlp.experimental.core import MethodData, MethodType
 from explain_nlp.methods.dependent_ime_mlm import DependentIMEMaskedLMExplainer
 from explain_nlp.methods.generation import BertForMaskedLMGenerator
 from explain_nlp.methods.ime import IMEExplainer
 from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
 from explain_nlp.visualizations.highlight import highlight_plot
 
-EXPERIMENT_DESCRIPTION = \
-"""Compute importances with IME/IME+LM. Ran on SNLI. See config.json for specific options."""
-
 parser = argparse.ArgumentParser()
 
-parser.add_argument("--method", type=str, choices=["ime", "ime_mlm"], default="ime_mlm")
+parser.add_argument("--method", type=str, choices=["ime", "ime_mlm"], default="ime")
 parser.add_argument("--train_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_train.txt",
                     help="Path to data to use for perturbing examples when using IME. ")
 parser.add_argument("--test_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_test_xs.txt")
@@ -26,7 +23,7 @@ parser.add_argument("--test_path", type=str, default="/home/matej/Documents/data
 parser.add_argument("--model_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/snli_bert_uncased")
 parser.add_argument("--generator_dir", type=str, default="bert-base-uncased",
                     help="Path or handle of model to be used as a language modeling generator")
-parser.add_argument("--generator_max_seq_len", type=int, default=42)
+parser.add_argument("--generator_max_seq_len", type=int, default=41)
 parser.add_argument("--model_max_seq_len", type=int, default=41)
 parser.add_argument("--generator_batch_size", type=int, default=2)
 parser.add_argument("--model_batch_size", type=int, default=2)
@@ -43,11 +40,11 @@ parser.add_argument("--max_abs_error", type=float, default=1)
 parser.add_argument("--return_generated_samples", action="store_true")
 parser.add_argument("--return_model_scores", action="store_true")
 
-parser.add_argument("--experiment_dir", type=str, default="debug")
+parser.add_argument("--experiment_dir", type=str, default=None)
 parser.add_argument("--save_every_n_examples", type=int, default=1,
                     help="Save experiment data every N examples in order to avoid losing data on longer computations")
 
-parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU", default=True)
+parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU")
 parser.add_argument("--verbose", action="store_true")
 
 
@@ -67,12 +64,7 @@ if __name__ == "__main__":
     if not os.path.exists(experiment_dir):
         os.makedirs(experiment_dir)
 
-    with open(os.path.join(experiment_dir, "config.json"), "w") as f_config:
-        json.dump(vars(args), f_config, indent=4)
-
-    with open(os.path.join(experiment_dir, "README.txt"), "w") as f_config:
-        print(EXPERIMENT_DESCRIPTION, file=f_config)
-
+    # Define model
     model = InterpretableBertForSequenceClassification(tokenizer_name=args.model_dir,
                                                        model_name=args.model_dir,
                                                        batch_size=args.model_batch_size,
@@ -99,6 +91,7 @@ if __name__ == "__main__":
                                  return_scores=args.return_model_scores, return_num_samples=True,
                                  return_samples=args.return_generated_samples, return_variance=True)
     else:
+        # Define generator
         generator = BertForMaskedLMGenerator(tokenizer_name=args.generator_dir,
                                              model_name=args.generator_dir,
                                              batch_size=args.generator_batch_size,
@@ -111,21 +104,28 @@ if __name__ == "__main__":
                                                   return_scores=args.return_model_scores, return_num_samples=True,
                                                   return_samples=args.return_generated_samples, return_variance=True)
 
-    examples_log = []
-    importances = []
-    sequences, labels = [], []
+    # Temporary, these will probably be moved into the model/generator itself
+    temp_model_desc = {"type": "bert", "max_seq_len": args.model_max_seq_len, "handle": args.model_dir}
+    temp_gen_desc = {
+        "type": "bert",
+        "max_seq_len": args.generator_max_seq_len,
+        "top_p": args.top_p,
+        "handle": args.generator_dir,
+        "masked_at_once": 1
+    }
 
-    # If directory exists, try loading existing data
-    if os.path.exists(os.path.join(experiment_dir, "examples.json")):
-        with open(os.path.join(experiment_dir, "examples.json")) as f:
-            examples_log = json.load(f)
-        importances = [ex[f"{args.method}_data"]["importance"] for ex in examples_log]
-        sequences = [ex["sequence"] for ex in examples_log]
-        labels = [ex["predicted_label"] for ex in examples_log]
+    # Container that wraps debugging data and a lot of repetitive appends
+    data = MethodData(method_type=MethodType.IME if args.method.lower() == "ime" else MethodType.DEPENDENT_IME_MLM,
+                      model_description=temp_model_desc, generator_description=temp_gen_desc,
+                      min_samples_per_feature=args.min_samples_per_feature,
+                      possible_labels=[IDX_TO_LABEL[i] for i in sorted(IDX_TO_LABEL.keys())],
+                      used_data={"train_path": args.train_path, "test_path": args.test_path},
+                      confidence_interval=args.confidence_interval, max_abs_error=args.max_abs_error)
 
-        print(f"Loaded data for {len(examples_log)} existing examples!")
+    if os.path.exists(os.path.join(experiment_dir, f"{args.method}_data.json")):
+        data = MethodData.load(os.path.join(experiment_dir, f"{args.method}_data.json"))
 
-    start_from = len(examples_log)
+    start_from = len(data)
     print(f"Starting from example#{start_from}")
     for idx_example, curr_example in enumerate(DataLoader(test_set, batch_size=1, shuffle=False)):
         if idx_example < start_from:
@@ -155,36 +155,16 @@ if __name__ == "__main__":
                 else:
                     gen_samples.append(explainer.model.convert_ids_to_tokens(curr_samples))
 
-        explainer_data = {
-            "importance": res["importance"].tolist(),
-            "var": res["var"].tolist(),
-            "num_samples": res["num_samples"].tolist(),
-            "samples": gen_samples,
-            "scores": [[] if scores is None else scores.tolist()
-                       for scores in res["scores"]] if args.return_model_scores else [],
-            "est_samples": res["taken_samples"],
-            "time_taken": t2 - t1
-        }
-
-        example_data = {
-            "sequence": sequence_tokens,
-            "predicted_label": IDX_TO_LABEL[predicted_label],
-            "actual_label": IDX_TO_LABEL[actual_label],
-            "ime_data": [],
-            "ime_mlm_data": []
-        }
-        example_data[f"{args.method}_data"] = explainer_data
-
-        examples_log.append(example_data)
-        importances.append(res["importance"].tolist())
-        sequences.append(sequence_tokens)
-        labels.append(IDX_TO_LABEL[predicted_label])
+        data.add_example(sequence=sequence_tokens, label=predicted_label, probas=probas[0].tolist(),
+                         actual_label=actual_label, importances=res["importance"].tolist(),
+                         variances=res["var"].tolist(), num_samples=res["num_samples"].tolist(),
+                         samples=gen_samples, num_estimated_samples=res["taken_samples"], time_taken=(t2 - t1),
+                         model_scores=[[] if scores is None else scores.tolist()
+                                       for scores in res["scores"]] if args.return_model_scores else [])
 
         if (1 + idx_example) % args.save_every_n_examples == 0:
             print(f"Saving data to {experiment_dir}")
+            data.save(experiment_dir, file_name=f"{args.method}_data.json")
 
-            with open(os.path.join(experiment_dir, "examples.json"), "w") as f:
-                json.dump(examples_log, fp=f, indent=4)
-
-            highlight_plot(sequences, labels, importances,
+            highlight_plot(data.sequences, [data.possible_labels[i] for i in data.pred_labels], data.importances,
                            path=os.path.join(experiment_dir, f"{args.method}_importances.html"))
