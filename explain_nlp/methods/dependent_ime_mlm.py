@@ -145,7 +145,7 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
                 logging.info(self.generator.tokenizer.decode(input_ids[i]))
             logging.info("")
 
-        scores = self.model.score(samples, **modeling_kwargs)
+        scores = self.model.score(input_ids, **modeling_kwargs)
         scores_with = scores[::2]
         scores_without = scores[1::2]
         assert scores_with.shape[0] == scores_without.shape[0]
@@ -157,7 +157,7 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         }
 
         if self.return_samples:
-            results["samples"] = samples
+            results["samples"] = input_ids
 
         if self.return_scores:
             results["scores"] = scores
