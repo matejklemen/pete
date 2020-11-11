@@ -21,8 +21,8 @@ parser.add_argument("--min_samples_per_feature", type=int, default=2,
                     help="Minimum number of samples that get created for each feature for initial variance estimation")
 parser.add_argument("--confidence_interval", type=float, default=0.99)
 parser.add_argument("--max_abs_error", type=float, default=0.01)
-parser.add_argument("--return_generated_samples", action="store_true", default=True)
-parser.add_argument("--return_model_scores", action="store_true", default=True)
+parser.add_argument("--return_generated_samples", action="store_true")
+parser.add_argument("--return_model_scores", action="store_true")
 
 parser.add_argument("--train_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_train.txt")
 parser.add_argument("--test_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_test_xs.txt")

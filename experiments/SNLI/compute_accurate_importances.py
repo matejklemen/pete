@@ -21,8 +21,8 @@ parser.add_argument("--min_samples_per_feature", type=int, default=10,
                     help="Minimum number of samples that get created for each feature for initial variance estimation")
 parser.add_argument("--confidence_interval", type=float, default=0.5)
 parser.add_argument("--max_abs_error", type=float, default=1.00)
-parser.add_argument("--return_generated_samples", action="store_true", default=True)
-parser.add_argument("--return_model_scores", action="store_true", default=True)
+parser.add_argument("--return_generated_samples", action="store_true")
+parser.add_argument("--return_model_scores", action="store_true")
 
 parser.add_argument("--train_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_train.txt")
 parser.add_argument("--test_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_test_xs.txt")
@@ -44,11 +44,11 @@ parser.add_argument("--masked_at_once", type=float, default=None,
                     help="Proportion of tokens to mask out at once during language modeling. By default, mask out one "
                          "token at a time")
 
-parser.add_argument("--experiment_dir", type=str, default="debug")
+parser.add_argument("--experiment_dir", type=str, default=None)
 parser.add_argument("--save_every_n_examples", type=int, default=1,
                     help="Save experiment data every N examples in order to avoid losing data on longer computations")
 
-parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU", default=True)
+parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU")
 parser.add_argument("--verbose", action="store_true")
 
 parser.add_argument("--start_from", type=int, default=None, help="From which example onwards to do computation")
@@ -81,7 +81,7 @@ if __name__ == "__main__":
     temp_model_desc = {"type": "bert", "max_seq_len": args.model_max_seq_len, "handle": args.model_dir}
     generator, gen_desc = load_generator(args)
 
-    df_test = load_nli(args.test_path, sample_size=50)
+    df_test = load_nli(args.test_path)
     test_set = NLIDataset(premises=df_test["sentence1"].values,
                           hypotheses=df_test["sentence2"].values,
                           labels=df_test["gold_label"].apply(lambda label_str: LABEL_TO_IDX[label_str]).values,
@@ -94,7 +94,7 @@ if __name__ == "__main__":
     if args.method == "ime":
         method_type = MethodType.IME
         used_data["train_path"] = args.train_path
-        df_train = load_nli(args.train_path, sample_size=100).sample(frac=1.0).reset_index(drop=True)
+        df_train = load_nli(args.train_path).sample(frac=1.0).reset_index(drop=True)
         train_set = NLIDataset(premises=df_train["sentence1"].values,
                                hypotheses=df_train["sentence2"].values,
                                labels=df_train["gold_label"].apply(lambda label_str: LABEL_TO_IDX[label_str]).values,
