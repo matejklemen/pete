@@ -206,4 +206,4 @@ if __name__ == "__main__":
             print(f"Required samples: {required_samples}")
             break
 
-        highlight_plot(all_sequences, all_labels, all_importances, path="./visualize_mlm.html")
+        highlight_plot(all_sequences, all_importances, all_labels, path="./visualize_mlm.html")
