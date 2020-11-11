@@ -3,6 +3,10 @@ from explain_nlp.methods.generation import BertForMaskedLMGenerator, GPTLMGenera
 
 
 def load_generator(args):
+    # IME does not require a generator and loading it would be a waste of a lot of memory
+    if args.method == "ime":
+        return None, {}
+
     masked_at_once = args.masked_at_once if args.masked_at_once is not None else 1
 
     generator_description = {
