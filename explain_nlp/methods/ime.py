@@ -143,6 +143,8 @@ class IMEExplainer:
             eff_max_samples = int(estimate_max_samples(importance_vars,
                                                        alpha=(1 - self.confidence_interval),
                                                        max_abs_error=self.max_abs_error))
+            # If really relaxed constraints are given, #taken samples may already exceed #required samples
+            eff_max_samples = max(taken_samples, eff_max_samples)
 
         while taken_samples < eff_max_samples:
             var_diffs = (importance_vars / samples_per_feature) - (importance_vars / (samples_per_feature + 1))
