@@ -16,7 +16,7 @@ from explain_nlp.methods.utils import estimate_max_samples
 from explain_nlp.visualizations.highlight import highlight_plot
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--method", type=str, default="ime_dependent_mlm", choices=["ime", "ime_mlm", "ime_dependent_mlm"])
+parser.add_argument("--method", type=str, default="ime", choices=["ime", "ime_mlm", "ime_dependent_mlm"])
 parser.add_argument("--min_samples_per_feature", type=int, default=2,
                     help="Minimum number of samples that get created for each feature for initial variance estimation")
 parser.add_argument("--confidence_interval", type=float, default=0.99)
@@ -66,7 +66,7 @@ if __name__ == "__main__":
     experiment_dir = args.experiment_dir
     if experiment_dir is None:
         test_file_name = args.test_path.split(os.path.sep)[-1][:-len(".txt")]  # test file without .txt
-        experiment_dir = f"{test_file_name}_compare_required_samples"
+        experiment_dir = f"{test_file_name}_compute_required_samples"
     args.experiment_dir = experiment_dir
 
     if not os.path.exists(experiment_dir):
@@ -90,6 +90,7 @@ if __name__ == "__main__":
                           max_seq_len=args.model_max_seq_len)
 
     used_data = {"test_path": args.test_path}
+    print(f"Using method '{args.method}'")
     # Define explanation methods
     if args.method == "ime":
         method_type = MethodType.IME
@@ -176,5 +177,7 @@ if __name__ == "__main__":
             print(f"Saving data to {experiment_dir}")
             method_data.save(experiment_dir, file_name=f"{args.method}_data.json")
 
-            highlight_plot(method_data.sequences, method_data.pred_labels, method_data.importances,
+            highlight_plot(method_data.sequences, method_data.importances,
+                           pred_labels=method_data.pred_labels,
+                           actual_labels=method_data.actual_labels,
                            path=os.path.join(experiment_dir, f"{args.method}_importances.html"))
