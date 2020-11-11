@@ -134,9 +134,6 @@ class GPTControlledLMGenerator(SampleGenerator):
         for idx_step, idx_feature in enumerate(perturbable_inds.tolist()):
             num_batches = (num_samples + self.batch_size - 1) // self.batch_size
 
-            for _i in range(num_samples):
-                print(self.tokenizer.decode(masked_samples[_i, :idx_feature]))
-
             for idx_batch in range(num_batches):
                 s_batch, e_batch = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
                 curr_input_ids = masked_samples[s_batch: e_batch]
@@ -159,10 +156,6 @@ class GPTControlledLMGenerator(SampleGenerator):
             # After selecting the first token, change label for controlled generation back to the predicted one
             if idx_step == 0:
                 masked_samples[:, 0] = self.labels_map[self.possible_labels[label]]
-
-            for _i in range(num_samples):
-                print(self.tokenizer.decode(masked_samples[_i, :idx_feature]))
-            print("-----------")
 
         return masked_samples
 
