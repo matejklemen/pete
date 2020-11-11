@@ -4,7 +4,7 @@ import torch
 from copy import deepcopy
 
 from explain_nlp.methods.modeling import InterpretableModel
-from explain_nlp.methods.utils import estimate_max_samples
+from explain_nlp.methods.utils import estimate_max_samples, sample_permutations
 
 
 class IMEExplainer:
@@ -34,16 +34,13 @@ class IMEExplainer:
         # Note: instance is currently supposed to be of shape [1, num_features]
         num_features = int(instance.shape[1])
         perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
-        num_perturbable = int(perturbable_inds.shape[0])
 
         if num_features != self.num_features:
             raise ValueError(f"Number of features in instance ({num_features}) "
                              f"does not match number of features in sampling data ({self.num_features})")
 
-        # Simulate batched permutation sampling
-        probas = torch.zeros((num_samples, num_features))
-        probas[:, perturbable_inds] = 1 / num_perturbable
-        indices = torch.multinomial(probas, num_samples=num_perturbable)
+        indices = sample_permutations(upper=num_features, indices=perturbable_inds,
+                                      num_permutations=num_samples)
         feature_pos = torch.nonzero(indices == idx_feature, as_tuple=False)
 
         samples = instance.repeat((2 * num_samples, 1))

@@ -63,19 +63,6 @@ class TestIMEExplainer(unittest.TestCase):
         self.assertIs(res["scores"][0], None)
         self.assertEqual(res["num_samples"][1], 10)
 
-    def test_required_samples(self):
-        alpha = 1 - 0.95  # 95% CI
-
-        # Not rigorously tested due to high influence of floating point errors when `max_abs_error` is low
-        estimate1 = estimate_feature_samples(torch.tensor([0.0, 0.0, 0.0]), alpha, max_abs_error=0.1)
-        self.assertEqual(estimate1.tolist(), [0, 0, 0])
-
-        estimate2 = estimate_feature_samples(torch.tensor([1.0, 0.1, 5.0]), alpha, max_abs_error=1)
-        self.assertEqual(estimate2.tolist(), [3, 0, 19])
-
-        estimate3 = estimate_max_samples(torch.tensor([1.0, 0.1, 5.0]), alpha, max_abs_error=1)
-        self.assertEqual(int(estimate3), 22)
-
     def test_exceptions_on_invalid_input(self):
         # Specified a minimum of 10 samples per features, but specified only 20 max samples in total
         # (10 samples * 3 features = 30 samples, which is lower than 20 max samples)

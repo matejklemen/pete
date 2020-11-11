@@ -9,6 +9,7 @@ from explain_nlp.methods.decoding import greedy_decoding, top_p_decoding
 from explain_nlp.methods.generation import SampleGenerator, BertForMaskedLMGenerator
 from explain_nlp.methods.ime import IMEExplainer
 from explain_nlp.methods.modeling import InterpretableModel, InterpretableBertForSequenceClassification
+from explain_nlp.methods.utils import sample_permutations
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 logging.basicConfig(
@@ -44,12 +45,9 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         # Note: instance is currently supposed to be of shape [1, num_features]
         num_features = int(instance.shape[1])
         perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
-        num_perturbable = int(perturbable_inds.shape[0])
 
-        # Simulate batched permutation sampling
-        probas = torch.zeros((num_samples, num_features))
-        probas[:, perturbable_inds] = 1 / num_perturbable
-        indices = torch.multinomial(probas, num_samples=num_perturbable)
+        indices = sample_permutations(upper=num_features, indices=perturbable_inds,
+                                      num_permutations=num_samples)
         feature_pos = torch.nonzero(indices == idx_feature, as_tuple=False)
 
         samples = instance.repeat((2 * num_samples, 1))
