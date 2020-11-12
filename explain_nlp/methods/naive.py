@@ -19,7 +19,7 @@ class ExactShapleyExplainer:
 
     def conditional_expectation(self, instance: torch.Tensor, fixed_features: torch.Tensor):
         """ Compute the expected model prediction if part of features are fixed and the other part is perturbed across
-        its entire domain of values. Warning: exponential!
+        its entire domain of values.
 
         Args
         ----
@@ -85,12 +85,15 @@ class ExactShapleyExplainer:
     def explain(self, instance, label=0):
         num_features = int(instance.shape[1])
         importance_means = torch.zeros(num_features, dtype=torch.float32)
-        importance_vars = torch.zeros(num_features, dtype=torch.float32)
 
         for idx_feature in range(num_features):
             importance_means[idx_feature] = self.estimate_feature_importance(idx_feature, instance)[label]
 
-        return importance_means, importance_vars
+        res = {
+            "importance": importance_means
+        }
+
+        return res
 
 
 if __name__ == "__main__":
