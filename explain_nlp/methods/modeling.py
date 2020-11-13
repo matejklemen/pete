@@ -102,25 +102,88 @@ class InterpretableBertForSequenceClassification(InterpretableModel):
         return probas
 
 
-class InterpretableDummy(InterpretableModel):
-    """ Dummy model example, only for debugging purpose. """
+class DummySentiment(InterpretableModel):
+    """ Dummy 2-word sentiment prediction (positive/negative). """
     def __init__(self):
-        vocab = ["broccoli", "banana", "mug", "coffee", "paper", "cable", "bin"]
-        self.tok2id = {"<UNK>": 0}
-        self.id2tok = {0: "<UNK>"}
+        vocab = ["allegedly", "achingly", "amazingly", "astonishingly", "not", "very", "surprisingly", "good", "bad"]
+        self.tok2id = {"<UNK>": 0, "<PAD>": 1}
+        self.id2tok = {0: "<UNK>", 1: "<PAD>"}
 
-        for i, word in enumerate(vocab, start=1):
+        for i, word in enumerate(vocab, start=2):
             self.tok2id[word] = i
             self.id2tok[i] = word
+
+        self.model_scores = {
+            self.tok2id["allegedly"]: {
+                self.tok2id["bad"]: [0.5, 0.5],
+                self.tok2id["good"]: [0.5, 0.5],
+                self.tok2id["<PAD>"]: [0.5, 0.5],
+                self.tok2id["<UNK>"]: [0.5, 0.5]
+            },
+            self.tok2id["achingly"]: {
+                self.tok2id["bad"]: [0.55, 0.45],
+                self.tok2id["good"]: [0.45, 0.55],
+                self.tok2id["<PAD>"]: [0.52, 0.48],
+                self.tok2id["<UNK>"]: [0.52, 0.48]
+            },
+            self.tok2id["amazingly"]: {
+                self.tok2id["bad"]: [0.8, 0.2],
+                self.tok2id["good"]: [0.2, 0.8],
+                self.tok2id["<PAD>"]: [0.45, 0.55],
+                self.tok2id["<UNK>"]: [0.45, 0.55]
+            },
+            self.tok2id["astonishingly"]: {
+                self.tok2id["bad"]: [0.9, 0.1],
+                self.tok2id["good"]: [0.1, 0.9],
+                self.tok2id["<PAD>"]: [0.5, 0.5],
+                self.tok2id["<UNK>"]: [0.5, 0.5]
+            },
+            self.tok2id["not"]: {
+                self.tok2id["bad"]: [0.35, 0.65],
+                self.tok2id["good"]: [0.65, 0.35],
+                self.tok2id["<PAD>"]: [0.5, 0.5],
+                self.tok2id["<UNK>"]: [0.5, 0.5]
+            },
+            self.tok2id["very"]: {
+                self.tok2id["bad"]: [1.0, 0.0],
+                self.tok2id["good"]: [0.0, 1.0],
+                self.tok2id["<PAD>"]: [0.5, 0.5],
+                self.tok2id["<UNK>"]: [0.5, 0.5]
+            },
+            self.tok2id["surprisingly"]: {
+                self.tok2id["bad"]: [0.55, 0.45],
+                self.tok2id["good"]: [0.45, 0.55],
+                self.tok2id["<PAD>"]: [0.5, 0.5],
+                self.tok2id["<UNK>"]: [0.5, 0.5]
+            },
+            self.tok2id["<PAD>"]: {
+                self.tok2id["bad"]: [0.7, 0.3],
+                self.tok2id["good"]: [0.3, 0.7],
+                self.tok2id["<PAD>"]: [0.5, 0.5],
+                self.tok2id["<UNK>"]: [0.5, 0.5]
+            },
+            self.tok2id["<UNK>"]: {
+                self.tok2id["bad"]: [0.7, 0.3],
+                self.tok2id["good"]: [0.3, 0.7],
+                self.tok2id["<PAD>"]: [0.5, 0.5],
+                self.tok2id["<UNK>"]: [0.5, 0.5]
+            }
+        }
 
     def from_internal(self, encoded_data: torch.Tensor, skip_special_tokens: bool = True,
                       take_as_single_sequence: bool = False) -> List[str]:
         return [" ".join([self.id2tok[i] for i in sequence]) for sequence in encoded_data.tolist()]
 
-    def to_internal(self, text_data: str) -> Dict:
-        tokens = text_data.split(" ")
+    def to_internal(self, text_data: List[str]) -> Dict:
+        tokenized_examples = [text.split(" ") for text in text_data]
+        encoded_tokens = []
+        # Encode and pad/truncate to max length
+        for example_tokens in tokenized_examples:
+            curr_encoded = [self.tok2id.get(t.lower(), self.tok2id["<UNK>"]) for t in example_tokens]
+            encoded_tokens.append(curr_encoded)
+
         return {
-            "input_ids": torch.tensor([[self.tok2id.get(t, self.tok2id["<UNK>"]) for t in tokens]])
+            "input_ids": torch.tensor(encoded_tokens)
         }
 
     def convert_ids_to_tokens(self, ids):
@@ -131,16 +194,11 @@ class InterpretableDummy(InterpretableModel):
         return str_tokens
 
     def score(self, input_ids: torch.Tensor, **aux_data):
-        # [0] = number of non-handpicked words in sequence, [1] = number of handpicked words in sequence
-        counts = [[0, 0] for _ in range(input_ids.shape[0])]
-
-        CHOSEN = {self.tok2id["broccoli"], self.tok2id["banana"]}
+        scores = []
         for i in range(input_ids.shape[0]):
-            num_chosen = sum(w in CHOSEN for w in input_ids[i].tolist())
-            counts[i][1] = num_chosen
-            counts[i][0] = input_ids.shape[1] - num_chosen
+            scores.append(self.model_scores[int(input_ids[i, 0])][int(input_ids[i, 1])])
 
-        return F.softmax(torch.tensor(counts, dtype=torch.float32), dim=-1)
+        return torch.tensor(scores, dtype=torch.float32)
 
 
 if __name__ == "__main__":
