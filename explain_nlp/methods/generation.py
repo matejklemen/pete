@@ -108,6 +108,7 @@ class GPTControlledLMGenerator(SampleGenerator):
 
         return formatted_res
 
+    @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor, num_samples: int, label: int,
                  **aux_data) -> torch.Tensor:
         num_features = int(input_ids.shape[1])
@@ -314,6 +315,14 @@ class BertForMaskedLMGenerator(SampleGenerator):
         self.tokenizer = BertTokenizer.from_pretrained(self.tokenizer_name)
         self.generator = BertForMaskedLM.from_pretrained(self.model_name).to(self.device)
         self.generator.eval()
+
+    @property
+    def mask_token(self) -> str:
+        return self.tokenizer.mask_token
+
+    @property
+    def mask_token_id(self) -> int:
+        return self.tokenizer.mask_token_id
 
     def from_internal(self, encoded_data):
         decoded_data = []
