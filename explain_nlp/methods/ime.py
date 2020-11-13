@@ -12,6 +12,28 @@ class IMEExplainer:
                  max_abs_error: Optional[float] = None, return_variance: Optional[bool] = False,
                  return_num_samples: Optional[bool] = False, return_samples: Optional[bool] = False,
                  return_scores: Optional[bool] = False):
+        """ Explain instances using IME.
+
+        Args:
+        -----
+        sample_data: torch.Tensor
+            Data, used to create perturbations of instances. Must be of same shape as the instance.
+        model: InterpretableModel
+            Model to be interpreted at instance level.
+        confidence_interval: float (optional)
+            Constraint on how accurately the computed importances should be computed: "approximately
+            `confidence_interval` * 100% of importances should fall within `max_abs_error` of the true importance."
+        max_abs_error: float
+            Constraint on how accurately the computed importances should be computed (see `confidence_interval`).
+        return_variance: bool
+            Return variance of the importances.
+        return_num_samples: bool
+            Return number of taken samples to estimate feature importances.
+        return_samples: bool
+            Return the created perturbations used to estimate feature importances.
+        return_scores: bool
+            Return the scores (e.g. probabilities) returned by model for perturbed samples.
+        """
         self.model = model
         self.sample_data = sample_data
         self.num_features = self.sample_data.shape[1]
@@ -80,19 +102,20 @@ class IMEExplainer:
                 **modeling_kwargs):
         """ Explain a prediction for given instance.
 
-        Args
+        Args:
         ----
-        instance: torch.Tensor (shape: [1, num_features])
-            Instance that is being explained.
-        label: int (default: 0)
+        instance: torch.Tensor
+            Instance that is being explained. Shape: [1, num_features].
+        label: int
             Predicted label for instance. Leave at 0 if prediction is a regression score.
-        perturbable_mask: torch.Tensor (shape: [1, num_features])
+        perturbable_mask: torch.Tensor
             Mask, specifying features that can be perturbed. If not given, all features of instance are assumed to be
-            perturbable.
+            perturbable. Shape: [1, num_features].
         min_samples_per_feature: int
-            Minimum samples to be taken for each perturbable feature.
+            Minimum samples to be taken for each perturbable feature to estimate variance of importance.
         max_samples: int
-            Maximum samples to be taken combined across all perturbable features.
+            Maximum samples to be taken combined across all perturbable features. This gets overriden if
+            `confidence_interval` and `max_abs_error` are also provided at instantiation.
         """
         num_features = int(instance.shape[1])
         importance_means = torch.zeros(num_features, dtype=torch.float32)
