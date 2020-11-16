@@ -41,18 +41,19 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         logging.info(f"Devices: [model] {model.device}, [generator] {generator.device}")
 
         self.controlled = controlled
+        self.hardcoded_labels = ["entailment", "neutral", "contradiction"]
         if self.controlled:
+            print("Warning: labels for controlled LM are hardcoded at the moment (SNLI)!")
             # TODO: very very very hacked (hardcoded) labelset for SNLI
-            assert all([lbl_token in generator.tokenizer.all_special_tokens for lbl_token in ["<ENTAILMENT>",
-                                                                                              "<NEUTRAL>",
-                                                                                              "<CONTRADICTION>"]])
+            assert all([f"<{label.upper()}>" in generator.tokenizer.all_special_tokens
+                        for label in self.hardcoded_labels])
 
     def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor, num_samples: int,
                                     perturbable_mask: torch.Tensor, label=None, **modeling_kwargs):
         if self.controlled:
             assert label is not None
             # TODO: very very very hacked (hardcoded) labelset for SNLI just for proof of concept
-            label = ["entailment", "neutral", "contradiction"][label]
+            str_label = self.hardcoded_labels[label]
 
         # Note: instance is currently supposed to be of shape [1, num_features]
         num_features = int(instance.shape[1])
@@ -90,12 +91,12 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
 
         # Prepare also unmasked data for use in generator (for context)
         instance_text = self.model.from_internal(instance)
-        # TODO: add <<label>>, e.g. <ENTAILMENT> to the start of instance_text (Note: might also be a tuple!)
+        # Add a dummy label to seed controlled (masked) language modeling - this is overriden for first generation step
         if self.controlled:
             if isinstance(instance_text[0], tuple):
-                instance_text = [(f"<{label.upper()}> {instance_text[0][0]}", instance_text[0][1])]
+                instance_text = [(f"<{str_label.upper()}> {instance_text[0][0]}", instance_text[0][1])]
             else:
-                instance_text = [f"<{label.upper()}> {instance_text}"]
+                instance_text = [f"<{str_label.upper()}> {instance_text}"]
 
         generator_instances = self.generator.to_internal(instance_text)
         generator_instances = {
@@ -107,7 +108,8 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
             # TODO: this is model-specific
             encoded = self.generator.tokenizer.encode(data, add_special_tokens=False)
             if self.controlled:
-                enc_lbl = self.generator.tokenizer.encode([f"<{label.upper()}>"], add_special_tokens=False)
+                rand_label = self.hardcoded_labels[int(torch.randint(len(self.hardcoded_labels), ()))]
+                enc_lbl = self.generator.tokenizer.encode([f"<{rand_label.upper()}>"], add_special_tokens=False)
                 encoded = encoded[:1] + enc_lbl + encoded[1:]
 
             generator_masked_ids.append(encoded)
@@ -130,7 +132,14 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
 
         num_features = int(input_ids.shape[1])
         num_batches = (input_ids.shape[0] + self.generator.batch_size - 1) // self.generator.batch_size
-        for idx_masked in range(num_features):
+
+        # Make sure the current feature gets predicted first, so that we can change the control label afterwards
+        feature_indices = [idx_feature + 1]
+        for _i in range(num_features):
+            if _i != idx_feature + 1:
+                feature_indices.append(_i)
+
+        for idx_masked in feature_indices:
             curr_masked = \
                 generator_masked_ids[:, idx_masked: (idx_masked + 1)] == self.generator.tokenizer.mask_token_id
 
@@ -158,6 +167,12 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
                 preds = preds[curr_masked[s_batch: e_batch]]
 
                 curr_input_ids[curr_masked[s_batch: e_batch, 0], idx_masked] = preds.cpu()
+
+            if self.controlled and idx_masked == idx_feature + 1:
+                gen_encoded_label = self.generator.tokenizer.encode([f"<{str_label.upper()}>"],
+                                                                    add_special_tokens=False)[0]
+                input_ids[:, 1] = gen_encoded_label
+                generator_masked_ids[:, 1] = gen_encoded_label
 
         if self.verbose:
             logging.info(f"Estimating feature #{idx_feature}")
@@ -214,8 +229,8 @@ if __name__ == "__main__":
                                                        model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/snli_bert_uncased",
                                                        batch_size=2,
                                                        device="cpu")
-    generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Downloads/bert_snli_clm_best",
-                                         model_name="/home/matej/Downloads/bert_snli_clm_best",
+    generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/bert_snli_clm_best",
+                                         model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/bert_snli_clm_best",
                                          batch_size=2,
                                          device="cpu")
 
