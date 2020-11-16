@@ -24,11 +24,11 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         I need to think about conversion from model repr. into text and then into generator repr. and make sure
         nothing gets lost or wrongly shifted.
     """
-    def __init__(self, model: InterpretableModel, generator: SampleGenerator,
+    def __init__(self, model: InterpretableModel, generator: BertForMaskedLMGenerator,
                  confidence_interval: Optional[float] = None,  max_abs_error: Optional[float] = None,
                  return_variance: Optional[bool] = False, return_num_samples: Optional[bool] = False,
                  return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 verbose: Optional[bool] = False):
+                 verbose: Optional[bool] = False, controlled: Optional[bool] = False):
         # IME requires sampling data so we give it dummy data and later override it with generated data
         dummy_sample_data = torch.empty((0, 0), dtype=torch.long)
         super().__init__(sample_data=dummy_sample_data, model=model, confidence_interval=confidence_interval,
@@ -40,8 +40,20 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         self.generator = generator
         logging.info(f"Devices: [model] {model.device}, [generator] {generator.device}")
 
+        self.controlled = controlled
+        if self.controlled:
+            # TODO: very very very hacked (hardcoded) labelset for SNLI
+            assert all([lbl_token in generator.tokenizer.all_special_tokens for lbl_token in ["<ENTAILMENT>",
+                                                                                              "<NEUTRAL>",
+                                                                                              "<CONTRADICTION>"]])
+
     def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor, num_samples: int,
-                                    perturbable_mask: torch.Tensor, **modeling_kwargs):
+                                    perturbable_mask: torch.Tensor, label=None, **modeling_kwargs):
+        if self.controlled:
+            assert label is not None
+            # TODO: very very very hacked (hardcoded) labelset for SNLI just for proof of concept
+            label = ["entailment", "neutral", "contradiction"][label]
+
         # Note: instance is currently supposed to be of shape [1, num_features]
         num_features = int(instance.shape[1])
         perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
@@ -78,6 +90,13 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
 
         # Prepare also unmasked data for use in generator (for context)
         instance_text = self.model.from_internal(instance)
+        # TODO: add <<label>>, e.g. <ENTAILMENT> to the start of instance_text (Note: might also be a tuple!)
+        if self.controlled:
+            if isinstance(instance_text[0], tuple):
+                instance_text = [(f"<{label.upper()}> {instance_text[0][0]}", instance_text[0][1])]
+            else:
+                instance_text = [f"<{label.upper()}> {instance_text}"]
+
         generator_instances = self.generator.to_internal(instance_text)
         generator_instances = {
             "input_ids": generator_instances["input_ids"].repeat((2 * num_samples, 1)),
@@ -86,9 +105,16 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         generator_masked_ids = []
         for data in text_data:
             # TODO: this is model-specific
-            generator_masked_ids.append(self.generator.tokenizer.encode(data, add_special_tokens=False))
+            encoded = self.generator.tokenizer.encode(data, add_special_tokens=False)
+            if self.controlled:
+                enc_lbl = self.generator.tokenizer.encode([f"<{label.upper()}>"], add_special_tokens=False)
+                encoded = encoded[:1] + enc_lbl + encoded[1:]
 
-        # Account for the possible changes in number of tokens
+            generator_masked_ids.append(encoded)
+
+        # Account for the possible changes in number of tokens:
+        # After this, `input_ids` and `generator_masked_ids` will differ in length by 1 (the latter is longer),
+        # but this doesn't affect the generation process because we are only iterating over length of `input_ids`
         generator_masked_ids = self.generator.tokenizer.pad({"input_ids": generator_masked_ids}, padding="longest")
         generator_masked_ids = torch.tensor(generator_masked_ids["input_ids"])
 
@@ -124,7 +150,8 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
 
                 # Ensure a different token from the source
                 # Note: assuming here that batch size is a multiple of 2
-                if idx_masked == idx_feature:
+                if (not self.controlled and idx_masked == idx_feature) or \
+                        (self.controlled and idx_masked == idx_feature + 1):
                     logits[1::2, idx_masked, input_ids[0, idx_masked]] = -float("inf")
 
                 preds = decoding_strategy(logits[:, idx_masked], ensure_diff_from=None)  # [B, 1]
@@ -142,6 +169,13 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
             for i in range(input_ids.shape[0]):
                 logging.info(self.generator.tokenizer.decode(input_ids[i]))
             logging.info("")
+
+        # Remove the auxilary token, used for controlled LM, as it isn't a valid model token
+        if self.controlled:
+            valid_tokens = torch.ones(input_ids[0].shape[0], dtype=torch.bool)
+            valid_tokens[1] = False
+            input_ids = input_ids[:, valid_tokens]
+            modeling_kwargs = {k: v[:, valid_tokens] for k, v in modeling_kwargs.items()}
 
         scores = self.model.score(input_ids, **modeling_kwargs)
         scores_with = scores[::2]
@@ -180,8 +214,8 @@ if __name__ == "__main__":
                                                        model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/snli_bert_uncased",
                                                        batch_size=2,
                                                        device="cpu")
-    generator = BertForMaskedLMGenerator(tokenizer_name="bert-base-uncased",
-                                         model_name="bert-base-uncased",
+    generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Downloads/bert_snli_clm_best",
+                                         model_name="/home/matej/Downloads/bert_snli_clm_best",
                                          batch_size=2,
                                          device="cpu")
 
@@ -191,9 +225,10 @@ if __name__ == "__main__":
                                               return_scores=True,
                                               return_variance=True,
                                               return_num_samples=True,
-                                              verbose=True)
+                                              verbose=True,
+                                              controlled=True)
 
     seq = ("A patient is being worked on by doctors and nurses", "A man is sleeping.")
-    res = explainer.explain_text(seq, label=2, min_samples_per_feature=2)
-    for curr_token, curr_imp in zip(res["input"], res["importance"]):
-        print(f"{curr_token} = {curr_imp: .4f}")
+    res = explainer.explain_text(seq, label=2, min_samples_per_feature=5)
+    for curr_token, curr_imp, curr_var in zip(res["input"], res["importance"], res["var"]):
+        print(f"{curr_token} = {curr_imp: .4f} (var: {curr_var: .4f})")

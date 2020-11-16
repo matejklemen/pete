@@ -341,7 +341,21 @@ class BertForMaskedLMGenerator(SampleGenerator):
         return decoded_data
 
     def to_internal(self, text_data, labels: List[Union[int, str]] = None):
-        res = self.tokenizer.batch_encode_plus(text_data, return_special_tokens_mask=True, return_tensors="pt",
+        _text_data = text_data
+        # Format examples in a controlled LM fashion (<LABEL> <seq1> [<seq2>])
+        if labels is not None:
+            assert isinstance(labels[0], str)  # currently assuming label of example is passed in raw form
+            assert len(text_data) == len(labels)
+
+            control_formatted = []
+            for curr_text, curr_lbl in zip(text_data, labels):
+                if isinstance(curr_text, tuple):
+                    control_formatted.append(f"{curr_lbl} {curr_text[0]} {curr_text[1]}")
+                elif isinstance(curr_text, str):
+                    control_formatted.append(f"{curr_lbl} {curr_text}")
+            _text_data = control_formatted
+
+        res = self.tokenizer.batch_encode_plus(_text_data, return_special_tokens_mask=True, return_tensors="pt",
                                                padding="max_length", max_length=self.max_seq_len,
                                                truncation="longest_first")
         formatted_res = {

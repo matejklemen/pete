@@ -52,7 +52,7 @@ class IMEExplainer:
         self.num_features = new_data.shape[1]
 
     def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor, num_samples: int,
-                                    perturbable_mask: torch.Tensor, **modeling_kwargs):
+                                    perturbable_mask: torch.Tensor, label: Optional[str] = None, **modeling_kwargs):
         # Note: instance is currently supposed to be of shape [1, num_features]
         num_features = int(instance.shape[1])
         perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
@@ -147,7 +147,7 @@ class IMEExplainer:
 
         # Initial pass: every feature will use at least `min_samples_per_feature` samples
         for idx_feature in perturbable_inds.tolist():
-            res = self.estimate_feature_importance(idx_feature, instance,
+            res = self.estimate_feature_importance(idx_feature, instance, label=label,
                                                    num_samples=samples_per_feature[idx_feature],
                                                    perturbable_mask=eff_perturbable_mask, **modeling_kwargs)
             importance_means[idx_feature] = res["diff_mean"][label]
@@ -170,7 +170,7 @@ class IMEExplainer:
             var_diffs = (importance_vars / samples_per_feature) - (importance_vars / (samples_per_feature + 1))
             idx_feature = int(torch.argmax(var_diffs))
 
-            res = self.estimate_feature_importance(idx_feature, instance,
+            res = self.estimate_feature_importance(idx_feature, instance, label=label,
                                                    num_samples=1,
                                                    perturbable_mask=eff_perturbable_mask, **modeling_kwargs)
             curr_imp = res["diff_mean"][label]
