@@ -16,8 +16,8 @@ from explain_nlp.methods.utils import estimate_max_samples
 from explain_nlp.visualizations.highlight import highlight_plot
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--method", type=str, default="ime", choices=["ime", "ime_mlm", "ime_dependent_mlm"])
-parser.add_argument("--min_samples_per_feature", type=int, default=2,
+parser.add_argument("--method", type=str, default="ime_dependent_mlm", choices=["ime", "ime_mlm", "ime_dependent_mlm"])
+parser.add_argument("--min_samples_per_feature", type=int, default=10,
                     help="Minimum number of samples that get created for each feature for initial variance estimation")
 parser.add_argument("--confidence_interval", type=float, default=0.99)
 parser.add_argument("--max_abs_error", type=float, default=0.01)
@@ -32,7 +32,9 @@ parser.add_argument("--model_max_seq_len", type=int, default=41)
 parser.add_argument("--model_batch_size", type=int, default=2)
 
 parser.add_argument("--generator_type", type=str, default="bert_mlm")
-parser.add_argument("--generator_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/bert-base-uncased-snli-mlm",
+parser.add_argument("--controlled", action="store_true",
+                    help="Whether to use controlled LM/MLM for generation")
+parser.add_argument("--generator_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/bert_snli_clm_best",
                     help="Path or handle of model to be used as a language modeling generator")
 parser.add_argument("--generator_batch_size", type=int, default=2)
 parser.add_argument("--generator_max_seq_len", type=int, default=41)
@@ -91,6 +93,7 @@ if __name__ == "__main__":
 
     used_data = {"test_path": args.test_path}
     print(f"Using method '{args.method}'")
+    print(f"Using generator '{args.generator_type}'")
     # Define explanation methods
     if args.method == "ime":
         method_type = MethodType.IME
@@ -114,7 +117,8 @@ if __name__ == "__main__":
         method_type = MethodType.DEPENDENT_IME_MLM
         method = DependentIMEMaskedLMExplainer(model=model, generator=generator, verbose=args.verbose,
                                                return_scores=args.return_model_scores, return_num_samples=True,
-                                               return_samples=args.return_generated_samples, return_variance=True)
+                                               return_samples=args.return_generated_samples, return_variance=True,
+                                               controlled=args.controlled)
     else:
         raise NotImplementedError(f"Unsupported method: '{args.method}'")
 
