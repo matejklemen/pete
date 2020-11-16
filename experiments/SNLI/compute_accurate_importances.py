@@ -32,6 +32,8 @@ parser.add_argument("--model_max_seq_len", type=int, default=41)
 parser.add_argument("--model_batch_size", type=int, default=2)
 
 parser.add_argument("--generator_type", type=str, default="bert_mlm")
+parser.add_argument("--controlled", action="store_true",
+                    help="Whether to use controlled LM/MLM for generation")
 parser.add_argument("--generator_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/bert-base-uncased-snli-mlm",
                     help="Path or handle of model to be used as a language modeling generator")
 parser.add_argument("--generator_batch_size", type=int, default=2)
@@ -116,7 +118,8 @@ if __name__ == "__main__":
         method = DependentIMEMaskedLMExplainer(model=model, generator=generator, verbose=args.verbose,
                                                confidence_interval=args.confidence_interval, max_abs_error=args.max_abs_error,
                                                return_scores=args.return_model_scores, return_num_samples=True,
-                                               return_samples=args.return_generated_samples, return_variance=True)
+                                               return_samples=args.return_generated_samples, return_variance=True,
+                                               controlled=args.controlled)
     else:
         raise NotImplementedError(f"Unsupported method: '{args.method}'")
 
