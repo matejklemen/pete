@@ -3,8 +3,28 @@ import os
 from enum import Enum
 from typing import Union, Optional, Dict, List
 
+import matplotlib.pyplot as plt
+import numpy as np
+
 NA_STR = "N/A"
 DEFAULT_METHOD_DATA_FNAME = "method_data"
+DEFAULT_COLORS = [
+    [0, 255, 0],        # green
+    [255, 255, 0],      # yellow
+    [255, 0, 0],        # red
+    [255, 0, 255],      # magenta
+    [0, 0, 255],        # blue
+    [0, 255, 255],      # cyan
+    # Colors that are between the above ones in color chart and are a bit ambiguous, but still pretty good
+    [128, 255, 0],  # chartreuse
+    [255, 128, 0],      # orange
+    [255, 0, 128],      # rose
+    [128, 0, 255],      # violet
+    [0, 128, 255],      # azure
+    [0, 255, 128],       # spring green
+]
+DEFAULT_COLORS = [[r / 255, g / 255, b / 255] for r, g, b in DEFAULT_COLORS]
+DEFAULT_MARKERS = ["o", "v", "s", "<", "p", ">", "P", "X", "D", "d", "*", 11]
 
 
 class MethodType(Enum):
@@ -130,6 +150,110 @@ class MethodData:
             json.dump(self.serialize(), fp=f, indent=4)
 
 
+class MethodGroup:
+    def __init__(self, data_paths: List[str], method_labels: List[str]):
+        self.methods = [MethodData.load(curr_path) for curr_path in data_paths]
+        self.method_labels = method_labels
+
+    def plot_required_samples_wins(self, included_methods: Optional[List[int]] = None, **kwargs):
+        """ Plot the number of examples for which method `i` (spanned across rows) requires less estimated samples to
+        satisfy error constraint than method `j` (spanned across columns). Note: ties are not counted anywhere.
+
+        For example, value in box (0, 3)
+
+        Args:
+        ----
+        included_methods:
+            Indices of loaded methods to include in the plot.
+        kwargs:
+            Mostly matplotlib-related style keywords: `save_path` (str).
+        """
+        eff_included_methods = included_methods if included_methods is not None else list(range(len(self.methods)))
+        if len(eff_included_methods) == 0:
+            raise ValueError("Tried to create a plot without data")
+
+        included_method_labels = [self.method_labels[idx_method] for idx_method in eff_included_methods]
+        assert len(included_method_labels) == len(eff_included_methods)
+
+        save_path = kwargs.get("save_path", None)
+
+        gathered_data = []
+        for idx_method in eff_included_methods:
+            gathered_data.append(self.methods[idx_method].num_estimated_samples)
+
+        # [i, j]... for how many examples method `i` (e.g. IME+MLM) requires LESS samples than method `j` (e.g. IME)
+        num_wins = np.zeros((len(eff_included_methods), len(eff_included_methods)), dtype=np.int32)
+        for idx_row in range(len(eff_included_methods)):
+            for idx_col in range(len(eff_included_methods)):
+                num_wins[idx_row, idx_col] = \
+                    sum(ns1 < ns2 for ns1, ns2 in zip(gathered_data[idx_row], gathered_data[idx_col]))
+
+        _, ax = plt.subplots()
+        ax.matshow(num_wins, cmap=plt.cm.get_cmap("YlGn"))
+        for (row, col), val in np.ndenumerate(num_wins):
+            # Note: cols are x-axis, rows are y-axis!
+            ax.text(col, row, str(val), va="center", ha="center")
+
+        plt.xticks(np.arange(num_wins.shape[1]), included_method_labels)
+        plt.yticks(np.arange(num_wins.shape[0]), included_method_labels)
+        if save_path is None:
+            plt.show()
+        else:
+            plt.savefig(save_path)
+        plt.clf()
+
+    def plot_required_samples(self, included_methods: Optional[List[int]] = None, **kwargs):
+        """ Plot the amount of estimated required samples (given error constraints) for included methods.
+
+        Args:
+        -----
+        included_methods:
+            Indices of loaded methods to include in the plot.
+        kwargs:
+            Mostly matplotlib-related style keywords: `colors` (list), `markers` (list), `linestyle` (str),
+            `save_path` (str).
+        """
+        MAX_METHODS = 8  # chosen subjectively
+        eff_included_methods = included_methods if included_methods is not None else list(range(len(self.methods)))
+        if len(eff_included_methods) == 0:
+            raise ValueError("Tried to create a plot without data")
+        if len(eff_included_methods) > MAX_METHODS:
+            raise ValueError("Tried plotting too many methods")
+
+        method_colors = kwargs.get("colors", DEFAULT_COLORS[:len(eff_included_methods)])
+        method_markers = kwargs.get("markers", DEFAULT_MARKERS[:len(eff_included_methods)])
+        save_path = kwargs.get("save_path", None)
+
+        included_method_labels = [self.method_labels[idx_method] for idx_method in eff_included_methods]
+        assert len(included_method_labels) == len(eff_included_methods)
+
+        gathered_data = []
+        for idx_method in eff_included_methods:
+            gathered_data.append(self.methods[idx_method].num_estimated_samples)
+
+        # All methods should have same amount of data points
+        num_points = len(gathered_data[0])
+        assert all(len(md) == num_points for md in gathered_data)
+
+        x_axis = list(range(num_points))
+        for idx_method in eff_included_methods:
+            plt.plot(x_axis, gathered_data[idx_method],
+                     marker=method_markers[idx_method], color=method_colors[idx_method],
+                     linestyle=kwargs.get("linestyle", "none"),
+                     markeredgewidth=0.5, markeredgecolor="black")
+
+        plt.xticks(x_axis)
+        plt.xlabel("Example")
+        plt.ylabel("Required samples")
+        plt.legend(included_method_labels)
+
+        if save_path is None:
+            plt.show()
+        else:
+            plt.savefig(save_path)
+        plt.clf()
+
+
 if __name__ == "__main__":
     dummy_method = MethodData(
         method_type=MethodType.DEPENDENT_IME_MLM,
@@ -146,8 +270,18 @@ if __name__ == "__main__":
         "label": ["English"],
         "importances": [0.2, 0.3, 0.2, 0.4, 0.4],
         "variances": [0.0023, 0.1, 0.05, 0.03, 0.00006],
-        "num_samples": [10, 10, 10, 10, 10]
+        "num_samples": [10, 10, 10, 10, 10],
+        "num_estimated_samples": 100
+    })
+    dummy_method.add_example(**{
+        "sequence": ["My", "name", "is", "Iron", "Man"],
+        "label": ["English"],
+        "importances": [0.2, 0.3, 0.2, 0.4, 0.4],
+        "variances": [0.0023, 0.1, 0.05, 0.03, 0.00006],
+        "num_samples": [10, 10, 10, 10, 10],
+        "num_estimated_samples": 115
     })
 
     dummy_method.save("/home/matej/Desktop", "joze")
     print(MethodData.load("/home/matej/Desktop/joze.json").serialize())
+
