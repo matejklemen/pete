@@ -45,6 +45,8 @@ parser.add_argument("--p_ensure_different", type=float, default=0.0,
 parser.add_argument("--masked_at_once", type=float, default=None,
                     help="Proportion of tokens to mask out at once during language modeling. By default, mask out one "
                          "token at a time")
+parser.add_argument("--seed_start_with_ground_truth", action="store_true")
+parser.add_argument("--reset_seed_after_first", action="store_true")
 
 parser.add_argument("--experiment_dir", type=str, default=None)
 parser.add_argument("--save_every_n_examples", type=int, default=1,
@@ -118,7 +120,9 @@ if __name__ == "__main__":
         method = DependentIMEMaskedLMExplainer(model=model, generator=generator, verbose=args.verbose,
                                                return_scores=args.return_model_scores, return_num_samples=True,
                                                return_samples=args.return_generated_samples, return_variance=True,
-                                               controlled=args.controlled)
+                                               controlled=args.controlled,
+                                               seed_start_with_ground_truth=args.seed_start_with_ground_truth,
+                                               reset_seed_after_first=args.reset_seed_after_first)
     else:
         raise NotImplementedError(f"Unsupported method: '{args.method}'")
 
