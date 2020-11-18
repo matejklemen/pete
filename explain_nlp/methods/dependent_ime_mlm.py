@@ -28,7 +28,9 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
                  confidence_interval: Optional[float] = None,  max_abs_error: Optional[float] = None,
                  return_variance: Optional[bool] = False, return_num_samples: Optional[bool] = False,
                  return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 verbose: Optional[bool] = False, controlled: Optional[bool] = False):
+                 verbose: Optional[bool] = False, controlled: Optional[bool] = False,
+                 # experimental parameters
+                 seed_start_with_ground_truth: Optional[bool] = True, reset_seed_after_first: Optional[bool] = True):
         # IME requires sampling data so we give it dummy data and later override it with generated data
         dummy_sample_data = torch.empty((0, 0), dtype=torch.long)
         super().__init__(sample_data=dummy_sample_data, model=model, confidence_interval=confidence_interval,
@@ -39,8 +41,13 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         self.verbose = verbose
         self.generator = generator
         logging.info(f"Devices: [model] {model.device}, [generator] {generator.device}")
+        logging.info(f"top_p = {self.generator.top_p}, "
+                     f"seed_start_with_ground_truth = {seed_start_with_ground_truth}, "
+                     f"reset_seed_after_first = {reset_seed_after_first}")
 
         self.controlled = controlled
+        self.seed_start_with_ground_truth = seed_start_with_ground_truth
+        self.reset_seed_after_first = reset_seed_after_first
         self.hardcoded_labels = ["entailment", "neutral", "contradiction"]
         if self.controlled:
             print("Warning: labels for controlled LM are hardcoded at the moment (SNLI)!")
@@ -105,10 +112,24 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
             "input_ids": generator_instances["input_ids"].repeat((2 * num_samples, 1)),
             "aux_data": {k: v.repeat((2 * num_samples, 1)) for k, v in generator_instances["aux_data"].items()}
         }
+
+        if self.controlled and not self.seed_start_with_ground_truth:
+            rand_label_toks = [f"<{self.hardcoded_labels[i].upper()}>"
+                               for i in torch.randint(len(self.hardcoded_labels), size=(num_samples,)).tolist()]
+            enc_labels = self.generator.tokenizer.encode(rand_label_toks, add_special_tokens=False)
+
+            # Make sure the paired samples have same seed label
+            labels_tensor = torch.zeros(2 * num_samples)
+            labels_tensor[::2] = torch.tensor(enc_labels)
+            labels_tensor[1::2] = torch.tensor(enc_labels)
+
+            generator_instances["input_ids"][:, 1] = labels_tensor
+
         generator_masked_ids = []
         for data in text_data:
             # TODO: this is model-specific
             encoded = self.generator.tokenizer.encode(data, add_special_tokens=False)
+            # Note that this doesn't even get taken into account due to how new logic works (still need some token to match shapes though)
             if self.controlled:
                 rand_label = self.hardcoded_labels[int(torch.randint(len(self.hardcoded_labels), ()))]
                 enc_lbl = self.generator.tokenizer.encode([f"<{rand_label.upper()}>"], add_special_tokens=False)[0]
@@ -136,11 +157,22 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         num_batches = (input_ids.shape[0] + self.generator.batch_size - 1) // self.generator.batch_size
 
         # Shuffle the order of generation
-        generation_order = sample_permutations(upper=num_features, indices=perturbable_inds,
-                                               num_permutations=2*num_samples)
+        if self.reset_seed_after_first:
+            _perturbable_mask = perturbable_mask.clone()
+            _perturbable_mask[0, idx_feature] = False
+            _perturbable_inds = torch.arange(num_features)[_perturbable_mask[0]]
+            generation_order = sample_permutations(upper=num_features, indices=_perturbable_inds,
+                                                   num_permutations=2 * num_samples)
+            # Make sure the current feature is first to be generated, so that we can reset the seed after that
+            generation_order = torch.cat((torch.zeros((generation_order.shape[0], 1), dtype=torch.int32),
+                                          generation_order), dim=1)
+            generation_order[:, 0] = idx_feature
+        else:
+            generation_order = sample_permutations(upper=num_features, indices=perturbable_inds,
+                                                   num_permutations=2*num_samples)
         all_ex_indexer = torch.arange(generation_order.shape[0])
-        for idx_masked in range(perturbable_inds.shape[0]):
-            curr_indices = generation_order[:, idx_masked]
+        for idx_step in range(perturbable_inds.shape[0]):
+            curr_indices = generation_order[:, idx_step]
             curr_masked = \
                 generator_masked_ids[all_ex_indexer, curr_indices] == self.generator.tokenizer.mask_token_id
 
@@ -182,23 +214,21 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
 
                 curr_input_ids[override_row, override_col] = preds[:, 0].cpu()
 
-            # After predicting the current feature for all samples using random control signals, set the "correct"
+            # After predicting the current feature for all samples using random/gold control signals, set the "correct"
             # control signal (e.g. ground truth label)
-            # TODO: fix this
-            # if self.controlled and idx_masked == idx_feature:
-            #     gen_encoded_label = self.generator.tokenizer.encode([f"<{str_label.upper()}>"],
-            #                                                         add_special_tokens=False)[0]
-            #     input_ids[:, 1] = gen_encoded_label
-            #     generator_masked_ids[:, 1] = gen_encoded_label
+            if self.reset_seed_after_first and self.controlled and idx_step == 0:
+                gen_encoded_label = self.generator.tokenizer.encode([f"<{str_label.upper()}>"],
+                                                                    add_special_tokens=False)[0]
+                input_ids[:, 1] = gen_encoded_label
+                generator_masked_ids[:, 1] = gen_encoded_label
 
         if self.verbose:
             logging.info(f"Estimating feature #{idx_feature}")
-            logging.info("Before: ")
             for i in range(input_ids.shape[0]):
+                logging.info("Masked: ")
                 logging.info(self.generator.tokenizer.decode(generator_masked_ids[i]))
 
-            logging.info("After: ")
-            for i in range(input_ids.shape[0]):
+                logging.info("Generated: ")
                 logging.info(self.generator.tokenizer.decode(input_ids[i]))
             logging.info("")
 
@@ -271,10 +301,11 @@ if __name__ == "__main__":
                                               return_variance=True,
                                               return_num_samples=True,
                                               verbose=True,
-                                              controlled=True)
+                                              controlled=True,
+                                              seed_start_with_ground_truth=True,
+                                              reset_seed_after_first=False)
 
     seq = ("A patient is being worked on by doctors and nurses.", "A man is sleeping.")
-    res = explainer.explain_text(seq, label=2, min_samples_per_feature=20)
-    print(res)
+    res = explainer.explain_text(seq, label=2, min_samples_per_feature=10)
     for curr_token, curr_imp, curr_var in zip(res["input"], res["importance"], res["var"]):
         print(f"{curr_token} = {curr_imp: .4f} (var: {curr_var: .4f})")
