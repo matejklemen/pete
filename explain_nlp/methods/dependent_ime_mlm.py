@@ -89,9 +89,11 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         # TODO: standardize - method that doesnt modify tokens, just joins them, possibly doing fancy spacing tricks
         text_data = [self.model.tokenizer.convert_tokens_to_string(tokens) for tokens in remapped_decoded_tokens]
 
-        # Prepare also unmasked data for use in generator (for context)
+        # Prepare also unmasked data for use in generator (to provide context)
         instance_text = self.model.from_internal(instance)
-        # Add a dummy label to seed controlled (masked) language modeling - this is overriden for first generation step
+
+        # Re-add a dummy label to seed controlled MLM as it gets removed when converting from internal representation:
+        # this will be overriden by control signal(s) later
         if self.controlled:
             if isinstance(instance_text[0], tuple):
                 instance_text = [(f"<{str_label.upper()}> {instance_text[0][0]}", instance_text[0][1])]
@@ -109,8 +111,8 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
             encoded = self.generator.tokenizer.encode(data, add_special_tokens=False)
             if self.controlled:
                 rand_label = self.hardcoded_labels[int(torch.randint(len(self.hardcoded_labels), ()))]
-                enc_lbl = self.generator.tokenizer.encode([f"<{rand_label.upper()}>"], add_special_tokens=False)
-                encoded = encoded[:1] + enc_lbl + encoded[1:]
+                enc_lbl = self.generator.tokenizer.encode([f"<{rand_label.upper()}>"], add_special_tokens=False)[0]
+                encoded[1] = enc_lbl
 
             generator_masked_ids.append(encoded)
 
@@ -133,25 +135,28 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         num_features = int(input_ids.shape[1])
         num_batches = (input_ids.shape[0] + self.generator.batch_size - 1) // self.generator.batch_size
 
-        # Make sure the current feature gets predicted first, so that we can change the control label afterwards
-        feature_indices = [idx_feature + 1]
-        for _i in range(num_features):
-            if _i != idx_feature + 1:
-                feature_indices.append(_i)
-
-        for idx_masked in feature_indices:
+        # Shuffle the order of generation
+        generation_order = sample_permutations(upper=num_features, indices=perturbable_inds,
+                                               num_permutations=2*num_samples)
+        all_ex_indexer = torch.arange(generation_order.shape[0])
+        for idx_masked in range(perturbable_inds.shape[0]):
+            curr_indices = generation_order[:, idx_masked]
             curr_masked = \
-                generator_masked_ids[:, idx_masked: (idx_masked + 1)] == self.generator.tokenizer.mask_token_id
+                generator_masked_ids[all_ex_indexer, curr_indices] == self.generator.tokenizer.mask_token_id
 
             if not torch.any(curr_masked):
                 continue
 
-            input_ids[:, idx_masked] = generator_masked_ids[:, idx_masked]
+            # Mask current tokens
+            input_ids[all_ex_indexer, curr_indices] = generator_masked_ids[all_ex_indexer, curr_indices]
 
             for idx_batch in range(num_batches):
-                s_batch, e_batch = idx_batch * self.generator.batch_size, (idx_batch + 1) * self.generator.batch_size
+                s_batch = idx_batch * self.generator.batch_size
+                e_batch = min((idx_batch + 1) * self.generator.batch_size, input_ids.shape[0])
 
-                curr_input_ids = input_ids[s_batch: e_batch]
+                curr_input_ids = input_ids[s_batch: e_batch]  # Note: view!
+                curr_gen_indices = curr_indices[s_batch: e_batch]
+                curr_batch_size = curr_input_ids.shape[0]
                 curr_aux_data = {k: v[s_batch: e_batch].to(self.generator.device) for k, v in aux_data.items()}
 
                 logits = self.generator.generator(curr_input_ids.to(self.generator.device), **curr_aux_data,
@@ -159,20 +164,32 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
 
                 # Ensure a different token from the source
                 # Note: assuming here that batch size is a multiple of 2
-                if (not self.controlled and idx_masked == idx_feature) or \
-                        (self.controlled and idx_masked == idx_feature + 1):
-                    logits[1::2, idx_masked, input_ids[0, idx_masked]] = -float("inf")
+                every_second = torch.zeros(curr_batch_size, dtype=torch.bool)
+                every_second[1::2] = True
+                is_estimated_feature = torch.logical_and(curr_gen_indices == idx_feature, every_second)
+                if torch.any(is_estimated_feature):
+                    batch_indexer = torch.arange(curr_batch_size)[is_estimated_feature]
+                    feature_indexer = curr_gen_indices[is_estimated_feature]
+                    logits[batch_indexer, feature_indexer, input_ids[0, idx_feature]] = -float("inf")
 
-                preds = decoding_strategy(logits[:, idx_masked], ensure_diff_from=None)  # [B, 1]
-                preds = preds[curr_masked[s_batch: e_batch]]
+                override_mask = curr_masked[s_batch: e_batch]
+                preds = decoding_strategy(logits[torch.arange(curr_batch_size), curr_indices[s_batch: e_batch]],
+                                          ensure_diff_from=None)  # [B, 1]
+                preds = preds[override_mask]
 
-                curr_input_ids[curr_masked[s_batch: e_batch, 0], idx_masked] = preds.cpu()
+                override_row = torch.arange(curr_batch_size)[override_mask]
+                override_col = curr_indices[s_batch: e_batch][override_mask]
 
-            if self.controlled and idx_masked == idx_feature + 1:
-                gen_encoded_label = self.generator.tokenizer.encode([f"<{str_label.upper()}>"],
-                                                                    add_special_tokens=False)[0]
-                input_ids[:, 1] = gen_encoded_label
-                generator_masked_ids[:, 1] = gen_encoded_label
+                curr_input_ids[override_row, override_col] = preds[:, 0].cpu()
+
+            # After predicting the current feature for all samples using random control signals, set the "correct"
+            # control signal (e.g. ground truth label)
+            # TODO: fix this
+            # if self.controlled and idx_masked == idx_feature:
+            #     gen_encoded_label = self.generator.tokenizer.encode([f"<{str_label.upper()}>"],
+            #                                                         add_special_tokens=False)[0]
+            #     input_ids[:, 1] = gen_encoded_label
+            #     generator_masked_ids[:, 1] = gen_encoded_label
 
         if self.verbose:
             logging.info(f"Estimating feature #{idx_feature}")
@@ -213,9 +230,22 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
 
     def explain_text(self, text_data: Union[str, Tuple[str, ...]], label: Optional[int] = 0,
                      min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None):
-        # Convert instance being interpreted to representation of interpreted model
-        model_instance = self.model.to_internal([text_data])
+        # TODO (maybe): remove the dummy token afterwards and shift all data accordingly so that the output is consistent with other methods? (i.e. that there isn't an additional token here)
+        # If using controlled MLM, add a dummy token in front, which wont be perturbed, so that we don't need to
+        # be careful about the offsets caused by additional control token(s)
+        if self.controlled:
+            _text_data = (f"{self.model.tokenizer.pad_token} {text_data[0]}", text_data[1]) if isinstance(text_data, tuple) \
+                else f"{self.model.tokenizer.pad_token} {text_data}"
+        else:
+            _text_data = text_data
 
+        # Convert instance being interpreted to representation of interpreted model
+        model_instance = self.model.to_internal([_text_data])
+        if self.controlled:
+            # dummy token will be manually changed
+            model_instance["perturbable_mask"][0, 1] = False
+
+        # TODO: the control token is removed from generated samples, but not from the text being explained
         res = super().explain(model_instance["input_ids"], label, perturbable_mask=model_instance["perturbable_mask"],
                               min_samples_per_feature=min_samples_per_feature, max_samples=max_samples,
                               **model_instance["aux_data"])
@@ -243,7 +273,8 @@ if __name__ == "__main__":
                                               verbose=True,
                                               controlled=True)
 
-    seq = ("A patient is being worked on by doctors and nurses", "A man is sleeping.")
-    res = explainer.explain_text(seq, label=2, min_samples_per_feature=5)
+    seq = ("A patient is being worked on by doctors and nurses.", "A man is sleeping.")
+    res = explainer.explain_text(seq, label=2, min_samples_per_feature=20)
+    print(res)
     for curr_token, curr_imp, curr_var in zip(res["input"], res["importance"], res["var"]):
         print(f"{curr_token} = {curr_imp: .4f} (var: {curr_var: .4f})")
