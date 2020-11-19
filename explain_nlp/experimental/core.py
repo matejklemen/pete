@@ -27,6 +27,10 @@ DEFAULT_COLORS = [[r / 255, g / 255, b / 255] for r, g, b in DEFAULT_COLORS]
 DEFAULT_MARKERS = ["o", "v", "s", "<", "p", ">", "P", "X", "D", "d", "*", 11]
 
 
+def mae(x1, x2):
+    return np.mean(np.abs(np.subtract(x1, x2)))
+
+
 class MethodType(Enum):
     IME = 1
     INDEPENDENT_IME_LM = 2
@@ -151,9 +155,26 @@ class MethodData:
 
 
 class MethodGroup:
-    def __init__(self, data_paths: List[str], method_labels: List[str]):
+    # TODO: I need to change this to filter out special tokens: although current methods are not wrong, they
+    #  underestimate MAE due to averaging over (too) many tokens
+    MAX_XTICKS = 10
+    INVALID_TOKENS = {"[CLS]", "[SEP]", "[PAD]"}
+
+    def __init__(self, data_paths: List[str], method_labels: List[str],
+                 reference_path: Optional[str] = None, reference_label: Optional[str] = None,
+                 additional_filtered_tokens: Optional[List[str]] = None):
         self.methods = [MethodData.load(curr_path) for curr_path in data_paths]
         self.method_labels = method_labels
+
+        self.ref_method = None
+        self.ref_label = None
+        if reference_path is not None:
+            self.ref_method = MethodData.load(reference_path)
+            self.ref_label = reference_label
+
+        self.ignored_tokens = set(self.INVALID_TOKENS)
+        if additional_filtered_tokens is not None:
+            self.ignored_tokens |= set(self.INVALID_TOKENS)
 
     def plot_required_samples_wins(self, included_methods: Optional[List[int]] = None, **kwargs):
         """ Plot the number of examples for which method `i` (spanned across rows) requires less estimated samples to
@@ -194,6 +215,7 @@ class MethodGroup:
             # Note: cols are x-axis, rows are y-axis!
             ax.text(col, row, str(val), va="center", ha="center")
 
+        plt.title("Method#1 (row) requires less samples than Method#2 (col)")
         plt.xticks(np.arange(num_wins.shape[1]), included_method_labels)
         plt.yticks(np.arange(num_wins.shape[0]), included_method_labels)
         if save_path is None:
@@ -235,17 +257,204 @@ class MethodGroup:
         num_points = len(gathered_data[0])
         assert all(len(md) == num_points for md in gathered_data)
 
-        x_axis = list(range(num_points))
-        for idx_method in eff_included_methods:
-            plt.plot(x_axis, gathered_data[idx_method],
-                     marker=method_markers[idx_method], color=method_colors[idx_method],
+        x_axis = np.arange(num_points)
+        for i in range(len(eff_included_methods)):
+            plt.plot(x_axis, gathered_data[i],
+                     marker=method_markers[i], color=method_colors[i],
                      linestyle=kwargs.get("linestyle", "none"),
                      markeredgewidth=0.5, markeredgecolor="black")
 
-        plt.xticks(x_axis)
+        tick_step = num_points // self.MAX_XTICKS
+        plt.xticks(np.arange(0, num_points + 1, tick_step))
         plt.xlabel("Example")
         plt.ylabel("Required samples")
         plt.legend(included_method_labels)
+
+        if save_path is None:
+            plt.show()
+        else:
+            plt.savefig(save_path)
+        plt.clf()
+
+    def plot_required_samples_avg_diff(self, included_methods: Optional[List[int]] = None, **kwargs):
+        """ Plot the average difference between methods (+- standard deviation) in required samples to satisfy error
+        constraints.
+
+        Args:
+        -----
+        included_methods:
+            Indices of loaded methods to include in the plot.
+        kwargs:
+            Mostly matplotlib-related style keywords: `save_path` (str).
+        """
+        eff_included_methods = included_methods if included_methods is not None else list(range(len(self.methods)))
+        if len(eff_included_methods) == 0:
+            raise ValueError("Tried to create a plot without data")
+
+        included_method_labels = [self.method_labels[idx_method] for idx_method in eff_included_methods]
+        assert len(included_method_labels) == len(eff_included_methods)
+
+        save_path = kwargs.get("save_path", None)
+
+        gathered_data = []
+        for idx_method in eff_included_methods:
+            gathered_data.append(self.methods[idx_method].num_estimated_samples)
+
+        # [i, j]... how many samples on average method `i` (e.g. IME+MLM) requires w.r.t method `j` (e.g. IME)
+        # e.g. -100 means that method `i` on average requires 100 less samples than method `j`
+        samples_diff_mean = np.zeros((len(eff_included_methods), len(eff_included_methods)))
+        samples_diff_sd = np.zeros((len(eff_included_methods), len(eff_included_methods)))
+
+        for idx_row in range(len(eff_included_methods)):
+            for idx_col in range(len(eff_included_methods)):
+                diffs = [ns1 - ns2 for ns1, ns2 in zip(gathered_data[idx_row], gathered_data[idx_col])]
+                samples_diff_mean[idx_row, idx_col] = np.mean(diffs)
+                samples_diff_sd[idx_row, idx_col] = np.std(diffs)
+
+        _, ax = plt.subplots()
+        # Note: plotting -1 * samples so that green corresponds to a low number and yellow to a high
+        ax.matshow(-samples_diff_mean, cmap=plt.cm.get_cmap("YlGn"))
+        for (row, col), val in np.ndenumerate(samples_diff_mean):
+            # Note: cols are x-axis, rows are y-axis!
+            ax.text(col, row, f"{val:.2f} +- {samples_diff_sd[row, col]:.2f}", va="center", ha="center")
+
+        plt.title("Method#1 (row) requires on average __ samples w.r.t. Method#2 (col)")
+        plt.xticks(np.arange(samples_diff_mean.shape[1]), included_method_labels)
+        plt.yticks(np.arange(samples_diff_mean.shape[0]), included_method_labels)
+        if save_path is None:
+            plt.show()
+        else:
+            plt.savefig(save_path)
+        plt.clf()
+
+    def plot_example_mae(self, included_methods: Optional[List[int]] = None, **kwargs):
+        """Plot the example-wise mean absolute error of calculated importances w.r.t reference, given at instantiation.
+
+        Args:
+        -----
+        included_methods:
+            Indices of loaded methods to include in the plot.
+        kwargs:
+            Mostly matplotlib-related style keywords: `colors` (list), `markers` (list), `linestyle` (str),
+            `save_path` (str).
+        """
+        MAX_METHODS = 8  # chosen subjectively
+        eff_included_methods = included_methods if included_methods is not None else list(range(len(self.methods)))
+        if len(eff_included_methods) == 0:
+            raise ValueError("Tried to create a plot without data")
+        if len(eff_included_methods) > MAX_METHODS:
+            raise ValueError("Tried plotting too many methods")
+
+        method_colors = kwargs.get("colors", DEFAULT_COLORS[:len(eff_included_methods)])
+        method_markers = kwargs.get("markers", DEFAULT_MARKERS[:len(eff_included_methods)])
+        save_path = kwargs.get("save_path", None)
+
+        included_method_labels = [self.method_labels[idx_method] for idx_method in eff_included_methods]
+        assert len(included_method_labels) == len(eff_included_methods)
+
+        ref_data = self.ref_method.importances
+        gathered_data = []
+        for idx_method in eff_included_methods:
+            gathered_data.append(self.methods[idx_method].importances)
+
+        # All methods should have same amount of data points
+        num_points = len(ref_data)
+        assert all(len(md) == num_points for md in gathered_data)
+
+        # All methods should have same-length sequences, otherwise:
+        # (1) we might be comparing importances of different tokens,
+        # (2) mean could be computed over different lengths, giving us wrong results.
+        # Only the first sequence pair is checked as a quick "proxy" instead of every pair
+        assert all(len(md[0]) == len(ref_data[0]) for md in gathered_data)
+
+        # All methods should have same tokens (i.e. aligned)
+        # Only the first sequence is checked as a quick "proxy"
+        for idx_method in eff_included_methods:
+            ref_seq = self.ref_method.sequences[0]
+            method_seq = self.methods[idx_method].sequences[0]
+            assert all(t1 == t2 for t1, t2 in zip(ref_seq, method_seq))
+
+        mean_abs_errors = []
+        for i in range(len(eff_included_methods)):
+            mean_abs_errors.append([mae(gathered_data[i][idx_seq], ref_data[idx_seq]) for idx_seq in range(num_points)])
+
+        x_axis = np.arange(num_points)
+        for i in range(len(eff_included_methods)):
+            plt.plot(x_axis, mean_abs_errors[i],
+                     marker=method_markers[i], color=method_colors[i],
+                     linestyle=kwargs.get("linestyle", "none"),
+                     markeredgewidth=0.5, markeredgecolor="black")
+
+        plt.title(f"Mean absolute error w.r.t. '{self.ref_label}'")
+        tick_step = num_points // self.MAX_XTICKS
+        plt.xticks(np.arange(0, num_points + 1, tick_step))
+        plt.xlabel("Example")
+        plt.ylabel("Mean absolute error")
+        plt.legend(included_method_labels)
+
+        if save_path is None:
+            plt.show()
+        else:
+            plt.savefig(save_path)
+        plt.clf()
+
+    def plot_global_mae(self, included_methods: Optional[List[int]] = None, **kwargs):
+        """Plot the dataset-wise mean absolute error of calculated importances w.r.t reference, given at instantiation.
+        I.e. the errors are taken over all tokens of all sequences and then averaged.
+
+        Args:
+        -----
+        included_methods:
+            Indices of loaded methods to include in the plot.
+        kwargs:
+            Mostly matplotlib-related style keywords: `save_path` (str).
+        """
+        eff_included_methods = included_methods if included_methods is not None else list(range(len(self.methods)))
+        if len(eff_included_methods) == 0:
+            raise ValueError("Tried to create a plot without data")
+
+        save_path = kwargs.get("save_path", None)
+
+        included_method_labels = [self.method_labels[idx_method] for idx_method in eff_included_methods]
+        assert len(included_method_labels) == len(eff_included_methods)
+
+        ref_data = self.ref_method.importances
+        gathered_data = []
+        for idx_method in eff_included_methods:
+            gathered_data.append(self.methods[idx_method].importances)
+
+        # All methods should have same amount of data points
+        num_points = len(ref_data)
+        assert all(len(md) == num_points for md in gathered_data)
+
+        # All methods should have same-length sequences, otherwise:
+        # (1) we might be comparing importances of different tokens,
+        # (2) mean could be computed over different lengths, giving us wrong results.
+        # Only the first sequence pair is checked as a quick "proxy" instead of every pair
+        assert all(len(md[0]) == len(ref_data[0]) for md in gathered_data)
+
+        # All methods should have same tokens (i.e. aligned)
+        # Only the first sequence is checked as a quick "proxy"
+        for idx_method in eff_included_methods:
+            ref_seq = self.ref_method.sequences[0]
+            method_seq = self.methods[idx_method].sequences[0]
+            assert all(t1 == t2 for t1, t2 in zip(ref_seq, method_seq))
+
+        glob_mean_abs_errors = []
+        glob_sd_abs_errors = []
+        for i in range(len(eff_included_methods)):
+            curr_abs_errors = []
+            for idx_seq in range(num_points):
+                curr_abs_errors.extend(np.abs(np.subtract(gathered_data[i][idx_seq], ref_data[idx_seq])))
+
+            glob_mean_abs_errors.append(np.mean(curr_abs_errors))
+            glob_sd_abs_errors.append(np.std(curr_abs_errors))
+
+        x_axis = np.arange(len(eff_included_methods))
+        plt.title(f"Dataset-wise mean absolute error w.r.t. '{self.ref_label}'")
+        plt.xticks(x_axis, included_method_labels)
+        plt.ylabel("Mean absolute error")
+        plt.bar(x_axis, glob_mean_abs_errors, yerr=glob_sd_abs_errors)
 
         if save_path is None:
             plt.show()

@@ -22,4 +22,7 @@ experiment.method_labels = ["method_name1", "method_name2", "baseline"]
 # STEP 3
 experiment.plot_required_samples()              # scatterplot
 experiment.plot_required_samples_wins()         # heatmap/confusion matrix
+experiment.plot_required_samples_avg_diff()     # heatmap/confusion matrix
+experiment.plot_example_mae()                   # scatterplot
+experiment.plot_global_mae()                    # barplot
 ```
