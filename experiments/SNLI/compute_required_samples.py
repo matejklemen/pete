@@ -9,14 +9,15 @@ from experiments.SNLI.data import load_nli, NLIDataset, LABEL_TO_IDX, IDX_TO_LAB
 from experiments.SNLI.handle_generator import load_generator
 from explain_nlp.experimental.core import MethodType, MethodData
 from explain_nlp.methods.dependent_ime_mlm import DependentIMEMaskedLMExplainer
-from explain_nlp.methods.ime import IMEExplainer
+from explain_nlp.methods.ime import IMEExplainer, SequentialIMEExplainer
 from explain_nlp.methods.ime_mlm import IMEMaskedLMExplainer
 from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
 from explain_nlp.methods.utils import estimate_max_samples
 from explain_nlp.visualizations.highlight import highlight_plot
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--method", type=str, default="ime_dependent_mlm", choices=["ime", "ime_mlm", "ime_dependent_mlm"])
+parser.add_argument("--method", type=str, default="ime_mlm", choices=["ime", "sequential_ime",
+                                                                      "ime_mlm", "ime_dependent_mlm"])
 parser.add_argument("--min_samples_per_feature", type=int, default=10,
                     help="Minimum number of samples that get created for each feature for initial variance estimation")
 parser.add_argument("--confidence_interval", type=float, default=0.99)
@@ -97,7 +98,7 @@ if __name__ == "__main__":
     print(f"Using method '{args.method}'")
     print(f"Using generator '{args.generator_type}'")
     # Define explanation methods
-    if args.method == "ime":
+    if args.method in {"ime", "sequential_ime"}:
         method_type = MethodType.IME
         used_data["train_path"] = args.train_path
         df_train = load_nli(args.train_path).sample(frac=1.0).reset_index(drop=True)
@@ -106,9 +107,10 @@ if __name__ == "__main__":
                                labels=df_train["gold_label"].apply(lambda label_str: LABEL_TO_IDX[label_str]).values,
                                tokenizer=model.tokenizer,
                                max_seq_len=args.model_max_seq_len)
-        method = IMEExplainer(sample_data=train_set.input_ids, model=model,
-                              return_scores=args.return_model_scores, return_num_samples=True,
-                              return_samples=args.return_generated_samples, return_variance=True)
+        explainer_cls = IMEExplainer if args.method == "ime" else SequentialIMEExplainer
+        method = explainer_cls(sample_data=train_set.input_ids, model=model,
+                               return_scores=args.return_model_scores, return_num_samples=True,
+                               return_samples=args.return_generated_samples, return_variance=True)
     elif args.method == "ime_mlm":
         method_type = MethodType.INDEPENDENT_IME_MLM
         method = IMEMaskedLMExplainer(model=model, generator=generator,

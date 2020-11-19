@@ -1,4 +1,4 @@
-from typing import Optional, Union, Tuple
+from typing import Optional, Union, Tuple, List
 
 import torch
 from copy import deepcopy
@@ -229,6 +229,94 @@ class IMEExplainer:
         res["input"] = self.model.convert_ids_to_tokens(model_instance["input_ids"])[0]
 
         return res
+
+
+class SequentialIMEExplainer(IMEExplainer):
+    def __init__(self, sample_data: torch.Tensor, model: InterpretableModel,
+                 confidence_interval: Optional[float] = None,
+                 max_abs_error: Optional[float] = None, return_variance: Optional[bool] = False,
+                 return_num_samples: Optional[bool] = False, return_samples: Optional[bool] = False,
+                 return_scores: Optional[bool] = False):
+        super().__init__(sample_data=sample_data, model=model, confidence_interval=confidence_interval,
+                         max_abs_error=max_abs_error, return_variance=return_variance,
+                         return_num_samples=return_num_samples, return_samples=return_samples,
+                         return_scores=return_scores)
+
+        self.special_token_ids = set(model.special_token_ids)
+
+        self.min_idx = []
+        self.max_idx = []
+
+        self.valid_indices: List[torch.Tensor] = []
+        _all_token_indices = list(range(self.sample_data.shape[1]))
+        for idx_seq in range(self.sample_data.shape[0]):
+            curr_valid = torch.tensor(list(filter(lambda i: self.sample_data[idx_seq, i].item() not in self.special_token_ids,
+                                                  _all_token_indices)))
+            if len(curr_valid) == 0:
+                raise ValueError(f"Encountered sequence with no non-special token IDs (sequence#{idx_seq})")
+            self.valid_indices.append(curr_valid)
+            self.min_idx.append(0)
+            self.max_idx.append(len(curr_valid) - 1)
+
+        self.min_idx = torch.tensor(self.min_idx)
+        self.max_idx = torch.tensor(self.max_idx)
+
+    def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor, num_samples: int,
+                                    perturbable_mask: torch.Tensor, label: Optional[str] = None, **modeling_kwargs):
+        # Note: instance is currently supposed to be of shape [1, num_features]
+        num_features = int(instance.shape[1])
+        perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
+        curr_min, curr_max = perturbable_inds[0], perturbable_inds[-1]
+
+        if num_features != self.num_features:
+            raise ValueError(f"Number of features in instance ({num_features}) "
+                             f"does not match number of features in sampling data ({self.num_features})")
+
+        indices = sample_permutations(upper=num_features, indices=perturbable_inds,
+                                      num_permutations=num_samples)
+        feature_pos = torch.nonzero(indices == idx_feature, as_tuple=False)
+
+        samples = instance.repeat((2 * num_samples, 1))
+        for idx_sample in range(num_samples):
+            curr_feature_pos = int(feature_pos[idx_sample, 1])
+            idx_rand = int(torch.randint(self.sample_data.shape[0], size=()))
+            new_min, new_max = self.min_idx[idx_rand], self.max_idx[idx_rand]
+
+            # With feature `idx_feature` set
+            indices_with = indices[idx_sample, curr_feature_pos + 1:]
+            mapped_indices_with = torch.floor(
+                new_min + (indices_with.float() - curr_min) * (new_max - new_min) / (curr_max - curr_min)
+            ).long()
+            mapped_indices_with = self.valid_indices[idx_rand][mapped_indices_with]
+            samples[2 * idx_sample, indices_with] = self.sample_data[idx_rand, mapped_indices_with]
+
+            # With feature `idx_feature` randomized
+            indices_without = indices[idx_sample, curr_feature_pos:]
+            mapped_indices_without = torch.floor(
+                new_min + (indices_without.float() - curr_min) * (new_max - new_min) / (curr_max - curr_min)
+            ).long()
+            mapped_indices_without = self.valid_indices[idx_rand][mapped_indices_without]
+            samples[2 * idx_sample + 1, indices_without] = self.sample_data[idx_rand, mapped_indices_without]
+
+        scores = self.model.score(samples, **modeling_kwargs)
+        scores_with = scores[::2]
+        scores_without = scores[1::2]
+        assert scores_with.shape[0] == scores_without.shape[0]
+        diff = scores_with - scores_without
+
+        results = {
+            "diff_mean": torch.mean(diff, dim=0),
+            "diff_var": torch.var(diff, dim=0)
+        }
+
+        if self.return_samples:
+            results["samples"] = samples
+
+        if self.return_scores:
+            results["scores"] = scores
+
+        return results
+
 
 
 if __name__ == "__main__":

@@ -31,6 +31,10 @@ class InterpretableModel:
         """
         raise NotImplementedError
 
+    @property
+    def special_token_ids(self):
+        raise NotImplementedError
+
 
 class InterpretableBertForSequenceClassification(InterpretableModel):
     def __init__(self, tokenizer_name, model_name, batch_size=8, max_seq_len=64, device="cuda"):
@@ -48,6 +52,10 @@ class InterpretableBertForSequenceClassification(InterpretableModel):
         self.tokenizer = BertTokenizer.from_pretrained(tokenizer_name)
         self.model = BertForSequenceClassification.from_pretrained(model_name).to(self.device)
         self.model.eval()
+
+    @property
+    def special_token_ids(self):
+        return self.tokenizer.all_special_ids
 
     def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False):
         decoded_data = []
@@ -169,6 +177,10 @@ class DummySentiment(InterpretableModel):
                 self.tok2id["<UNK>"]: [0.5, 0.5]
             }
         }
+
+    @property
+    def special_token_ids(self):
+        return [self.tok2id["<PAD>"], self.tok2id["<UNK>"]]
 
     def from_internal(self, encoded_data: torch.Tensor, skip_special_tokens: bool = True,
                       take_as_single_sequence: bool = False) -> List[str]:
