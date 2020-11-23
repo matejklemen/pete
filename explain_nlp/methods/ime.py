@@ -247,16 +247,14 @@ class SequentialIMEExplainer(IMEExplainer):
         self.min_idx = []
         self.max_idx = []
 
-        self.valid_indices: List[torch.Tensor] = []
         _all_token_indices = list(range(self.sample_data.shape[1]))
         for idx_seq in range(self.sample_data.shape[0]):
             curr_valid = torch.tensor(list(filter(lambda i: self.sample_data[idx_seq, i].item() not in self.special_token_ids,
                                                   _all_token_indices)))
             if len(curr_valid) == 0:
                 raise ValueError(f"Encountered sequence with no non-special token IDs (sequence#{idx_seq})")
-            self.valid_indices.append(curr_valid)
-            self.min_idx.append(0)
-            self.max_idx.append(len(curr_valid) - 1)
+            self.min_idx.append(curr_valid[0])
+            self.max_idx.append(curr_valid[-1])
 
         self.min_idx = torch.tensor(self.min_idx)
         self.max_idx = torch.tensor(self.max_idx)
@@ -287,7 +285,6 @@ class SequentialIMEExplainer(IMEExplainer):
             mapped_indices_with = torch.floor(
                 new_min + (indices_with.float() - curr_min) * (new_max - new_min) / (curr_max - curr_min)
             ).long()
-            mapped_indices_with = self.valid_indices[idx_rand][mapped_indices_with]
             samples[2 * idx_sample, indices_with] = self.sample_data[idx_rand, mapped_indices_with]
 
             # With feature `idx_feature` randomized
@@ -295,7 +292,6 @@ class SequentialIMEExplainer(IMEExplainer):
             mapped_indices_without = torch.floor(
                 new_min + (indices_without.float() - curr_min) * (new_max - new_min) / (curr_max - curr_min)
             ).long()
-            mapped_indices_without = self.valid_indices[idx_rand][mapped_indices_without]
             samples[2 * idx_sample + 1, indices_without] = self.sample_data[idx_rand, mapped_indices_without]
 
         scores = self.model.score(samples, **modeling_kwargs)
@@ -318,22 +314,32 @@ class SequentialIMEExplainer(IMEExplainer):
         return results
 
 
-
 if __name__ == "__main__":
-    from explain_nlp.methods.modeling import InterpretableDummy
+    from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
 
-    model = InterpretableDummy()
-    explainer = IMEExplainer(model=model,
-                             sample_data=torch.tensor([model.to_internal("doctor john disco")["input_ids"][0].tolist(),
-                                                       model.to_internal("banana broccoli banana")["input_ids"][0].tolist(),
-                                                       model.to_internal("broccoli coffee paper")["input_ids"][0].tolist(),
-                                                       model.to_internal("<UNK> coffee bin")["input_ids"][0].tolist()]),
-                             return_variance=True,
-                             return_num_samples=True,
-                             return_samples=True,
-                             return_scores=True)
+    model = InterpretableBertForSequenceClassification(
+        model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/snli_bert_uncased",
+        tokenizer_name="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/snli_bert_uncased",
+        batch_size=2,
+        max_seq_len=41,
+        device="cpu"
+    )
 
-    res = explainer.explain(model.to_internal("broccoli bin coffee")["input_ids"], label=0,
-                            perturbable_mask=torch.tensor([[True, True, True]]),
-                            min_samples_per_feature=10, max_samples=1_000)
+    sample_data = model.tokenizer.batch_encode_plus(
+        [
+            ("short", "sequence text"),
+            ("a very very very very very very very very", "very very very very long text"),
+            ("something in the middle with only one word in second", "sequence")
+        ],
+        max_length=41, padding="max_length", return_tensors="pt"
+    )["input_ids"]
+
+    explainer = SequentialIMEExplainer(model=model, sample_data=sample_data,
+                                       return_variance=True,
+                                       return_num_samples=True,
+                                       return_samples=True,
+                                       return_scores=True)
+
+    ex = ("My name is Iron Man", "I am Iron Man")
+    res = explainer.explain_text(ex, label=2, min_samples_per_feature=10)
     print(res["importance"])
