@@ -263,6 +263,7 @@ class SequentialIMEExplainer(IMEExplainer):
             raise ValueError(f"Number of features in instance ({num_features}) "
                              f"does not match number of features in sampling data ({self.num_features})")
 
+        curr_min, curr_max = perturbable_inds[0], perturbable_inds[-1]
         indices = sample_permutations(upper=num_features, indices=perturbable_inds,
                                       num_permutations=num_samples)
         feature_pos = torch.nonzero(indices == idx_feature, as_tuple=False)
@@ -271,17 +272,24 @@ class SequentialIMEExplainer(IMEExplainer):
         for idx_sample in range(num_samples):
             curr_feature_pos = int(feature_pos[idx_sample, 1])
             idx_rand = int(torch.randint(self.sample_data.shape[0], size=()))
-            # How many tokens from current example each token in randomly selected example covers
-            len_ratio = self.valid_indices[idx_rand].shape[0] / perturbable_inds.shape[0]
+
+            new_min = 0
+            new_max = len(self.valid_indices[idx_rand]) - 1
 
             # With feature `idx_feature` set
             indices_with = indices[idx_sample, curr_feature_pos + 1:]
-            mapped_indices_with = torch.floor(indices_with * len_ratio).long()
+            mapped_indices_with = torch.floor(
+                new_min + (indices_with.float() - curr_min) * (new_max - new_min) / (curr_max - curr_min)
+            ).long()
+            mapped_indices_with = self.valid_indices[idx_rand][mapped_indices_with]
             samples[2 * idx_sample, indices_with] = self.sample_data[idx_rand, mapped_indices_with]
 
             # With feature `idx_feature` randomized
             indices_without = indices[idx_sample, curr_feature_pos:]
-            mapped_indices_without = torch.floor(indices_without * len_ratio).long()
+            mapped_indices_without = torch.floor(
+                new_min + (indices_without.float() - curr_min) * (new_max - new_min) / (curr_max - curr_min)
+            ).long()
+            mapped_indices_without = self.valid_indices[idx_rand][mapped_indices_without]
             samples[2 * idx_sample + 1, indices_without] = self.sample_data[idx_rand, mapped_indices_without]
 
         scores = self.model.score(samples, **modeling_kwargs)
