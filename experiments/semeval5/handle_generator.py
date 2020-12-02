@@ -1,4 +1,4 @@
-from experiments.semeval5.data import IDX_TO_LABEL
+from data import IDX_TO_LABEL
 from explain_nlp.methods.generation import BertForMaskedLMGenerator, GPTLMGenerator, GPTControlledLMGenerator
 
 
