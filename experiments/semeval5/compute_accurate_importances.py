@@ -53,7 +53,7 @@ parser.add_argument("--experiment_dir", type=str, default="debug")
 parser.add_argument("--save_every_n_examples", type=int, default=1,
                     help="Save experiment data every N examples in order to avoid losing data on longer computations")
 
-parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU", default=True)
+parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU")
 parser.add_argument("--verbose", action="store_true")
 
 parser.add_argument("--start_from", type=int, default=None, help="From which example onwards to do computation")
