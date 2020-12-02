@@ -5,8 +5,8 @@ from time import time
 import torch
 from torch.utils.data import DataLoader
 
-from experiments.semeval5.handle_generator import load_generator
-from experiments.semeval5.data import load_semeval, ToxicDataset, LABEL_TO_IDX, IDX_TO_LABEL
+from handle_generator import load_generator
+from data import load_semeval, ToxicDataset, LABEL_TO_IDX, IDX_TO_LABEL
 from explain_nlp.experimental.core import MethodData, MethodType
 from explain_nlp.methods.dependent_ime_mlm import DependentIMEMaskedLMExplainer
 from explain_nlp.methods.ime import IMEExplainer, SequentialIMEExplainer
