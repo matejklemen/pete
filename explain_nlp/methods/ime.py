@@ -36,6 +36,7 @@ class IMEExplainer:
         """
         self.model = model
         self.sample_data = sample_data
+        self.num_examples = self.sample_data.shape[0]
         self.num_features = self.sample_data.shape[1]
         self.confidence_interval = confidence_interval
         self.max_abs_error = max_abs_error
@@ -243,8 +244,9 @@ class SequentialIMEExplainer(IMEExplainer):
                          return_scores=return_scores)
 
         self.special_token_ids = set(model.special_token_ids)
-        self.valid_indices = []
 
+        # For each sequence in sampling data, mark down the indices where valid (non-special) tokens are present
+        self.valid_indices = []
         _all_token_indices = list(range(self.sample_data.shape[1]))
         for idx_seq in range(self.sample_data.shape[0]):
             curr_valid = torch.tensor(list(filter(lambda i: self.sample_data[idx_seq, i].item() not in self.special_token_ids,
@@ -271,24 +273,20 @@ class SequentialIMEExplainer(IMEExplainer):
         samples = instance.repeat((2 * num_samples, 1))
         for idx_sample in range(num_samples):
             curr_feature_pos = int(feature_pos[idx_sample, 1])
-            idx_rand = int(torch.randint(self.sample_data.shape[0], size=()))
-
-            new_min = 0
+            idx_rand = int(torch.randint(self.num_examples, size=()))
             new_max = len(self.valid_indices[idx_rand]) - 1
 
             # With feature `idx_feature` set
             indices_with = indices[idx_sample, curr_feature_pos + 1:]
-            mapped_indices_with = torch.floor(
-                new_min + (indices_with.float() - curr_min) * (new_max - new_min) / (curr_max - curr_min)
-            ).long()
+            mapped_indices_with = torch.floor_divide((indices_with - curr_min) * new_max,
+                                                     curr_max - curr_min)
             mapped_indices_with = self.valid_indices[idx_rand][mapped_indices_with]
             samples[2 * idx_sample, indices_with] = self.sample_data[idx_rand, mapped_indices_with]
 
             # With feature `idx_feature` randomized
             indices_without = indices[idx_sample, curr_feature_pos:]
-            mapped_indices_without = torch.floor(
-                new_min + (indices_without.float() - curr_min) * (new_max - new_min) / (curr_max - curr_min)
-            ).long()
+            mapped_indices_without = torch.floor_divide((indices_without - curr_min) * new_max,
+                                                        curr_max - curr_min)
             mapped_indices_without = self.valid_indices[idx_rand][mapped_indices_without]
             samples[2 * idx_sample + 1, indices_without] = self.sample_data[idx_rand, mapped_indices_without]
 
