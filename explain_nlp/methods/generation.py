@@ -295,7 +295,8 @@ class BertForMaskedLMGenerator(SampleGenerator):
     MLM_MAX_MASK_PROPORTION = 0.15
 
     def __init__(self, tokenizer_name, model_name, batch_size=8, max_seq_len=64, device="cuda", top_p: Optional[float] = None,
-                 masked_at_once: Optional[Union[int, float]] = 1, p_ensure_different: Optional[float] = 0.0):
+                 masked_at_once: Optional[Union[int, float]] = 1, p_ensure_different: Optional[float] = 0.0,
+                 is_controlled_lm: Optional[bool] = False):
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
         self.batch_size = batch_size
@@ -304,6 +305,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
         self.top_p = top_p
         self.masked_at_once = masked_at_once
         self.p_ensure_different = p_ensure_different
+        self.is_controlled_lm = is_controlled_lm
 
         assert self.batch_size > 1 and self.batch_size % 2 == 0
         assert device in ["cpu", "cuda"]
@@ -343,7 +345,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
     def to_internal(self, text_data, labels: List[Union[int, str]] = None):
         _text_data = text_data
         # Format examples in a controlled LM fashion (<LABEL> <seq1> [<seq2>])
-        if labels is not None:
+        if self.is_controlled_lm and labels is not None:
             assert isinstance(labels[0], str)  # currently assuming label of example is passed in raw form
             assert len(text_data) == len(labels)
 
