@@ -24,7 +24,8 @@ def load_generator(args):
                                              device="cpu" if args.use_cpu else "cuda",
                                              top_p=args.top_p,
                                              masked_at_once=masked_at_once,
-                                             p_ensure_different=args.p_ensure_different)
+                                             p_ensure_different=args.p_ensure_different,
+                                             is_controlled_lm=args.controlled)
     elif args.generator_type == "gpt_lm":
         generator = GPTLMGenerator(tokenizer_name=args.generator_dir,
                                    model_name=args.generator_dir,
