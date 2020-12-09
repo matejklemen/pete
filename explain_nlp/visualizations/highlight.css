@@ -3,11 +3,13 @@
     padding-left: 5%;
     padding-right: 5%;
 }
+
 .examples {
     border: 1px solid black;
 }
 
 .example {
+    word-break: break-word;
     padding-top: 10px;
     padding-left: 5%;
     padding-right: 5%;
@@ -19,25 +21,11 @@
     line-height: 30px;
 }
 
-.example span:hover {
+.example-label {
+    font-size: 16px;
+}
+
+span.example-unit:hover, .selected {
     outline: 2px solid black;
     outline-offset: -2px;
-}
-
-.slide-container {
-    background-color: #003B6F;
-    opacity: 0.4;
-    border-radius: 10px;
-    position: fixed;
-    top: 20px;
-    left: 10px;
-    padding-left: 20px;
-    padding-right: 20px;
-    text-align: center;
-    color: #ffffff;
-    font-size: 24px;
-}
-
-.slide-container:hover {
-    opacity: 1;
 }
