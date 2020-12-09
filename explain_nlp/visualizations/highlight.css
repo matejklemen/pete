@@ -16,6 +16,14 @@
     padding-bottom: 10px;
 }
 
+.method {
+    padding-left: 10px;
+}
+
+.method-name {
+    font-weight: bold;
+}
+
 .example span {
     padding: 5px;
     line-height: 30px;
