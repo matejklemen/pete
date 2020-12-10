@@ -37,3 +37,20 @@ span.example-unit:hover, .selected {
     outline: 2px solid black;
     outline-offset: -2px;
 }
+
+.step-details {
+    font-weight: bold;
+}
+
+.pair {
+    padding-bottom: 10px;
+}
+
+.pair-example {
+    border-radius: 2px;
+    padding: 5px;
+}
+.pair-example:hover {
+    outline: 1px solid black;
+    outline-offset: -1px;
+}
