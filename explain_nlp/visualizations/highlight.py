@@ -275,14 +275,15 @@ def track_progress(method_data: MethodData, idx_example: int,
         scaled_imps = scale_interval(importance_means, curr_low=-max_abs_imps, curr_high=max_abs_imps)
 
         for idx_tok, scaled_imp in enumerate(scaled_imps):
-            # Most green and most red colors indicate highest and (-highest) importances (i.e. equal tails)
+            # Most green and most red colors indicate highest and (-1 * highest) importances (i.e. equal tails)
             curr_color = f"rgba(0, 153, 0, {scaled_imp})" if scaled_imp > 0 else f"rgba(255, 0, 0, {abs(scaled_imp)})"
             imp_sd = f"{np.sqrt(importance_vars[idx_tok] / accounted_samples[idx_tok]): .4f}" \
                 if accounted_samples[idx_tok] > 0 else "N/A"
+            imp_mean = f"{importance_means[idx_tok]: .4f}" if accounted_samples[idx_tok] > 0 else "N/A"
 
             step_html.append(f"<span class='example-unit' "
                              f"id='token-0-{idx_tok}'"
-                             f"title='{importance_means[idx_tok]: .4f} &#177; {imp_sd}' "
+                             f"title='{imp_mean} &#177; {imp_sd}' "
                              f"style='background-color: {curr_color}'>"
                              f"{sequence[idx_tok]}"
                              f"</span>")
