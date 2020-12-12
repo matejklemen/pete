@@ -186,7 +186,7 @@ def highlight_plot_multiple_methods(sequences: List[List[str]],
 
 
 def track_progress(method_data: MethodData, idx_example: int,
-                   path: Optional[str] = None, track_every_n_steps=100):  # TODO: determine what we actually need
+                   path: Optional[str] = None, track_every_n_steps=100):
     """ Reconstructing the construction of explanation. In a nutshell, this is a simplistic reimplementation of IME
     with added HTML construction. """
     sequence = method_data.sequences[idx_example]
@@ -213,6 +213,9 @@ def track_progress(method_data: MethodData, idx_example: int,
     example_html.append("<br />")
 
     np_scores = [np.array(curr_scores) for curr_scores in scores]
+    if not any(len(curr_scores) > 0 for curr_scores in scores):
+        raise ValueError(f"No model scores could be obtained from method data. Make sure "
+                         f"`method_data.model_scores[{idx_example}]` contains some nonempty lists")
 
     # Step 0 = initial estimation, then each step means drawing one additional sample
     idx_step = 0
@@ -290,6 +293,7 @@ def track_progress(method_data: MethodData, idx_example: int,
 
         example_html.append("<div id='step-{}-{}'>{}</div>".format(idx_step, idx_substep, "\n".join(step_html)))
 
+    is_changed_order = False
     idx_step += 1
     samples_counter = np.sum(accounted_samples[perturbable_mask])
     total_samples = np.sum(taken_samples)
@@ -298,10 +302,24 @@ def track_progress(method_data: MethodData, idx_example: int,
         chosen_feature = int(np.argmax(var_diffs))
         _cursor = accounted_samples[chosen_feature] * 2
 
+        # [Hack] sometimes, the order of reconstruction might be wrong, causing some feature to be taken more often
+        # than in the original run (I suspect due to FP errors and JSON formatting rounding errors). In that case,
+        # we change the order slightly in order to still bring the trace to the end
+        if accounted_samples[chosen_feature] == taken_samples[chosen_feature]:
+            sort_idx = np.argsort(-var_diffs)  # order by descending variance
+            chosen_feature = next((f for f in sort_idx if accounted_samples[f] != taken_samples[f]), None)
+            if chosen_feature is None:
+                raise ValueError("The number of taken samples per feature and total taken samples do not check out")
+
+            print(f"Warning (step {idx_step}): changing the reconstruction order due to inconsistencies in method data.")
+            _cursor = accounted_samples[chosen_feature]
+            is_changed_order = True
+
         if idx_step % track_every_n_steps == 0:
             step_html = []
             step_html.append(f"<span class='step-details'>"
-                             f"{idx_step}. Taking additional sample for feature {chosen_feature}"
+                             f"{idx_step}. {'<strong>(!)</strong> ' if is_changed_order else ''}"
+                             f"Taking additional sample for feature {chosen_feature}"
                              f"</span>")
             step_html.append(f"<span title='Toggle display of samples' "
                              f"style='cursor: pointer;' "
@@ -361,6 +379,7 @@ def track_progress(method_data: MethodData, idx_example: int,
 
             example_html.append("<div id='step-{}'>{}</div>".format(idx_step, "\n".join(step_html)))
         idx_step += 1
+        is_changed_order = False
 
     body_html = "<div class='example'>{}</div>".format("\n".join(example_html))
     return base_visualization(body_html, path=path)
