@@ -102,6 +102,7 @@ class IMEMaskedLMExplainer(IMEExplainer):
         perturbable_mask = model_instance["perturbable_mask"]
 
         # Note down the indices of examples which have a certain feature different from instance
+        self.valid_indices = []
         all_indices = torch.arange(self.sample_data.shape[0])
         for idx_feature in range(input_ids.shape[1]):
             if not perturbable_mask[0, idx_feature]:
