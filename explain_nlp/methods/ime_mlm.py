@@ -94,10 +94,6 @@ class IMEMaskedLMExplainer(IMEExplainer):
 
         # Convert from representation of generator to text
         generated_text = self.generator.from_internal(generated_samples)
-        for i in range(generated_samples.shape[0]):
-            print(generated_text[i])
-            print(weights[i])
-            print("-----------------")
 
         # Convert from text to representation of interpreted model
         sample_data = self.model.to_internal(generated_text)
