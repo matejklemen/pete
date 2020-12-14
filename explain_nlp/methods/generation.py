@@ -380,9 +380,14 @@ class BertForMaskedLMGenerator(SampleGenerator):
         num_perturbable = perturbable_inds.shape[0]
         masked_samples = input_ids.repeat((num_samples, 1))
 
+        # For each feature, reserve some amount of samples that are guaranteed to have that feature unique
+        uniq_samples_per_feature = torch.zeros(num_perturbable, dtype=torch.int32)
+        uniq_samples_per_feature[:] = torch.floor_divide(num_samples, num_perturbable)
+        rnd_selected = torch.randperm(num_perturbable)[:(num_samples % num_perturbable)]
+        uniq_samples_per_feature[rnd_selected] += 1
+
         probas = torch.zeros((num_samples, num_features))
         probas[:, perturbable_inds] = 1 / num_perturbable
-        permuted_indices = torch.multinomial(probas, num_samples=num_perturbable)  # [num_samples, num_perturbable]
 
         token_type_ids = aux_data["token_type_ids"]
         attention_mask = aux_data["attention_mask"]
@@ -399,19 +404,32 @@ class BertForMaskedLMGenerator(SampleGenerator):
             def decoding_strategy(logits, ensure_diff_from):
                 return top_p_decoding(logits, self.top_p, ensure_diff_from)
 
-        mask_size = self.masked_at_once if isinstance(self.masked_at_once, int) \
-            else int(self.masked_at_once * num_perturbable)
-        mask_size = max(1, mask_size)
+        _unique_mask = uniq_samples_per_feature > 0
+        _cursor = 0
+        # Obtain guaranteed unique feature values by taking the topk predictions that are different from curr value
+        for idx_feature, num_unique in zip(perturbable_inds[_unique_mask], uniq_samples_per_feature[_unique_mask]):
+            curr_masked = masked_samples[_cursor: _cursor + num_unique]
+            original_token = int(curr_masked[0, idx_feature])
+            curr_masked[:, idx_feature] = self.tokenizer.mask_token_id
 
-        max_recommended_mask_size = max(1, int(BertForMaskedLMGenerator.MLM_MAX_MASK_PROPORTION * num_perturbable))
-        if mask_size > 1 and mask_size > max_recommended_mask_size:
-            warn(f"More tokens are being masked than there usually were during BERT masked language modeling training. "
-                 f"Recommended 'masked_at_once' size is <={max_recommended_mask_size} in this case")
+            curr_input_ids = curr_masked[:1]  # [B=1, num_features]
+            res = self.generator(curr_input_ids.to(self.device),
+                                 token_type_ids=generation_data["token_type_ids"][:1],
+                                 attention_mask=generation_data["attention_mask"][:1],
+                                 return_dict=True)
+            logits = res["logits"][:, idx_feature]  # [1, |V|]
+            logits[:, original_token] = -float("inf")
 
-        num_mask_chunks = (num_perturbable + mask_size - 1) // mask_size
+            _, indices = torch.topk(logits, k=num_unique, sorted=False)
+            curr_masked[:, idx_feature] = indices[0]
+            probas[_cursor: _cursor + num_unique, idx_feature] = 0
+            _cursor += num_unique
+
+        permuted_indices = torch.multinomial(probas, num_samples=num_perturbable)  # [num_samples, num_perturbable]
+
         # Mask and predict all tokens, one token at a time, in different order - slightly diverse greedy decoding
-        for idx_chunk in range(num_mask_chunks):
-            curr_masked = permuted_indices[:, idx_chunk * mask_size: (idx_chunk + 1) * mask_size]
+        for idx_chunk in range(num_perturbable):
+            curr_masked = permuted_indices[:, idx_chunk: (idx_chunk + 1)]
             curr_mask_size = curr_masked.shape[1]
             masked_samples[torch.arange(num_samples).unsqueeze(1), curr_masked] = self.tokenizer.mask_token_id
 
