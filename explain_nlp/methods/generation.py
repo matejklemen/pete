@@ -373,12 +373,14 @@ class BertForMaskedLMGenerator(SampleGenerator):
 
     @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor, num_samples: int, label=None,
-                 **aux_data) -> torch.Tensor:
+                 **aux_data) -> Tuple[torch.Tensor, torch.Tensor]:
         num_features = int(input_ids.shape[1])
 
         perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
         num_perturbable = perturbable_inds.shape[0]
         masked_samples = input_ids.repeat((num_samples, 1))
+
+        _sequence_indexer = torch.arange(masked_samples.shape[1]).unsqueeze(0)  # used for selecting all tokens
 
         # For each feature, reserve some amount of samples that are guaranteed to have that feature unique
         uniq_samples_per_feature = torch.zeros(num_perturbable, dtype=torch.int32)
@@ -455,7 +457,24 @@ class BertForMaskedLMGenerator(SampleGenerator):
                     masked_samples[torch.arange(s_batch, s_batch + curr_batch_size),
                                    curr_masked[s_batch: e_batch, idx_token]] = curr_preds[:, 0].cpu()
 
-        return masked_samples
+        # Calculate the probabilities of tokens given their context (as given by BERT)
+        num_batches = (num_samples + self.batch_size - 1) // self.batch_size
+        mlm_token_probas = []
+        for idx_batch in range(num_batches):
+            s_batch, e_batch = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
+            curr_input_ids = masked_samples[s_batch: e_batch]
+            curr_batch_size = curr_input_ids.shape[0]
+            _batch_indexer = torch.arange(curr_batch_size).reshape([-1, 1])
+
+            res = self.generator(curr_input_ids.to(self.device),
+                                 token_type_ids=generation_data["token_type_ids"][: curr_batch_size],
+                                 attention_mask=generation_data["attention_mask"][: curr_batch_size],
+                                 return_dict=True)
+            probas = torch.softmax(res["logits"], dim=-1)
+            mlm_token_probas.append(probas[_batch_indexer, _sequence_indexer, curr_input_ids])
+
+        mlm_token_probas = torch.cat(mlm_token_probas)
+        return masked_samples, mlm_token_probas  # TODO: this is hacked (the second return value)
 
 
 if __name__ == "__main__":

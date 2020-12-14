@@ -1,4 +1,4 @@
-from typing import Optional, Union, Tuple
+from typing import Optional, Union, Tuple, List
 
 import torch
 
@@ -28,7 +28,8 @@ class IMEMaskedLMExplainer(IMEExplainer):
 
         # valid_indices[i] contains indices of examples which have the token `i` different from explained instance
         #  OR all indices, if there are no such examples - should be overwritten for every instance
-        self.valid_indices = []
+        self.valid_indices: List[torch.Tensor] = []
+        self.weights: List[torch.Tensor] = []
 
     def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor, num_samples: int,
                                     perturbable_mask: torch.Tensor, label: Optional[str] = None, **modeling_kwargs):
@@ -45,10 +46,10 @@ class IMEMaskedLMExplainer(IMEExplainer):
         feature_pos = torch.nonzero(indices == idx_feature, as_tuple=False)
 
         samples = instance.repeat((2 * num_samples, 1))
+        randomly_selected = torch.multinomial(self.weights[idx_feature], num_samples=num_samples, replacement=True)
         for idx_sample in range(num_samples):
             curr_feature_pos = int(feature_pos[idx_sample, 1])
-            idx_rand = int(torch.randint(len(self.valid_indices[idx_feature]), size=()))
-            idx_rand = self.valid_indices[idx_feature][idx_rand]
+            idx_rand = self.valid_indices[idx_feature][randomly_selected[idx_sample]]
 
             # With feature `idx_feature` set
             samples[2 * idx_sample, indices[idx_sample, curr_feature_pos + 1:]] = \
@@ -83,14 +84,20 @@ class IMEMaskedLMExplainer(IMEExplainer):
         generator_instance = self.generator.to_internal([text_data], [label])
 
         # Generate new samples in representation of generator
-        generated_samples = self.generator.generate(input_ids=generator_instance["input_ids"],
-                                                    perturbable_mask=generator_instance["perturbable_mask"],
-                                                    num_samples=self.num_generated_samples,
-                                                    label=label,
-                                                    **generator_instance["aux_data"])
+        # TODO: figure out how to make weights doable when using different model and generator
+        #  (tokens can be misaligned, split differently, etc.)
+        generated_samples, weights = self.generator.generate(input_ids=generator_instance["input_ids"],
+                                                             perturbable_mask=generator_instance["perturbable_mask"],
+                                                             num_samples=self.num_generated_samples,
+                                                             label=label,
+                                                             **generator_instance["aux_data"])
 
         # Convert from representation of generator to text
         generated_text = self.generator.from_internal(generated_samples)
+        for i in range(generated_samples.shape[0]):
+            print(generated_text[i])
+            print(weights[i])
+            print("-----------------")
 
         # Convert from text to representation of interpreted model
         sample_data = self.model.to_internal(generated_text)
@@ -102,19 +109,24 @@ class IMEMaskedLMExplainer(IMEExplainer):
         perturbable_mask = model_instance["perturbable_mask"]
 
         # Note down the indices of examples which have a certain feature different from instance
-        self.valid_indices = []
+        self.valid_indices, self.weights = [], []
         all_indices = torch.arange(self.sample_data.shape[0])
         for idx_feature in range(input_ids.shape[1]):
             if not perturbable_mask[0, idx_feature]:
-                self.valid_indices.append([])
+                self.valid_indices.append(torch.tensor([]))
+                self.weights.append(torch.tensor([]))
                 continue
 
-            different_example_inds = all_indices[self.sample_data[:, idx_feature] != input_ids[0, idx_feature]]
+            different_example_mask = self.sample_data[:, idx_feature] != input_ids[0, idx_feature]
+            different_example_inds = all_indices[different_example_mask]
+            different_example_weights = weights[different_example_mask, idx_feature]
             if different_example_inds.shape[0] == 0:
                 print(f"Warning: No unique values were found in generated data for feature {idx_feature}")
                 different_example_inds = torch.arange(self.sample_data.shape[0])
+                different_example_weights = torch.ones(self.sample_data.shape[0], dtype=torch.float32)
 
-            self.valid_indices.append(different_example_inds.tolist())
+            self.valid_indices.append(different_example_inds)
+            self.weights.append(different_example_weights)
 
         res = super().explain(input_ids, label, perturbable_mask=perturbable_mask,
                               min_samples_per_feature=min_samples_per_feature, max_samples=max_samples,
