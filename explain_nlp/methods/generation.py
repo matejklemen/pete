@@ -444,8 +444,6 @@ class BertForMaskedLMGenerator(SampleGenerator):
             input_copy[:, idx_feature] = generated_tokens
             masked_samples.append(input_copy)
 
-            print(f"Feature {idx_feature}: {num_curr_generated} guaranteed unique tokens")
-
             valid_inds_probas = torch.zeros((num_curr_generated, num_features), dtype=torch.float32)
             valid_inds_probas[:, perturbable_inds] = 1 / (num_perturbable - 1)
             valid_inds_probas[:, idx_feature] = 0.0
