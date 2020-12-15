@@ -4,7 +4,7 @@ from warnings import warn
 import torch
 from transformers import BertTokenizer, BertForMaskedLM, OpenAIGPTLMHeadModel, OpenAIGPTTokenizer
 
-from explain_nlp.methods.decoding import greedy_decoding, top_p_decoding
+from explain_nlp.methods.decoding import greedy_decoding, top_p_decoding, top_p_filtering
 
 
 # TODO: mask, mask_token_id properties
@@ -294,17 +294,20 @@ class GPTLMGenerator(SampleGenerator):
 class BertForMaskedLMGenerator(SampleGenerator):
     MLM_MAX_MASK_PROPORTION = 0.15
 
-    def __init__(self, tokenizer_name, model_name, batch_size=8, max_seq_len=64, device="cuda", top_p: Optional[float] = None,
-                 masked_at_once: Optional[Union[int, float]] = 1, p_ensure_different: Optional[float] = 0.0,
-                 is_controlled_lm: Optional[bool] = False):
+    def __init__(self, tokenizer_name, model_name, batch_size=8, max_seq_len=64, device="cuda",
+                 strategy: Optional[str] = "top_k", top_p: Optional[float] = None, top_k: Optional[int] = 5,
+                 threshold: Optional[float] = 0.1, is_controlled_lm: Optional[bool] = False):
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
         self.batch_size = batch_size
         self.max_seq_len = max_seq_len
 
+        self.strategy = strategy
+        assert self.strategy in ["top_k", "top_p", "threshold", "num_samples"]
         self.top_p = top_p
-        self.masked_at_once = masked_at_once
-        self.p_ensure_different = p_ensure_different
+        self.top_k = top_k
+        self.threshold = threshold
+
         self.is_controlled_lm = is_controlled_lm
 
         assert self.batch_size > 1 and self.batch_size % 2 == 0
@@ -372,24 +375,27 @@ class BertForMaskedLMGenerator(SampleGenerator):
         return formatted_res
 
     @torch.no_grad()
-    def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor, num_samples: int, label=None,
-                 **aux_data) -> Tuple[torch.Tensor, torch.Tensor]:
+    def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
+                 num_samples: Optional[int] = -1, label=None, **aux_data) -> Tuple[torch.Tensor, torch.Tensor]:
+        if num_samples > 0 and self.strategy != "num_samples":
+            print("Warning: Strategy is not set to 'num_samples', so the argument is being ignored")
+
         num_features = int(input_ids.shape[1])
 
         perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
         num_perturbable = perturbable_inds.shape[0]
-        masked_samples = input_ids.repeat((num_samples, 1))
 
-        _sequence_indexer = torch.arange(masked_samples.shape[1]).unsqueeze(0)  # used for selecting all tokens
+        _sequence_indexer = torch.arange(num_features).unsqueeze(0)  # used for selecting all tokens
 
         # For each feature, reserve some amount of samples that are guaranteed to have that feature unique
-        uniq_samples_per_feature = torch.zeros(num_perturbable, dtype=torch.int32)
-        uniq_samples_per_feature[:] = torch.floor_divide(num_samples, num_perturbable)
-        rnd_selected = torch.randperm(num_perturbable)[:(num_samples % num_perturbable)]
-        uniq_samples_per_feature[rnd_selected] += 1
+        if self.strategy == "num_samples":
+            uniq_samples_per_feature = torch.zeros(num_perturbable, dtype=torch.int32)
+            uniq_samples_per_feature[:] = torch.floor_divide(num_samples, num_perturbable)
+            rnd_selected = torch.randperm(num_perturbable)[:(num_samples % num_perturbable)]
+            uniq_samples_per_feature[rnd_selected] += 1
 
-        probas = torch.zeros((num_samples, num_features))
-        probas[:, perturbable_inds] = 1 / num_perturbable
+        permutation_probas = []
+        masked_samples = []
 
         token_type_ids = aux_data["token_type_ids"]
         attention_mask = aux_data["attention_mask"]
@@ -399,18 +405,9 @@ class BertForMaskedLMGenerator(SampleGenerator):
             "attention_mask": attention_mask.repeat((self.batch_size, 1)).to(self.device)
         }
 
-        if self.top_p is None:
-            def decoding_strategy(logits, ensure_diff_from):
-                return greedy_decoding(logits, ensure_diff_from)
-        else:
-            def decoding_strategy(logits, ensure_diff_from):
-                return top_p_decoding(logits, self.top_p, ensure_diff_from)
-
-        _unique_mask = uniq_samples_per_feature > 0
-        _cursor = 0
         # Obtain guaranteed unique feature values by taking the topk predictions that are different from curr value
-        for idx_feature, num_unique in zip(perturbable_inds[_unique_mask], uniq_samples_per_feature[_unique_mask]):
-            curr_masked = masked_samples[_cursor: _cursor + num_unique]
+        for idx_feature in perturbable_inds:
+            curr_masked = input_ids.clone()
             original_token = int(curr_masked[0, idx_feature])
             curr_masked[:, idx_feature] = self.tokenizer.mask_token_id
 
@@ -422,20 +419,51 @@ class BertForMaskedLMGenerator(SampleGenerator):
             logits = res["logits"][:, idx_feature]  # [1, |V|]
             logits[:, original_token] = -float("inf")
 
-            _, indices = torch.topk(logits, k=num_unique, sorted=False)
-            curr_masked[:, idx_feature] = indices[0]
-            probas[_cursor: _cursor + num_unique, idx_feature] = 0
-            _cursor += num_unique
+            if self.strategy == "threshold":
+                probas = torch.softmax(logits, dim=-1)
+                generated_tokens = torch.nonzero(probas > self.threshold, as_tuple=False)[:, 1]
+            elif self.strategy == "top_k":
+                _, indices = torch.topk(logits, k=self.top_k, sorted=False)
+                generated_tokens = indices[0]
+            elif self.strategy == "top_p":
+                filtered_logits = top_p_filtering(logits, top_p=self.top_p)
+                filtered_probas = torch.softmax(filtered_logits, dim=-1)
+                generated_tokens = torch.nonzero(filtered_probas > 0, as_tuple=False)[:, 1]
+            elif self.strategy == "num_samples":
+                expected_num_gen = uniq_samples_per_feature[idx_feature]
+                if expected_num_gen == 0:
+                    continue
 
-        permuted_indices = torch.multinomial(probas, num_samples=num_perturbable)  # [num_samples, num_perturbable]
+                _, indices = torch.topk(logits, k=expected_num_gen, sorted=False)
+                generated_tokens = indices[0]
+            else:
+                raise NotImplementedError(f"Unrecognized strategy: '{self.strategy}'")
+
+            num_curr_generated = generated_tokens.shape[0]
+            input_copy = input_ids.repeat((num_curr_generated, 1))
+            input_copy[:, idx_feature] = generated_tokens
+            masked_samples.append(input_copy)
+
+            print(f"Feature {idx_feature}: {num_curr_generated} guaranteed unique tokens")
+
+            valid_inds_probas = torch.zeros((num_curr_generated, num_features), dtype=torch.float32)
+            valid_inds_probas[:, perturbable_inds] = 1 / (num_perturbable - 1)
+            valid_inds_probas[:, idx_feature] = 0.0
+            permutation_probas.append(valid_inds_probas)
+
+        masked_samples = torch.cat(masked_samples)  # [num_total_generated, max_seq_len]
+        permutation_probas = torch.cat(permutation_probas, dim=0)
+        permuted_indices = torch.multinomial(permutation_probas,
+                                             num_samples=(num_perturbable - 1))  # [num_total_generated, num_perturbable]
+        num_total_generated = masked_samples.shape[0]
 
         # Mask and predict all tokens, one token at a time, in different order - slightly diverse greedy decoding
-        for idx_chunk in range(num_perturbable):
+        for idx_chunk in range(num_perturbable - 1):
             curr_masked = permuted_indices[:, idx_chunk: (idx_chunk + 1)]
             curr_mask_size = curr_masked.shape[1]
-            masked_samples[torch.arange(num_samples).unsqueeze(1), curr_masked] = self.tokenizer.mask_token_id
+            masked_samples[torch.arange(num_total_generated).unsqueeze(1), curr_masked] = self.tokenizer.mask_token_id
 
-            num_batches = (num_samples + self.batch_size - 1) // self.batch_size
+            num_batches = (num_total_generated + self.batch_size - 1) // self.batch_size
             for idx_batch in range(num_batches):
                 s_batch, e_batch = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
                 curr_input_ids = masked_samples[s_batch: e_batch]
@@ -447,18 +475,15 @@ class BertForMaskedLMGenerator(SampleGenerator):
                                      return_dict=True)
                 logits = res["logits"][torch.arange(curr_batch_size).unsqueeze(1), curr_masked[s_batch: e_batch]]
                 for idx_token in range(curr_mask_size):
-                    ensure_different = torch.rand(()) < self.p_ensure_different
-
                     curr_token_logits = logits[:, idx_token]
-                    curr_preds = decoding_strategy(curr_token_logits,
-                                                   ensure_diff_from=input_ids[0, curr_masked[s_batch: e_batch]]
-                                                   if ensure_different else None)
+                    curr_preds = greedy_decoding(curr_token_logits,
+                                                 ensure_diff_from=None)
 
                     masked_samples[torch.arange(s_batch, s_batch + curr_batch_size),
                                    curr_masked[s_batch: e_batch, idx_token]] = curr_preds[:, 0].cpu()
 
         # Calculate the probabilities of tokens given their context (as given by BERT)
-        num_batches = (num_samples + self.batch_size - 1) // self.batch_size
+        num_batches = (num_total_generated + self.batch_size - 1) // self.batch_size
         mlm_token_probas = []
         for idx_batch in range(num_batches):
             s_batch, e_batch = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size

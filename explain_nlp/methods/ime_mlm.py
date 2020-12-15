@@ -26,8 +26,9 @@ class IMEMaskedLMExplainer(IMEExplainer):
         self.generator = generator
         self.num_generated_samples = num_generated_samples
 
-        # valid_indices[i] contains indices of examples which have the token `i` different from explained instance
+        # `valid_indices[i]` contains indices of examples which have the token `i` different from explained instance
         #  OR all indices, if there are no such examples - should be overwritten for every instance
+        # `weights[i]` contains the corresponding (unnormalized) weights for sampling
         self.valid_indices: List[torch.Tensor] = []
         self.weights: List[torch.Tensor] = []
 
