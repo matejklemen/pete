@@ -16,8 +16,8 @@ from explain_nlp.visualizations.highlight import highlight_plot
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--method", type=str, default="ime", choices=["ime", "sequential_ime",
-                                                                  "ime_mlm", "ime_dependent_mlm"])
+parser.add_argument("--method", type=str, default="ime_mlm", choices=["ime", "sequential_ime",
+                                                                      "ime_mlm", "ime_dependent_mlm"])
 parser.add_argument("--min_samples_per_feature", type=int, default=10,
                     help="Minimum number of samples that get created for each feature for initial variance estimation")
 parser.add_argument("--confidence_interval", type=float, default=0.5)
@@ -41,11 +41,12 @@ parser.add_argument("--generator_batch_size", type=int, default=2)
 parser.add_argument("--generator_max_seq_len", type=int, default=41)
 parser.add_argument("--num_generated_samples", type=int, default=10)
 parser.add_argument("--top_p", type=float, default=None)
-parser.add_argument("--p_ensure_different", type=float, default=0.0,
-                    help="Probability of forcing a generated token to be different from the token in given data")
-parser.add_argument("--masked_at_once", type=float, default=None,
-                    help="Proportion of tokens to mask out at once during language modeling. By default, mask out one "
-                         "token at a time")
+
+# Experimental (only in Bert MLM generator) for now
+parser.add_argument("--strategy", type=str, choices=["top_k", "top_p", "threshold", "num_samples"], default="top_k")
+parser.add_argument("--top_k", type=float, default=5)
+parser.add_argument("--threshold", type=float, default=0.1)
+
 parser.add_argument("--seed_start_with_ground_truth", action="store_true")
 parser.add_argument("--reset_seed_after_first", action="store_true")
 
@@ -64,7 +65,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     alpha = 1 - args.confidence_interval
-    masked_at_once = args.masked_at_once if args.masked_at_once is not None else 1
     DEVICE = torch.device("cpu") if args.use_cpu else torch.device("cuda")
     print(f"Used device: {DEVICE}")
 

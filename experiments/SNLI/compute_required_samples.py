@@ -35,17 +35,18 @@ parser.add_argument("--model_batch_size", type=int, default=2)
 parser.add_argument("--generator_type", type=str, default="bert_mlm")
 parser.add_argument("--controlled", action="store_true",
                     help="Whether to use controlled LM/MLM for generation")
-parser.add_argument("--generator_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/bert_snli_clm_best",
+parser.add_argument("--generator_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/bert-base-uncased-snli-mlm",
                     help="Path or handle of model to be used as a language modeling generator")
 parser.add_argument("--generator_batch_size", type=int, default=2)
 parser.add_argument("--generator_max_seq_len", type=int, default=41)
 parser.add_argument("--num_generated_samples", type=int, default=10)
 parser.add_argument("--top_p", type=float, default=None)
-parser.add_argument("--p_ensure_different", type=float, default=0.0,
-                    help="Probability of forcing a generated token to be different from the token in given data")
-parser.add_argument("--masked_at_once", type=float, default=None,
-                    help="Proportion of tokens to mask out at once during language modeling. By default, mask out one "
-                         "token at a time")
+
+# Experimental (only in Bert MLM generator) for now
+parser.add_argument("--strategy", type=str, choices=["top_k", "top_p", "threshold", "num_samples"], default="top_k")
+parser.add_argument("--top_k", type=float, default=5)
+parser.add_argument("--threshold", type=float, default=0.1)
+
 parser.add_argument("--seed_start_with_ground_truth", action="store_true")
 parser.add_argument("--reset_seed_after_first", action="store_true")
 
@@ -53,7 +54,7 @@ parser.add_argument("--experiment_dir", type=str, default=None)
 parser.add_argument("--save_every_n_examples", type=int, default=1,
                     help="Save experiment data every N examples in order to avoid losing data on longer computations")
 
-parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU")
+parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU", default=True)
 parser.add_argument("--verbose", action="store_true")
 
 parser.add_argument("--start_from", type=int, default=None, help="From which example onwards to do computation")
@@ -64,7 +65,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     alpha = 1 - args.confidence_interval
-    masked_at_once = args.masked_at_once if args.masked_at_once is not None else 1
     DEVICE = torch.device("cpu") if args.use_cpu else torch.device("cuda")
     print(f"Used device: {DEVICE}")
 

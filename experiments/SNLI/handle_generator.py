@@ -7,14 +7,11 @@ def load_generator(args):
     if args.method in ["ime", "sequential_ime"]:
         return None, {}
 
-    masked_at_once = args.masked_at_once if args.masked_at_once is not None else 1
-
     generator_description = {
         "type": args.generator_type,
         "max_seq_len": args.generator_max_seq_len,
         "top_p": args.top_p,
         "handle": args.generator_dir,
-        "masked_at_once": args.masked_at_once
     }
     if args.generator_type == "bert_mlm":
         generator = BertForMaskedLMGenerator(tokenizer_name=args.generator_dir,
@@ -22,9 +19,10 @@ def load_generator(args):
                                              batch_size=args.generator_batch_size,
                                              max_seq_len=args.generator_max_seq_len,
                                              device="cpu" if args.use_cpu else "cuda",
+                                             strategy=args.strategy,
                                              top_p=args.top_p,
-                                             masked_at_once=masked_at_once,
-                                             p_ensure_different=args.p_ensure_different,
+                                             top_k=args.top_k,
+                                             threshold=args.threshold,
                                              is_controlled_lm=args.controlled)
     elif args.generator_type == "gpt_lm":
         generator = GPTLMGenerator(tokenizer_name=args.generator_dir,
@@ -32,9 +30,7 @@ def load_generator(args):
                                    batch_size=args.generator_batch_size,
                                    max_seq_len=args.generator_max_seq_len,
                                    device="cpu" if args.use_cpu else "cuda",
-                                   top_p=args.top_p,
-                                   masked_at_once=masked_at_once,
-                                   p_ensure_different=args.p_ensure_different)
+                                   top_p=args.top_p)
     elif args.generator_type == "gpt_controlled_lm":
         generator = GPTControlledLMGenerator(tokenizer_name=args.generator_dir,
                                              model_name=args.generator_dir,
@@ -42,9 +38,7 @@ def load_generator(args):
                                              batch_size=args.generator_batch_size,
                                              max_seq_len=args.generator_max_seq_len,
                                              device="cpu" if args.use_cpu else "cuda",
-                                             top_p=args.top_p,
-                                             masked_at_once=masked_at_once,
-                                             p_ensure_different=args.p_ensure_different)
+                                             top_p=args.top_p)
     else:
         raise NotImplementedError(f"'{args.generator_type}' is not a supported generator type")
 
