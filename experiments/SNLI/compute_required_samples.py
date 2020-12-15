@@ -44,7 +44,7 @@ parser.add_argument("--top_p", type=float, default=None)
 
 # Experimental (only in Bert MLM generator) for now
 parser.add_argument("--strategy", type=str, choices=["top_k", "top_p", "threshold", "num_samples"], default="top_k")
-parser.add_argument("--top_k", type=float, default=5)
+parser.add_argument("--top_k", type=int, default=5)
 parser.add_argument("--threshold", type=float, default=0.1)
 
 parser.add_argument("--seed_start_with_ground_truth", action="store_true")
@@ -54,7 +54,7 @@ parser.add_argument("--experiment_dir", type=str, default=None)
 parser.add_argument("--save_every_n_examples", type=int, default=1,
                     help="Save experiment data every N examples in order to avoid losing data on longer computations")
 
-parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU", default=True)
+parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU")
 parser.add_argument("--verbose", action="store_true")
 
 parser.add_argument("--start_from", type=int, default=None, help="From which example onwards to do computation")

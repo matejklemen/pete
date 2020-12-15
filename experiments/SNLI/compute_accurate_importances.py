@@ -44,7 +44,7 @@ parser.add_argument("--top_p", type=float, default=None)
 
 # Experimental (only in Bert MLM generator) for now
 parser.add_argument("--strategy", type=str, choices=["top_k", "top_p", "threshold", "num_samples"], default="top_k")
-parser.add_argument("--top_k", type=float, default=5)
+parser.add_argument("--top_k", type=int, default=5)
 parser.add_argument("--threshold", type=float, default=0.1)
 
 parser.add_argument("--seed_start_with_ground_truth", action="store_true")
