@@ -391,7 +391,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
         if self.strategy == "num_samples":
             # TODO: allocate samples accoring to estimated probabilities: store probas and take tokens that correspond
             #  to top `num_samples` probabilities
-            uniq_samples_per_feature = torch.zeros(num_features, dtype=torch.int32)
+            uniq_samples_per_feature = torch.zeros(num_features, dtype=torch.long)
             uniq_samples_per_feature[perturbable_inds] = torch.floor_divide(num_samples, num_perturbable)
             rnd_selected = torch.randperm(num_perturbable)[:(num_samples % num_perturbable)]
             rnd_selected = perturbable_inds[rnd_selected]
