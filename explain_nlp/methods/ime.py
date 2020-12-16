@@ -4,7 +4,7 @@ import torch
 from copy import deepcopy
 
 from explain_nlp.methods.modeling import InterpretableModel
-from explain_nlp.methods.utils import estimate_max_samples, sample_permutations
+from explain_nlp.methods.utils import estimate_max_samples, sample_permutations, incremental_mean, incremental_var
 
 
 class IMEExplainer:
@@ -185,10 +185,14 @@ class IMEExplainer:
                 feature_debug_data[idx_feature]["scores"].append(res["scores"])
 
             # Incremental mean and variance calculation - http://datagenetics.com/blog/november22017/index.html
-            updated_mean = importance_means[idx_feature] + \
-                           (curr_imp - importance_means[idx_feature]) / samples_per_feature[idx_feature]
-            updated_var = importance_vars[idx_feature] + \
-                          (curr_imp - importance_means[idx_feature]) * (curr_imp - updated_mean)
+            updated_mean = incremental_mean(curr_mean=importance_means[idx_feature],
+                                            new_value=curr_imp,
+                                            n=samples_per_feature[idx_feature])
+            updated_var = incremental_var(curr_mean=importance_means[idx_feature],
+                                          curr_var=importance_vars[idx_feature],
+                                          new_mean=updated_mean,
+                                          new_value=curr_imp,
+                                          n=samples_per_feature[idx_feature])
 
             importance_means[idx_feature] = updated_mean
             importance_vars[idx_feature] = updated_var

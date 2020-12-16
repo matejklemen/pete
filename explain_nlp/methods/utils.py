@@ -16,3 +16,14 @@ def sample_permutations(upper: int, indices: torch.Tensor, num_permutations: int
     probas = torch.zeros((num_permutations, upper))
     probas[:, indices] = 1 / indices.shape[0]
     return torch.multinomial(probas, num_samples=indices.shape[0])
+
+
+def incremental_mean(curr_mean, new_value, n: int):
+    """ Perform an incremental mean update. `n` is the number of samples including `new_value`. """
+    return curr_mean + (new_value - curr_mean) / n
+
+
+def incremental_var(curr_mean, curr_var, new_mean, new_value, n: int):
+    """ Perform an incremental variance update. `n` is the number of samples including `new_value`. """
+    assert n >= 2
+    return (curr_var * (n - 1) + (new_value - curr_mean) * (new_value - new_mean)) / n

@@ -2,6 +2,7 @@ import os
 from typing import List, Optional, Mapping
 import numpy as np
 from explain_nlp.experimental.core import MethodData
+from explain_nlp.methods.utils import incremental_mean, incremental_var
 
 
 def base_visualization(body_html: str, head_js="", body_js="", path=None):
@@ -312,7 +313,7 @@ def track_progress(method_data: MethodData, idx_example: int,
                 raise ValueError("The number of taken samples per feature and total taken samples do not check out")
 
             print(f"Warning (step {idx_step}): changing the reconstruction order due to inconsistencies in method data.")
-            _cursor = accounted_samples[chosen_feature]
+            _cursor = accounted_samples[chosen_feature] * 2
             is_changed_order = True
 
         if idx_step % track_every_n_steps == 0:
@@ -353,10 +354,14 @@ def track_progress(method_data: MethodData, idx_example: int,
         accounted_samples[chosen_feature] += 1
         samples_counter += 1
 
-        updated_mean = importance_means[chosen_feature] + \
-                       (curr_diff - importance_means[chosen_feature]) / accounted_samples[chosen_feature]
-        updated_var = importance_vars[chosen_feature] + \
-                      (curr_diff - importance_means[chosen_feature]) * (curr_diff - updated_mean)
+        updated_mean = incremental_mean(curr_mean=importance_means[chosen_feature],
+                                        new_value=curr_diff,
+                                        n=accounted_samples[chosen_feature])
+        updated_var = incremental_var(curr_mean=importance_means[chosen_feature],
+                                      curr_var=importance_vars[chosen_feature],
+                                      new_mean=updated_mean,
+                                      new_value=curr_diff,
+                                      n=accounted_samples[chosen_feature])
 
         importance_means[chosen_feature] = updated_mean
         importance_vars[chosen_feature] = updated_var
