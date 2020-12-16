@@ -87,11 +87,13 @@ class IMEMaskedLMExplainer(IMEExplainer):
         # Generate new samples in representation of generator
         # TODO: figure out how to make weights doable when using different model and generator
         #  (tokens can be misaligned, split differently, etc.)
-        generated_samples, weights = self.generator.generate(input_ids=generator_instance["input_ids"],
-                                                             perturbable_mask=generator_instance["perturbable_mask"],
-                                                             num_samples=self.num_generated_samples,
-                                                             label=label,
-                                                             **generator_instance["aux_data"])
+        generator_res = self.generator.generate(input_ids=generator_instance["input_ids"],
+                                                perturbable_mask=generator_instance["perturbable_mask"],
+                                                num_samples=self.num_generated_samples,
+                                                label=label,
+                                                **generator_instance["aux_data"])
+        generated_samples = generator_res["input_ids"]
+        weights = generator_res["weights"]
 
         # Convert from representation of generator to text
         generated_text = self.generator.from_internal(generated_samples)

@@ -21,22 +21,19 @@ class SampleGenerator:
         raise NotImplementedError
 
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor, num_samples: int,
-                 label: int, **aux_data) -> torch.Tensor:
+                 label: int, **aux_data) -> Dict:
         raise NotImplementedError
 
 
 class GPTControlledLMGenerator(SampleGenerator):
     def __init__(self, tokenizer_name, model_name, possible_labels, batch_size=2, max_seq_len=42, device="cuda",
-                 top_p: Optional[float] = None, masked_at_once: Optional[Union[int, float]] = 1,
-                 p_ensure_different: Optional[float] = 0.0):
+                 top_p: Optional[float] = None):
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
         self.batch_size = batch_size
         self.max_seq_len = max_seq_len
 
         self.top_p = top_p
-        self.masked_at_once = masked_at_once
-        self.p_ensure_different = p_ensure_different
 
         assert device in ["cpu", "cuda"]
         if device == "cuda" and not torch.cuda.is_available():
@@ -110,7 +107,7 @@ class GPTControlledLMGenerator(SampleGenerator):
 
     @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor, num_samples: int, label: int,
-                 **aux_data) -> torch.Tensor:
+                 **aux_data) -> Dict:
         num_features = int(input_ids.shape[1])
 
         perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
@@ -146,11 +143,9 @@ class GPTControlledLMGenerator(SampleGenerator):
 
                 # ... - 1 due to LM: tokens < `i` generate `i`, so the 0th token is not getting generated
                 curr_token_logits = res["logits"][:, idx_feature - 1]
-                ensure_different = torch.rand(()) < self.p_ensure_different
 
                 curr_preds = decoding_strategy(curr_token_logits,
-                                               ensure_diff_from=input_ids[0, idx_feature]
-                                               if ensure_different else None)
+                                               ensure_diff_from=None)
 
                 masked_samples[torch.arange(s_batch, s_batch + curr_batch_size), idx_feature] = curr_preds[:, 0].cpu()
 
@@ -158,20 +153,24 @@ class GPTControlledLMGenerator(SampleGenerator):
             if idx_step == 0:
                 masked_samples[:, 0] = self.labels_map[self.possible_labels[label]]
 
-        return masked_samples
+        # TODO: once reworked, return weights corresponding to probabilities here
+        sample_token_weights = torch.ones_like(masked_samples, dtype=torch.float32)
+
+        return {
+            "input_ids": masked_samples,
+            "weights": sample_token_weights
+        }
 
 
 class GPTLMGenerator(SampleGenerator):
-    def __init__(self, tokenizer_name, model_name, batch_size=2, max_seq_len=42, device="cuda", top_p: Optional[float] = None,
-                masked_at_once: Optional[Union[int, float]] = 1, p_ensure_different: Optional[float] = 0.0):
+    def __init__(self, tokenizer_name, model_name, batch_size=2, max_seq_len=42, device="cuda",
+                 top_p: Optional[float] = None):
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
         self.batch_size = batch_size
         self.max_seq_len = max_seq_len
 
         self.top_p = top_p
-        self.masked_at_once = masked_at_once
-        self.p_ensure_different = p_ensure_different
 
         assert device in ["cpu", "cuda"]
         if device == "cuda" and not torch.cuda.is_available():
@@ -238,7 +237,7 @@ class GPTLMGenerator(SampleGenerator):
 
     @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor, num_samples: int, label=None,
-                 **aux_data) -> torch.Tensor:
+                 **aux_data) -> Dict:
         num_features = int(input_ids.shape[1])
 
         perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
@@ -279,16 +278,20 @@ class GPTLMGenerator(SampleGenerator):
                                      return_dict=True)
 
                 curr_token_logits = res["logits"][torch.arange(curr_batch_size), curr_masked[s_batch: e_batch] - 1]
-                ensure_different = torch.rand(()) < self.p_ensure_different
 
                 curr_preds = decoding_strategy(curr_token_logits,
-                                               ensure_diff_from=input_ids[0, curr_masked[s_batch: e_batch]]
-                                               if ensure_different else None)
+                                               ensure_diff_from=None)
 
                 masked_samples[torch.arange(s_batch, s_batch + curr_batch_size),
                                curr_masked[s_batch: e_batch]] = curr_preds[:, 0].cpu()
 
-        return masked_samples
+        # TODO: once reworked, return weights corresponding to probabilities here
+        sample_token_weights = torch.ones_like(masked_samples, dtype=torch.float32)
+
+        return {
+            "input_ids": masked_samples,
+            "weights": sample_token_weights
+        }
 
 
 class BertForMaskedLMGenerator(SampleGenerator):
@@ -376,9 +379,9 @@ class BertForMaskedLMGenerator(SampleGenerator):
 
     @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
-                 num_samples: Optional[int] = -1, label=None, **aux_data) -> Tuple[torch.Tensor, torch.Tensor]:
+                 num_samples: Optional[int] = -1, label=None, **aux_data) -> Dict:
         if num_samples > 0 and self.strategy != "num_samples":
-            print("Warning: Strategy is not set to 'num_samples', so the argument is being ignored")
+            warn("Strategy is not set to 'num_samples', so the argument is being ignored")
 
         num_features = int(input_ids.shape[1])
 
@@ -500,7 +503,10 @@ class BertForMaskedLMGenerator(SampleGenerator):
             mlm_token_probas.append(probas[_batch_indexer, _sequence_indexer, curr_input_ids])
 
         mlm_token_probas = torch.cat(mlm_token_probas)
-        return masked_samples, mlm_token_probas  # TODO: this is hacked (the second return value)
+        return {
+            "input_ids": masked_samples,
+            "weights": mlm_token_probas
+        }
 
 
 if __name__ == "__main__":
