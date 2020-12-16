@@ -8,18 +8,21 @@ from explain_nlp.methods.utils import estimate_max_samples, sample_permutations,
 
 
 class IMEExplainer:
-    def __init__(self, sample_data: torch.Tensor, model: InterpretableModel, confidence_interval: Optional[float] = None,
-                 max_abs_error: Optional[float] = None, return_variance: Optional[bool] = False,
-                 return_num_samples: Optional[bool] = False, return_samples: Optional[bool] = False,
-                 return_scores: Optional[bool] = False):
+    def __init__(self, sample_data: torch.Tensor, model: InterpretableModel,
+                 data_weights: Optional[torch.FloatTensor] = None,
+                 confidence_interval: Optional[float] = None, max_abs_error: Optional[float] = None,
+                 return_variance: Optional[bool] = False, return_num_samples: Optional[bool] = False,
+                 return_samples: Optional[bool] = False, return_scores: Optional[bool] = False):
         """ Explain instances using IME.
 
         Args:
         -----
         sample_data: torch.Tensor
-            Data, used to create perturbations of instances. Must be of same shape as the instance.
+            Data, used to create perturbations of instances. Must have same number of features as the instance.
         model: InterpretableModel
             Model to be interpreted at instance level.
+        data_weights: torch.Tensor (optional)
+            Weights used for sampling data, from which masking values are taken. Must be of same shape as `sample_data`.
         confidence_interval: float (optional)
             Constraint on how accurately the computed importances should be computed: "approximately
             `confidence_interval` * 100% of importances should fall within `max_abs_error` of the true importance."
@@ -36,6 +39,7 @@ class IMEExplainer:
         """
         self.model = model
         self.sample_data = sample_data
+        self.weights = data_weights
         self.num_examples = self.sample_data.shape[0]
         self.num_features = self.sample_data.shape[1]
         self.confidence_interval = confidence_interval
@@ -48,8 +52,9 @@ class IMEExplainer:
 
         self.error_constraint_given = self.confidence_interval is not None and self.max_abs_error is not None
 
-    def update_sample_data(self, new_data: torch.Tensor):
+    def update_sample_data(self, new_data: torch.Tensor, data_weights: Optional[torch.FloatTensor] = None):
         self.sample_data = new_data
+        self.weights = data_weights
         self.num_features = new_data.shape[1]
 
     def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor, num_samples: int,
@@ -66,10 +71,16 @@ class IMEExplainer:
                                       num_permutations=num_samples)
         feature_pos = torch.nonzero(indices == idx_feature, as_tuple=False)
 
+        # If weights are not provided, sample uniformly
+        data_weights = torch.ones(self.sample_data.shape[0], dtype=torch.float32)
+        if self.weights is not None:
+            data_weights = self.weights[:, idx_feature]
+        randomly_selected = torch.multinomial(data_weights, num_samples=num_samples, replacement=True)
+
         samples = instance.repeat((2 * num_samples, 1))
         for idx_sample in range(num_samples):
             curr_feature_pos = int(feature_pos[idx_sample, 1])
-            idx_rand = int(torch.randint(self.sample_data.shape[0], size=()))
+            idx_rand = int(randomly_selected[idx_sample])
 
             # With feature `idx_feature` set
             samples[2 * idx_sample, indices[idx_sample, curr_feature_pos + 1:]] = \
@@ -238,14 +249,14 @@ class IMEExplainer:
 
 class SequentialIMEExplainer(IMEExplainer):
     def __init__(self, sample_data: torch.Tensor, model: InterpretableModel,
-                 confidence_interval: Optional[float] = None,
-                 max_abs_error: Optional[float] = None, return_variance: Optional[bool] = False,
-                 return_num_samples: Optional[bool] = False, return_samples: Optional[bool] = False,
-                 return_scores: Optional[bool] = False):
-        super().__init__(sample_data=sample_data, model=model, confidence_interval=confidence_interval,
-                         max_abs_error=max_abs_error, return_variance=return_variance,
-                         return_num_samples=return_num_samples, return_samples=return_samples,
-                         return_scores=return_scores)
+                 data_weights: Optional[torch.FloatTensor] = None,
+                 confidence_interval: Optional[float] = None, max_abs_error: Optional[float] = None,
+                 return_variance: Optional[bool] = False, return_num_samples: Optional[bool] = False,
+                 return_samples: Optional[bool] = False, return_scores: Optional[bool] = False):
+        super().__init__(sample_data=sample_data, model=model, data_weights=data_weights,
+                         confidence_interval=confidence_interval, max_abs_error=max_abs_error,
+                         return_variance=return_variance, return_num_samples=return_num_samples,
+                         return_samples=return_samples, return_scores=return_scores)
 
         self.special_token_ids = set(model.special_token_ids)
 
@@ -273,11 +284,16 @@ class SequentialIMEExplainer(IMEExplainer):
         indices = sample_permutations(upper=num_features, indices=perturbable_inds,
                                       num_permutations=num_samples)
         feature_pos = torch.nonzero(indices == idx_feature, as_tuple=False)
+        # If weights are not provided, sample uniformly
+        data_weights = torch.ones(self.sample_data.shape[0], dtype=torch.float32)
+        if self.weights is not None:
+            data_weights = self.weights[:, idx_feature]
+        randomly_selected = torch.multinomial(data_weights, num_samples=num_samples, replacement=True)
 
         samples = instance.repeat((2 * num_samples, 1))
         for idx_sample in range(num_samples):
             curr_feature_pos = int(feature_pos[idx_sample, 1])
-            idx_rand = int(torch.randint(self.num_examples, size=()))
+            idx_rand = int(randomly_selected[idx_sample])
             new_max = len(self.valid_indices[idx_rand]) - 1
 
             # With feature `idx_feature` set

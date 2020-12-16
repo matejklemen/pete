@@ -26,59 +26,6 @@ class IMEMaskedLMExplainer(IMEExplainer):
         self.generator = generator
         self.num_generated_samples = num_generated_samples
 
-        # `valid_indices[i]` contains indices of examples which have the token `i` different from explained instance
-        #  OR all indices, if there are no such examples - should be overwritten for every instance
-        # `weights[i]` contains the corresponding (unnormalized) weights for sampling
-        self.valid_indices: List[torch.Tensor] = []
-        self.weights: List[torch.Tensor] = []
-
-    def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor, num_samples: int,
-                                    perturbable_mask: torch.Tensor, label: Optional[str] = None, **modeling_kwargs):
-        # Note: instance is currently supposed to be of shape [1, num_features]
-        num_features = int(instance.shape[1])
-        perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
-
-        if num_features != self.num_features:
-            raise ValueError(f"Number of features in instance ({num_features}) "
-                             f"does not match number of features in sampling data ({self.num_features})")
-
-        indices = sample_permutations(upper=num_features, indices=perturbable_inds,
-                                      num_permutations=num_samples)
-        feature_pos = torch.nonzero(indices == idx_feature, as_tuple=False)
-
-        samples = instance.repeat((2 * num_samples, 1))
-        randomly_selected = torch.multinomial(self.weights[idx_feature], num_samples=num_samples, replacement=True)
-        for idx_sample in range(num_samples):
-            curr_feature_pos = int(feature_pos[idx_sample, 1])
-            idx_rand = self.valid_indices[idx_feature][randomly_selected[idx_sample]]
-
-            # With feature `idx_feature` set
-            samples[2 * idx_sample, indices[idx_sample, curr_feature_pos + 1:]] = \
-                self.sample_data[idx_rand, indices[idx_sample, curr_feature_pos + 1:]]
-
-            # With feature `idx_feature` randomized
-            samples[2 * idx_sample + 1, indices[idx_sample, curr_feature_pos:]] = \
-                self.sample_data[idx_rand, indices[idx_sample, curr_feature_pos:]]
-
-        scores = self.model.score(samples, **modeling_kwargs)
-        scores_with = scores[::2]
-        scores_without = scores[1::2]
-        assert scores_with.shape[0] == scores_without.shape[0]
-        diff = scores_with - scores_without
-
-        results = {
-            "diff_mean": torch.mean(diff, dim=0),
-            "diff_var": torch.var(diff, dim=0)
-        }
-
-        if self.return_samples:
-            results["samples"] = samples
-
-        if self.return_scores:
-            results["scores"] = scores
-
-        return results
-
     def explain_text(self, text_data: Union[str, Tuple[str, ...]], label: Optional[int] = 0,
                      min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None):
         # Convert to representation of generator
@@ -86,7 +33,7 @@ class IMEMaskedLMExplainer(IMEExplainer):
 
         # Generate new samples in representation of generator
         # TODO: figure out how to make weights doable when using different model and generator
-        #  (tokens can be misaligned, split differently, etc.)
+        #  (tokens can be misaligned, split differently, etc.) -- currently assuming SAME model and generator tokenization
         generator_res = self.generator.generate(input_ids=generator_instance["input_ids"],
                                                 perturbable_mask=generator_instance["perturbable_mask"],
                                                 num_samples=self.num_generated_samples,
@@ -100,7 +47,6 @@ class IMEMaskedLMExplainer(IMEExplainer):
 
         # Convert from text to representation of interpreted model
         sample_data = self.model.to_internal(generated_text)
-        self.update_sample_data(sample_data["input_ids"])
 
         # Convert instance being interpreted to representation of interpreted model
         model_instance = self.model.to_internal([text_data])
@@ -108,24 +54,20 @@ class IMEMaskedLMExplainer(IMEExplainer):
         perturbable_mask = model_instance["perturbable_mask"]
 
         # Note down the indices of examples which have a certain feature different from instance
-        self.valid_indices, self.weights = [], []
-        all_indices = torch.arange(self.sample_data.shape[0])
+        all_indices = torch.arange(sample_data["input_ids"].shape[0])
         for idx_feature in range(input_ids.shape[1]):
             if not perturbable_mask[0, idx_feature]:
-                self.valid_indices.append(torch.tensor([]))
-                self.weights.append(torch.tensor([]))
+                weights[:, idx_feature] = 0.0
                 continue
 
-            different_example_mask = self.sample_data[:, idx_feature] != input_ids[0, idx_feature]
+            different_example_mask = sample_data["input_ids"][:, idx_feature] != input_ids[0, idx_feature]
             different_example_inds = all_indices[different_example_mask]
-            different_example_weights = weights[different_example_mask, idx_feature]
             if different_example_inds.shape[0] == 0:
                 print(f"Warning: No unique values were found in generated data for feature {idx_feature}")
-                different_example_inds = torch.arange(self.sample_data.shape[0])
-                different_example_weights = torch.ones(self.sample_data.shape[0], dtype=torch.float32)
+            else:
+                weights[torch.logical_not(different_example_mask), idx_feature] = 0.0
 
-            self.valid_indices.append(different_example_inds)
-            self.weights.append(different_example_weights)
+        self.update_sample_data(sample_data["input_ids"], weights)
 
         res = super().explain(input_ids, label, perturbable_mask=perturbable_mask,
                               min_samples_per_feature=min_samples_per_feature, max_samples=max_samples,
@@ -143,6 +85,7 @@ if __name__ == "__main__":
     generator = BertForMaskedLMGenerator(tokenizer_name="bert-base-uncased",
                                          model_name="bert-base-uncased",
                                          batch_size=2,
+                                         strategy="num_samples",
                                          device="cpu")
 
     explainer = IMEMaskedLMExplainer(model=model,
