@@ -1,4 +1,4 @@
-from typing import List, Dict, Union, Tuple
+from typing import List, Dict, Union, Tuple, Optional
 
 import torch
 import torch.nn.functional as F
@@ -37,11 +37,13 @@ class InterpretableModel:
 
 
 class InterpretableBertForSequenceClassification(InterpretableModel):
-    def __init__(self, tokenizer_name, model_name, batch_size=8, max_seq_len=64, device="cuda"):
+    def __init__(self, tokenizer_name, model_name, batch_size=8, max_seq_len=64, max_words: Optional[int] = 16,
+                 device="cuda"):
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
         self.batch_size = batch_size
         self.max_seq_len = max_seq_len
+        self.max_words = max_words
 
         assert device in ["cpu", "cuda"]
         if device == "cuda" and not torch.cuda.is_available():
@@ -87,6 +89,69 @@ class InterpretableBertForSequenceClassification(InterpretableModel):
         }
 
         return formatted_res
+
+    def words_to_internal(self, text_data: List[Union[List[str], Tuple[List[str], ...]]]) -> Dict:
+        """ Convert examples into model's representation, keeping the word boundaries intact.
+
+        Args:
+        -----
+        text_data:
+            Pre-tokenized examples or example pairs
+        """
+        is_seq_pair = isinstance(text_data[0], tuple)
+        ret_dict = {
+            "input_ids": [],  # list of encoded token subwords for each example/example pair; type: List[List[List[int]]
+            # word-level annotations
+            "perturbable_mask": [],
+            "aux_data": {"token_type_ids": [], "attention_mask": []}
+        }
+
+        for curr_example in text_data:
+            formatted_example = []
+            ex0, ex1 = curr_example if is_seq_pair else (curr_example, None)
+            formatted_ex0, formatted_ex1 = [], None
+
+            for curr_token in ex0:
+                formatted_ex0.append(self.tokenizer.encode(curr_token, add_special_tokens=False))
+            proxy_ex0 = ["a"] * len(formatted_ex0)
+
+            if is_seq_pair:
+                formatted_ex1 = []
+                for curr_token in ex1:
+                    formatted_ex1.append(self.tokenizer.encode(curr_token, add_special_tokens=False))
+
+            proxy_ex1 = ["b"] * len(formatted_ex1) if is_seq_pair else None
+            curr_seq_len = len(proxy_ex0) + (len(proxy_ex1) if is_seq_pair else 0)
+            num_special_tokens = 3 if is_seq_pair else 2
+
+            res = self.tokenizer.encode_plus(text=proxy_ex0, text_pair=proxy_ex1,
+                                             return_special_tokens_mask=True, return_tensors="pt",
+                                             padding="max_length", max_length=self.max_words,
+                                             truncation="longest_first")
+            proxy_ex0, proxy_ex1, _ = self.tokenizer.truncate_sequences(ids=proxy_ex0, pair_ids=proxy_ex1,
+                                                                        num_tokens_to_remove=((curr_seq_len + num_special_tokens) - self.max_words))
+            formatted_ex0 = formatted_ex0[: len(proxy_ex0)]
+            formatted_ex1 = formatted_ex1[: len(proxy_ex1)]
+
+            formatted_example.append([self.tokenizer.cls_token_id])
+            formatted_example.extend(formatted_ex0)
+            formatted_example.append([self.tokenizer.sep_token_id])
+            if is_seq_pair:
+                formatted_example.extend(formatted_ex1)
+                formatted_example.append([self.tokenizer.sep_token_id])
+
+            formatted_example.extend([[self.tokenizer.pad_token_id] for _ in range(self.max_words - len(formatted_example))])
+
+            ret_dict["input_ids"].append(formatted_example)
+            ret_dict["perturbable_mask"].append(torch.logical_not(res["special_tokens_mask"]))
+            ret_dict["aux_data"]["token_type_ids"].append(res["token_type_ids"])
+            ret_dict["aux_data"]["attention_mask"].append(res["attention_mask"])
+
+        ret_dict["perturbable_mask"] = torch.cat(ret_dict["perturbable_mask"])
+        ret_dict["aux_data"]["token_type_ids"] = torch.cat(ret_dict["aux_data"]["token_type_ids"])
+        ret_dict["aux_data"]["attention_mask"] = torch.cat(ret_dict["aux_data"]["attention_mask"])
+
+        return ret_dict
 
     def convert_ids_to_tokens(self, ids):
         return [self.tokenizer.convert_ids_to_tokens(curr_ids) for curr_ids in ids.tolist()]
