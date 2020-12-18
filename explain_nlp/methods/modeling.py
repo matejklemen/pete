@@ -100,6 +100,7 @@ class InterpretableBertForSequenceClassification(InterpretableModel):
         """
         is_seq_pair = isinstance(text_data[0], tuple)
         ret_dict = {
+            "words": [],  # text data, augmented with any additional control tokens (used to align importances)
             "input_ids": [],  # list of encoded token subwords for each example/example pair; type: List[List[List[int]]
             # word-level annotations
             "perturbable_mask": [],
@@ -107,6 +108,7 @@ class InterpretableBertForSequenceClassification(InterpretableModel):
         }
 
         for curr_example in text_data:
+            raw_example = []
             formatted_example = []
             ex0, ex1 = curr_example if is_seq_pair else (curr_example, None)
             formatted_ex0, formatted_ex1 = [], None
@@ -132,16 +134,26 @@ class InterpretableBertForSequenceClassification(InterpretableModel):
                                                                         num_tokens_to_remove=((curr_seq_len + num_special_tokens) - self.max_words))
             formatted_ex0 = formatted_ex0[: len(proxy_ex0)]
             formatted_ex1 = formatted_ex1[: len(proxy_ex1)]
+            ex0 = ex0[: len(proxy_ex0)]
+            ex1 = ex1[: len(proxy_ex1)]
 
             formatted_example.append([self.tokenizer.cls_token_id])
             formatted_example.extend(formatted_ex0)
             formatted_example.append([self.tokenizer.sep_token_id])
+            raw_example.append(self.tokenizer.cls_token)
+            raw_example.extend(ex0)
+            raw_example.append(self.tokenizer.sep_token)
             if is_seq_pair:
                 formatted_example.extend(formatted_ex1)
                 formatted_example.append([self.tokenizer.sep_token_id])
+                raw_example.extend(ex1)
+                raw_example.append(self.tokenizer.sep_token)
 
-            formatted_example.extend([[self.tokenizer.pad_token_id] for _ in range(self.max_words - len(formatted_example))])
+            formatted_example.extend([[self.tokenizer.pad_token_id]
+                                      for _ in range(self.max_words - len(formatted_example))])
+            raw_example.extend([self.tokenizer.pad_token for _ in range(self.max_words - len(formatted_example))])
 
+            ret_dict["words"].append(raw_example)
             ret_dict["input_ids"].append(formatted_example)
             ret_dict["perturbable_mask"].append(torch.logical_not(res["special_tokens_mask"]))
             ret_dict["aux_data"]["token_type_ids"].append(res["token_type_ids"])
@@ -158,16 +170,20 @@ class InterpretableBertForSequenceClassification(InterpretableModel):
 
     @torch.no_grad()
     def score(self, input_ids: torch.Tensor, **kwargs):
-        aux_data = {additional_arg: kwargs[additional_arg].repeat((self.batch_size, 1)).to(self.device)
-                    for additional_arg in ["token_type_ids", "attention_mask"]}
+        # If a single example is provided, broadcast it to input size, otherwise assume correct shapes are provided
+        if kwargs["token_type_ids"].shape[0] != input_ids.shape[0]:
+            aux_data = {additional_arg: kwargs[additional_arg].repeat((input_ids.shape[0], 1))
+                        for additional_arg in ["token_type_ids", "attention_mask"]}
+        else:
+            aux_data = {additional_arg: kwargs[additional_arg]
+                        for additional_arg in ["token_type_ids", "attention_mask"]}
 
         num_total_batches = (input_ids.shape[0] + self.batch_size - 1) // self.batch_size
         probas = torch.zeros((input_ids.shape[0], self.model.config.num_labels))
         for idx_batch in range(num_total_batches):
             s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
             curr_input_ids = input_ids[s_b: e_b].to(self.device)
-            curr_batch_size = curr_input_ids.shape[0]
-            res = self.model(curr_input_ids, **{k: v[: curr_batch_size] for k, v in aux_data.items()},
+            res = self.model(curr_input_ids, **{k: v[s_b: e_b].to(self.device) for k, v in aux_data.items()},
                              return_dict=True)
 
             probas[s_b: e_b] = F.softmax(res["logits"], dim=-1)
