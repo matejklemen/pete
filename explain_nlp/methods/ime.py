@@ -1,3 +1,4 @@
+import itertools
 from typing import Optional, Union, Tuple, List
 
 import torch
@@ -40,8 +41,8 @@ class IMEExplainer:
         self.model = model
         self.sample_data = sample_data
         self.weights = data_weights
-        self.num_examples = self.sample_data.shape[0]
-        self.num_features = self.sample_data.shape[1]
+        self.num_examples = len(self.sample_data)
+        self.num_features = len(self.sample_data[0])
         self.confidence_interval = confidence_interval
         self.max_abs_error = max_abs_error
 
@@ -102,10 +103,10 @@ class IMEExplainer:
         }
 
         if self.return_samples:
-            results["samples"] = samples
+            results["samples"] = samples.tolist()
 
         if self.return_scores:
-            results["scores"] = scores
+            results["scores"] = scores.tolist()
 
         return results
 
@@ -129,7 +130,7 @@ class IMEExplainer:
             Maximum samples to be taken combined across all perturbable features. This gets overriden if
             `confidence_interval` and `max_abs_error` are also provided at instantiation.
         """
-        num_features = int(instance.shape[1])
+        num_features = len(instance[0])
         importance_means = torch.zeros(num_features, dtype=torch.float32)
         importance_vars = torch.zeros(num_features, dtype=torch.float32)
 
@@ -224,11 +225,11 @@ class IMEExplainer:
             results["num_samples"] = samples_per_feature
 
         if self.return_samples:
-            results["samples"] = [torch.cat(feature_data["samples"]) if feature_data["samples"] else None
+            results["samples"] = [list(itertools.chain(*feature_data["samples"])) if feature_data["samples"] else None
                                   for feature_data in feature_debug_data]
 
         if self.return_scores:
-            results["scores"] = [torch.cat(feature_data["scores"]) if feature_data["scores"] else None
+            results["scores"] = [list(itertools.chain(*feature_data["scores"])) if feature_data["scores"] else None
                                  for feature_data in feature_debug_data]
 
         return results
