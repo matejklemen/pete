@@ -133,9 +133,7 @@ class InterpretableBertForSequenceClassification(InterpretableModel):
             proxy_ex0, proxy_ex1, _ = self.tokenizer.truncate_sequences(ids=proxy_ex0, pair_ids=proxy_ex1,
                                                                         num_tokens_to_remove=((curr_seq_len + num_special_tokens) - self.max_words))
             formatted_ex0 = formatted_ex0[: len(proxy_ex0)]
-            formatted_ex1 = formatted_ex1[: len(proxy_ex1)]
             ex0 = ex0[: len(proxy_ex0)]
-            ex1 = ex1[: len(proxy_ex1)]
 
             formatted_example.append([self.tokenizer.cls_token_id])
             formatted_example.extend(formatted_ex0)
@@ -144,6 +142,9 @@ class InterpretableBertForSequenceClassification(InterpretableModel):
             raw_example.extend(ex0)
             raw_example.append(self.tokenizer.sep_token)
             if is_seq_pair:
+                formatted_ex1 = formatted_ex1[: len(proxy_ex1)]
+                ex1 = ex1[: len(proxy_ex1)]
+
                 formatted_example.extend(formatted_ex1)
                 formatted_example.append([self.tokenizer.sep_token_id])
                 raw_example.extend(ex1)
@@ -151,7 +152,7 @@ class InterpretableBertForSequenceClassification(InterpretableModel):
 
             formatted_example.extend([[self.tokenizer.pad_token_id]
                                       for _ in range(self.max_words - len(formatted_example))])
-            raw_example.extend([self.tokenizer.pad_token for _ in range(self.max_words - len(formatted_example))])
+            raw_example.extend([self.tokenizer.pad_token for _ in range(self.max_words - len(raw_example))])
 
             ret_dict["words"].append(raw_example)
             ret_dict["input_ids"].append(formatted_example)
