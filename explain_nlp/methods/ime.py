@@ -331,6 +331,96 @@ class SequentialIMEExplainer(IMEExplainer):
         return results
 
 
+class WholeWordIMEExplainer(IMEExplainer):
+    """ TODO: currently only intended for use with InterpretableBertForSequenceClassification (not generalized) """
+    def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor, num_samples: int,
+                                    perturbable_mask: torch.Tensor, label: Optional[str] = None, **modeling_kwargs):
+        num_features = len(instance[0])
+        perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
+
+        if num_features != self.num_features:
+            raise ValueError(f"Number of features in instance ({num_features}) "
+                             f"does not match number of features in sampling data ({self.num_features})")
+
+        indices = sample_permutations(upper=num_features, indices=perturbable_inds,
+                                      num_permutations=num_samples)
+        feature_pos = torch.nonzero(indices == idx_feature, as_tuple=False)
+
+        # If weights are not provided, sample uniformly
+        data_weights = torch.ones(len(self.sample_data), dtype=torch.float32)
+        if self.weights is not None:
+            data_weights = self.weights[:, idx_feature]
+        randomly_selected = torch.multinomial(data_weights, num_samples=num_samples, replacement=True)
+
+        samples = []
+        for idx_sample in range(num_samples):
+            curr_feature_pos = int(feature_pos[idx_sample, 1])
+            idx_rand = int(randomly_selected[idx_sample])
+
+            # With/without `idx_feature` set
+            input_ids_with, input_ids_without = deepcopy(instance[0]), deepcopy(instance[0])
+            for _i in indices[idx_sample, curr_feature_pos + 1:]:
+                input_ids_with[_i] = self.sample_data[idx_rand][_i]
+                input_ids_without[_i] = self.sample_data[idx_rand][_i]
+
+            input_ids_without[idx_feature] = self.sample_data[idx_rand][idx_feature]
+
+            samples.append(input_ids_with)
+            samples.append(input_ids_without)
+
+        # Pad samples to the maximum length of newly-created samples (simplifies handling of special tokens)
+        max_sample_len = max([sum(len(curr_subwords) for curr_subwords in curr_sample) for curr_sample in samples])
+        sample_input_ids = []
+        sample_modeling_kwargs = {k: [] for k in modeling_kwargs}
+        for curr_sample in samples:
+            curr_input_ids = []
+            curr_modeling_kwargs = {k: [] for k in modeling_kwargs}
+            for idx_word, curr_subwords in enumerate(curr_sample):
+                curr_input_ids.extend(curr_subwords)
+                for k in modeling_kwargs:
+                    curr_modeling_kwargs[k].extend([modeling_kwargs[k][0, idx_word].item()] * len(curr_subwords))
+
+            sample_input_ids.append(curr_input_ids +
+                                    [self.model.tokenizer.pad_token_id] * (max_sample_len - len(curr_input_ids)))
+            for k in modeling_kwargs:
+                sample_modeling_kwargs[k].append(curr_modeling_kwargs[k] +
+                                                 [self.model.tokenizer.pad_token_id] * (max_sample_len - len(curr_modeling_kwargs[k])))
+
+        results = {}
+        if self.return_samples:
+            results["samples"] = sample_input_ids
+
+        sample_input_ids = torch.tensor(sample_input_ids)
+        sample_modeling_kwargs = {k: torch.tensor(v) for k, v in sample_modeling_kwargs.items()}
+        scores = self.model.score(sample_input_ids, **sample_modeling_kwargs)
+        scores_with = scores[::2]
+        scores_without = scores[1::2]
+        assert scores_with.shape[0] == scores_without.shape[0]
+        diff = scores_with - scores_without
+
+        results.update({
+            "diff_mean": torch.mean(diff, dim=0),
+            "diff_var": torch.var(diff, dim=0)
+        })
+
+        if self.return_scores:
+            results["scores"] = scores.tolist()
+
+        return results
+
+    def explain_text(self, text_data: Union[List[str], Tuple[List[str], ...]], label: Optional[int] = 0,
+                     min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None):
+        # Convert instance being interpreted to representation of interpreted model
+        model_instance = self.model.words_to_internal([text_data])
+
+        res = self.explain(model_instance["input_ids"], label, perturbable_mask=model_instance["perturbable_mask"],
+                           min_samples_per_feature=min_samples_per_feature, max_samples=max_samples,
+                           **model_instance["aux_data"])
+        res["input"] = model_instance["words"][0]
+
+        return res
+
+
 class GreedyBaselineIMEExplainer:
     def __init__(self, model: InterpretableModel, return_samples: Optional[bool] = False,
                  return_scores: Optional[bool] = False):

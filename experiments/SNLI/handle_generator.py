@@ -4,7 +4,7 @@ from explain_nlp.methods.generation import BertForMaskedLMGenerator, GPTLMGenera
 
 def load_generator(args):
     # IME does not require a generator and loading it would be a waste of a lot of memory
-    if args.method in ["ime", "sequential_ime"]:
+    if args.method in ["ime", "sequential_ime", "whole_word_ime"]:
         return None, {}
 
     generator_description = {

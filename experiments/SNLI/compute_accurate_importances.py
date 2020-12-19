@@ -2,6 +2,7 @@ import argparse
 import os
 from time import time
 
+import stanza
 import torch
 from torch.utils.data import DataLoader
 
@@ -9,15 +10,15 @@ from experiments.SNLI.data import load_nli, NLIDataset, LABEL_TO_IDX, IDX_TO_LAB
 from experiments.SNLI.handle_generator import load_generator
 from explain_nlp.experimental.core import MethodData, MethodType
 from explain_nlp.methods.dependent_ime_mlm import DependentIMEMaskedLMExplainer
-from explain_nlp.methods.ime import IMEExplainer, SequentialIMEExplainer
+from explain_nlp.methods.ime import IMEExplainer, SequentialIMEExplainer, WholeWordIMEExplainer
 from explain_nlp.methods.ime_mlm import IMEMaskedLMExplainer
 from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
 from explain_nlp.visualizations.highlight import highlight_plot
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--method", type=str, default="ime_mlm", choices=["ime", "sequential_ime",
-                                                                      "ime_mlm", "ime_dependent_mlm"])
+parser.add_argument("--method", type=str, default="whole_word_ime", choices=["ime", "sequential_ime", "whole_word_ime",
+                                                                             "ime_mlm", "ime_dependent_mlm"])
 parser.add_argument("--min_samples_per_feature", type=int, default=10,
                     help="Minimum number of samples that get created for each feature for initial variance estimation")
 parser.add_argument("--confidence_interval", type=float, default=0.5)
@@ -30,6 +31,7 @@ parser.add_argument("--test_path", type=str, default="/home/matej/Documents/data
 
 parser.add_argument("--model_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/snli_bert_uncased")
 parser.add_argument("--model_max_seq_len", type=int, default=41)
+parser.add_argument("--model_max_words", type=int, default=39)
 parser.add_argument("--model_batch_size", type=int, default=2)
 
 parser.add_argument("--generator_type", type=str, default="bert_mlm")
@@ -67,6 +69,8 @@ if __name__ == "__main__":
     alpha = 1 - args.confidence_interval
     DEVICE = torch.device("cpu") if args.use_cpu else torch.device("cuda")
     print(f"Used device: {DEVICE}")
+    nlp = stanza.Pipeline(lang="en", processors="tokenize", use_gpu=not args.use_cpu, tokenize_no_ssplit=True)
+    pretokenized_test_data = []
 
     experiment_dir = args.experiment_dir
     if experiment_dir is None:
@@ -82,6 +86,7 @@ if __name__ == "__main__":
                                                        model_name=args.model_dir,
                                                        batch_size=args.model_batch_size,
                                                        max_seq_len=args.model_max_seq_len,
+                                                       max_words=args.model_max_words,
                                                        device="cpu" if args.use_cpu else "cuda")
     temp_model_desc = {"type": "bert", "max_seq_len": args.model_max_seq_len, "handle": args.model_dir}
     generator, gen_desc = load_generator(args)
@@ -92,11 +97,21 @@ if __name__ == "__main__":
                           labels=df_test["gold_label"].apply(lambda label_str: LABEL_TO_IDX[label_str]).values,
                           tokenizer=model.tokenizer,
                           max_seq_len=args.model_max_seq_len)
+    if args.method == "whole_word_ime":
+        pretokenized_test_data = []
+        for idx_subset in range((df_test.shape[0] + 1024 - 1) // 1024):
+            s, e = idx_subset * 1024, (1 + idx_subset) * 1024
+            for s0, s1 in zip(nlp("\n\n".join(df_test["sentence1"].iloc[s: e].values)).sentences,
+                              nlp("\n\n".join(df_test["sentence2"].iloc[s: e].values)).sentences):
+                pretokenized_test_data.append((
+                    [token.words[0].text for token in s0.tokens],
+                    [token.words[0].text for token in s1.tokens]
+                ))
 
     used_data = {"test_path": args.test_path}
     print(f"Using method '{args.method}'")
     # Define explanation methods
-    if args.method in {"ime", "sequential_ime"}:
+    if args.method in {"ime", "sequential_ime", "whole_word_ime"}:
         method_type = MethodType.IME
         used_data["train_path"] = args.train_path
         df_train = load_nli(args.train_path).sample(frac=1.0).reset_index(drop=True)
@@ -106,7 +121,24 @@ if __name__ == "__main__":
                                tokenizer=model.tokenizer,
                                max_seq_len=args.model_max_seq_len)
         explainer_cls = IMEExplainer if args.method == "ime" else SequentialIMEExplainer
-        method = explainer_cls(sample_data=train_set.input_ids, model=model,
+
+        used_sample_data = train_set.input_ids
+        if args.method == "whole_word_ime":
+            explainer_cls = WholeWordIMEExplainer
+
+            pretokenized_train_data = []
+            for idx_subset in range((df_train.shape[0] + 1024 - 1) // 1024):
+                s, e = idx_subset * 1024, (1 + idx_subset) * 1024
+                for s0, s1 in zip(nlp("\n\n".join(df_train["sentence1"].iloc[s: e].values)).sentences,
+                                  nlp("\n\n".join(df_train["sentence2"].iloc[s: e].values)).sentences):
+                    pretokenized_train_data.append((
+                        [token.words[0].text for token in s0.tokens],
+                        [token.words[0].text for token in s1.tokens]
+                    ))
+
+            used_sample_data = model.words_to_internal(pretokenized_train_data)["input_ids"]
+
+        method = explainer_cls(sample_data=used_sample_data, model=model,
                                confidence_interval=args.confidence_interval, max_abs_error=args.max_abs_error,
                                return_scores=args.return_model_scores, return_num_samples=True,
                                return_samples=args.return_generated_samples, return_variance=True)
@@ -151,14 +183,20 @@ if __name__ == "__main__":
         if idx_example >= until:
             break
 
-        _curr_example = {k: v.to(DEVICE) for k, v in curr_example.items() if k not in {"labels", "special_tokens_mask"}}
+        _curr_example = {k: v.to(DEVICE) for k, v in curr_example.items() if k not in {"words",
+                                                                                       "labels",
+                                                                                       "special_tokens_mask"}}
         probas = model.score(**_curr_example)
         predicted_label = int(torch.argmax(probas))
         actual_label = int(curr_example["labels"])
 
+        input_text = (df_test.iloc[idx_example]["sentence1"],
+                      df_test.iloc[idx_example]["sentence2"])
+        if args.method == "whole_word_ime":
+            input_text = pretokenized_test_data[idx_example]
+
         t1 = time()
-        res = method.explain_text((df_test.iloc[idx_example]["sentence1"],
-                                   df_test.iloc[idx_example]["sentence2"]),
+        res = method.explain_text(input_text,
                                   label=predicted_label, min_samples_per_feature=args.min_samples_per_feature)
         t2 = time()
         print(f"[{args.method}] Taken samples: {res['taken_samples']}")
