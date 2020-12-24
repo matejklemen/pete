@@ -34,7 +34,7 @@ def base_visualization(body_html: str, head_js="", body_js="", path=None):
         <script type="text/javascript">
         {js_code}
         </script>
-        <script>
+        <script type="text/javascript">
         {body_js}
         </script>
     </body>
@@ -103,7 +103,7 @@ def highlight_plot(sequences: List[List[str]],
             curr_color = f"rgba(0, 153, 0, {scaled_imp})" if scaled_imp > 0 else f"rgba(255, 0, 0, {abs(scaled_imp)})"
 
             curr_ex_html.append(f"<span class='example-unit' "
-                                f"id='token-{i}-{idx_tok}'"
+                                f"id='token-{i}-{idx_tok}' "
                                 f"title='{np_importances[i, idx_tok]: .4f}' "
                                 f"style='background-color: {curr_color}'>"
                                 f"{curr_seq[idx_tok]}"
@@ -172,7 +172,7 @@ def highlight_plot_multiple_methods(sequences: List[List[str]],
                 curr_color = f"rgba(0, 153, 0, {scaled_imp})" if scaled_imp > 0 else f"rgba(255, 0, 0, {abs(scaled_imp)})"
 
                 method_html.append(f"<span class='example-unit' "
-                                   f"id='token-{i}-{idx_tok}'"
+                                   f"id='token-{i}-{idx_tok}' "
                                    f"title='{np_importances[method_name][i, idx_tok]: .4f}' "
                                    f"style='background-color: {curr_color}'>"
                                    f"{curr_seq[idx_tok]}"
@@ -286,7 +286,7 @@ def track_progress(method_data: MethodData, idx_example: int,
             imp_mean = f"{importance_means[idx_tok]: .4f}" if accounted_samples[idx_tok] > 0 else "N/A"
 
             step_html.append(f"<span class='example-unit' "
-                             f"id='token-0-{idx_tok}'"
+                             f"id='token-0-{idx_tok}' "
                              f"title='{imp_mean} &#177; {imp_sd}' "
                              f"style='background-color: {curr_color}'>"
                              f"{sequence[idx_tok]}"
@@ -376,7 +376,7 @@ def track_progress(method_data: MethodData, idx_example: int,
                     if accounted_samples[idx_tok] > 0 else "N/A"
 
                 step_html.append(f"<span class='example-unit' "
-                                 f"id='token-0-{idx_tok}'"
+                                 f"id='token-0-{idx_tok}' "
                                  f"title='{importance_means[idx_tok]: .4f} &#177; {imp_sd}' "
                                  f"style='background-color: {curr_color}'>"
                                  f"{sequence[idx_tok]}"
