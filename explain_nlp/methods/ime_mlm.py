@@ -17,7 +17,7 @@ class IMEMaskedLMExplainer(IMEExplainer):
                  return_num_samples: Optional[bool] = False, return_samples: Optional[bool] = False,
                  return_scores: Optional[bool] = False):
         # IME requires sampling data so we give it dummy data and later override it with generated data
-        dummy_sample_data = torch.randn((1, 1), dtype=torch.long)
+        dummy_sample_data = torch.randint(5, (1, 1), dtype=torch.long)
         super().__init__(sample_data=dummy_sample_data, model=model, confidence_interval=confidence_interval,
                          max_abs_error=max_abs_error, return_variance=return_variance,
                          return_num_samples=return_num_samples, return_samples=return_samples,
