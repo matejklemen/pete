@@ -9,7 +9,7 @@ from transformers import BertTokenizer
 def stanza_bert_words(input_tokens: List[str], perturbable_mask: torch.Tensor,
                       raw_example: Union[str, Tuple[str, ...]],
                       pipe: stanza.Pipeline, lowercase=False):
-    print(input_tokens)
+    # print(input_tokens)
     flattened_tokens = []
     sentence_ids, curr_sentence_id = [], 0
     _raw_example = raw_example if isinstance(raw_example, tuple) else (raw_example,)
