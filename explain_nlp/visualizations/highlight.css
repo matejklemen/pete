@@ -16,14 +16,6 @@
     padding-bottom: 10px;
 }
 
-.method {
-    padding-left: 10px;
-}
-
-.method-name {
-    font-weight: bold;
-}
-
 .example span {
     padding: 5px;
     line-height: 30px;
@@ -50,7 +42,10 @@ span.example-unit:hover, .selected {
     border-radius: 2px;
     padding: 5px;
 }
-.pair-example:hover {
-    outline: 1px solid black;
-    outline-offset: -1px;
+
+.unit-id {
+    display: inline;
+    margin: 0;
+    font-weight: bold;
+    font-size: 12px;
 }
