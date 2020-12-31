@@ -1,3 +1,6 @@
+import itertools
+from typing import List
+
 import torch
 
 
@@ -27,3 +30,11 @@ def incremental_var(curr_mean, curr_var, new_mean, new_value, n: int):
     """ Perform an incremental variance update. `n` is the number of samples including `new_value`. """
     assert n >= 2
     return (curr_var * (n - 1) + (new_value - curr_mean) * (new_value - new_mean)) / n
+
+
+def tensor_indexer(obj: torch.Tensor, indices) -> torch.Tensor:
+    return obj[indices]
+
+
+def list_indexer(obj: List[List], indices) -> torch.Tensor:
+    return torch.tensor(list(itertools.chain(*[obj[_i] for _i in indices])), dtype=torch.long)

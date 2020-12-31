@@ -1,5 +1,6 @@
 import argparse
 import os
+from itertools import groupby
 from time import time
 
 import stanza
@@ -10,6 +11,7 @@ from experiments.SNLI.data import load_nli, NLIDataset, LABEL_TO_IDX, IDX_TO_LAB
 from experiments.SNLI.handle_generator import load_generator
 from explain_nlp.experimental.core import MethodData, MethodType
 from explain_nlp.methods.dependent_ime_mlm import DependentIMEMaskedLMExplainer
+from explain_nlp.methods.features import stanza_bert_words
 from explain_nlp.methods.ime import IMEExplainer, SequentialIMEExplainer, WholeWordIMEExplainer
 from explain_nlp.methods.ime_mlm import IMEMaskedLMExplainer
 from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
@@ -17,8 +19,12 @@ from explain_nlp.visualizations.highlight import highlight_plot
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--method", type=str, default="whole_word_ime", choices=["ime", "sequential_ime", "whole_word_ime",
-                                                                             "ime_mlm", "ime_dependent_mlm"])
+parser.add_argument("--method", type=str, default="ime", choices=["ime", "sequential_ime", "whole_word_ime",
+                                                                  "ime_mlm", "ime_dependent_mlm"])
+parser.add_argument("--custom_features", type=str, default=None, choices=[None, "words", "sentences"])
+parser.add_argument("--lowercase", action="store_true",
+                    help="Indicate that lowercase tokenization is used. Only relevant if using custom (larger) "
+                         "features, for aligning primary units (e.g. subwords) with custom features (e.g. words).")
 parser.add_argument("--min_samples_per_feature", type=int, default=10,
                     help="Minimum number of samples that get created for each feature for initial variance estimation")
 parser.add_argument("--confidence_interval", type=float, default=0.5)
@@ -29,7 +35,7 @@ parser.add_argument("--return_model_scores", action="store_true")
 parser.add_argument("--train_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_train.txt")
 parser.add_argument("--test_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_test_xs.txt")
 
-parser.add_argument("--model_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/snli_bert_uncased")
+parser.add_argument("--model_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased")
 parser.add_argument("--model_max_seq_len", type=int, default=41)
 parser.add_argument("--model_max_words", type=int, default=39)
 parser.add_argument("--model_batch_size", type=int, default=2)
@@ -37,7 +43,7 @@ parser.add_argument("--model_batch_size", type=int, default=2)
 parser.add_argument("--generator_type", type=str, default="bert_mlm")
 parser.add_argument("--controlled", action="store_true",
                     help="Whether to use controlled LM/MLM for generation")
-parser.add_argument("--generator_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/bert-base-uncased-snli-mlm",
+parser.add_argument("--generator_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/bert-base-uncased-snli-mlm",
                     help="Path or handle of model to be used as a language modeling generator")
 parser.add_argument("--generator_batch_size", type=int, default=2)
 parser.add_argument("--generator_max_seq_len", type=int, default=41)
@@ -52,7 +58,7 @@ parser.add_argument("--threshold", type=float, default=0.1)
 parser.add_argument("--seed_start_with_ground_truth", action="store_true")
 parser.add_argument("--reset_seed_after_first", action="store_true")
 
-parser.add_argument("--experiment_dir", type=str, default=None)
+parser.add_argument("--experiment_dir", type=str, default="debug")
 parser.add_argument("--save_every_n_examples", type=int, default=1,
                     help="Save experiment data every N examples in order to avoid losing data on longer computations")
 
@@ -61,7 +67,6 @@ parser.add_argument("--verbose", action="store_true")
 
 parser.add_argument("--start_from", type=int, default=None, help="From which example onwards to do computation")
 parser.add_argument("--until", type=int, default=None, help="Until which example to do computation")
-
 
 if __name__ == "__main__":
     args = parser.parse_args()
@@ -110,6 +115,9 @@ if __name__ == "__main__":
 
     used_data = {"test_path": args.test_path}
     print(f"Using method '{args.method}'")
+    if args.custom_features is not None:
+        print(f"Using custom features: '{args.custom_features}'")
+
     # Define explanation methods
     if args.method in {"ime", "sequential_ime", "whole_word_ime"}:
         method_type = MethodType.IME
@@ -166,7 +174,7 @@ if __name__ == "__main__":
                              generator_description=gen_desc, min_samples_per_feature=args.min_samples_per_feature,
                              possible_labels=[IDX_TO_LABEL[i] for i in sorted(IDX_TO_LABEL.keys())],
                              used_data=used_data, confidence_interval=args.confidence_interval,
-                             max_abs_error=args.max_abs_error)
+                             max_abs_error=args.max_abs_error, custom_features_type=args.custom_features)
 
     if os.path.exists(os.path.join(experiment_dir, f"{args.method}_data.json")):
         method_data = MethodData.load(os.path.join(experiment_dir, f"{args.method}_data.json"))
@@ -195,10 +203,39 @@ if __name__ == "__main__":
         if args.method == "whole_word_ime":
             input_text = pretokenized_test_data[idx_example]
 
-        t1 = time()
-        res = method.explain_text(input_text,
-                                  label=predicted_label, min_samples_per_feature=args.min_samples_per_feature)
-        t2 = time()
+        curr_features = None
+        if args.method in {"ime", "sequential_ime"} and args.custom_features in ["words", "sentences"]:
+            feature_key = "word_ids" if args.custom_features == "words" else "sentence_ids"
+
+            input_tokens = model.tokenizer.convert_ids_to_tokens(curr_example["input_ids"][0])
+            res = stanza_bert_words(input_tokens=input_tokens,
+                                    perturbable_mask=torch.logical_not(curr_example["special_tokens_mask"][0]),
+                                    raw_example=input_text,
+                                    pipe=nlp,
+                                    lowercase=args.lowercase)
+            curr_features = []
+            for idx_feature, feature_units in groupby(enumerate(res[feature_key]), lambda index_item: index_item[1]):
+                if idx_feature == -1:  # special tokens (unperturbable) -> don't include
+                    continue
+
+                curr_features.append(list(map(lambda tup: tup[0], feature_units)))
+
+            # print("Features:")
+            # for curr_word in curr_features:
+            #     print([input_tokens[_i] for _i in curr_word])
+
+            # method = method  # type: IMEExplainer
+            t1 = time()
+            res = method.explain_text(input_text,
+                                      label=predicted_label, min_samples_per_feature=args.min_samples_per_feature,
+                                      custom_features=curr_features)
+            t2 = time()
+        else:
+            t1 = time()
+            res = method.explain_text(input_text,
+                                      label=predicted_label, min_samples_per_feature=args.min_samples_per_feature)
+            t2 = time()
+
         print(f"[{args.method}] Taken samples: {res['taken_samples']}")
         print(f"[{args.method}] Time taken: {t2 - t1}")
 
@@ -214,7 +251,8 @@ if __name__ == "__main__":
                                                                   take_as_single_sequence=True))
 
         method_data.add_example(sequence=sequence_tokens, label=predicted_label, probas=probas[0].tolist(),
-                                actual_label=actual_label, importances=res["importance"].tolist(),
+                                actual_label=actual_label, custom_features=curr_features,
+                                importances=res["importance"].tolist(),
                                 variances=res["var"].tolist(), num_samples=res["num_samples"].tolist(),
                                 samples=gen_samples, num_estimated_samples=res["taken_samples"], time_taken=(t2 - t1),
                                 model_scores=[[] if scores is None else scores.tolist()
@@ -227,4 +265,5 @@ if __name__ == "__main__":
             highlight_plot(method_data.sequences, method_data.importances,
                            pred_labels=[method_data.possible_labels[i] for i in method_data.pred_labels],
                            actual_labels=[method_data.possible_labels[i] for i in method_data.actual_labels],
+                           custom_features=method_data.custom_features,
                            path=os.path.join(experiment_dir, f"{args.method}_importances.html"))
