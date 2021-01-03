@@ -1,90 +1,35 @@
-import argparse
 import os
-from itertools import groupby
 from time import time
 
 import stanza
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from experiments.SNLI.data import load_nli, NLIDataset, LABEL_TO_IDX, IDX_TO_LABEL
 from experiments.SNLI.handle_generator import load_generator
 from explain_nlp.experimental.core import MethodData, MethodType
+from explain_nlp.experimental.arguments import parser
 from explain_nlp.methods.dependent_ime_mlm import DependentIMEMaskedLMExplainer
-from explain_nlp.methods.features import stanza_bert_words
+from explain_nlp.methods.features import extract_groups
 from explain_nlp.methods.ime import IMEExplainer, SequentialIMEExplainer, WholeWordIMEExplainer
 from explain_nlp.methods.ime_mlm import IMEMaskedLMExplainer
 from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
 from explain_nlp.visualizations.highlight import highlight_plot
 
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--method", type=str, default="ime", choices=["ime", "sequential_ime", "whole_word_ime",
-                                                                  "ime_mlm", "ime_dependent_mlm"])
-parser.add_argument("--custom_features", type=str, default=None, choices=[None, "words", "sentences"])
-parser.add_argument("--lowercase", action="store_true",
-                    help="Indicate that lowercase tokenization is used. Only relevant if using custom (larger) "
-                         "features, for aligning primary units (e.g. subwords) with custom features (e.g. words).")
-parser.add_argument("--min_samples_per_feature", type=int, default=10,
-                    help="Minimum number of samples that get created for each feature for initial variance estimation")
-parser.add_argument("--confidence_interval", type=float, default=0.5)
-parser.add_argument("--max_abs_error", type=float, default=1.00)
-parser.add_argument("--return_generated_samples", action="store_true")
-parser.add_argument("--return_model_scores", action="store_true")
-
-parser.add_argument("--train_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_train.txt")
-parser.add_argument("--test_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_test_xs.txt")
-
-parser.add_argument("--model_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased")
-parser.add_argument("--model_max_seq_len", type=int, default=41)
-parser.add_argument("--model_max_words", type=int, default=39)
-parser.add_argument("--model_batch_size", type=int, default=2)
-
-parser.add_argument("--generator_type", type=str, default="bert_mlm")
-parser.add_argument("--controlled", action="store_true",
-                    help="Whether to use controlled LM/MLM for generation")
-parser.add_argument("--generator_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/bert-base-uncased-snli-mlm",
-                    help="Path or handle of model to be used as a language modeling generator")
-parser.add_argument("--generator_batch_size", type=int, default=2)
-parser.add_argument("--generator_max_seq_len", type=int, default=41)
-parser.add_argument("--num_generated_samples", type=int, default=10)
-parser.add_argument("--top_p", type=float, default=None)
-
-# Experimental (only in Bert MLM generator) for now
-parser.add_argument("--strategy", type=str, choices=["top_k", "top_p", "threshold", "num_samples"], default="top_k")
-parser.add_argument("--top_k", type=int, default=5)
-parser.add_argument("--threshold", type=float, default=0.1)
-
-parser.add_argument("--seed_start_with_ground_truth", action="store_true")
-parser.add_argument("--reset_seed_after_first", action="store_true")
-
-parser.add_argument("--experiment_dir", type=str, default="debug")
-parser.add_argument("--save_every_n_examples", type=int, default=1,
-                    help="Save experiment data every N examples in order to avoid losing data on longer computations")
-
-parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU")
-parser.add_argument("--verbose", action="store_true")
-
-parser.add_argument("--start_from", type=int, default=None, help="From which example onwards to do computation")
-parser.add_argument("--until", type=int, default=None, help="Until which example to do computation")
-
 if __name__ == "__main__":
     args = parser.parse_args()
 
-    alpha = 1 - args.confidence_interval
     DEVICE = torch.device("cpu") if args.use_cpu else torch.device("cuda")
     print(f"Used device: {DEVICE}")
     nlp = stanza.Pipeline(lang="en", processors="tokenize", use_gpu=not args.use_cpu, tokenize_no_ssplit=True)
     pretokenized_test_data = []
 
-    experiment_dir = args.experiment_dir
-    if experiment_dir is None:
+    if args.experiment_dir is None:
         test_file_name = args.test_path.split(os.path.sep)[-1][:-len(".txt")]  # test file without .txt
-        experiment_dir = f"{test_file_name}_compute_accurate_importances"
-    args.experiment_dir = experiment_dir
+        args.experiment_dir = f"{test_file_name}_compute_accurate_importances"
 
-    if not os.path.exists(experiment_dir):
-        os.makedirs(experiment_dir)
+    if not os.path.exists(args.experiment_dir):
+        os.makedirs(args.experiment_dir)
 
     # Define model and generator
     model = InterpretableBertForSequenceClassification(tokenizer_name=args.model_dir,
@@ -102,7 +47,8 @@ if __name__ == "__main__":
                           labels=df_test["gold_label"].apply(lambda label_str: LABEL_TO_IDX[label_str]).values,
                           tokenizer=model.tokenizer,
                           max_seq_len=args.model_max_seq_len)
-    if args.method == "whole_word_ime":
+
+    if args.method == "whole_word_ime" or args.custom_features == "words":
         pretokenized_test_data = []
         for idx_subset in range((df_test.shape[0] + 1024 - 1) // 1024):
             s, e = idx_subset * 1024, (1 + idx_subset) * 1024
@@ -176,8 +122,8 @@ if __name__ == "__main__":
                              used_data=used_data, confidence_interval=args.confidence_interval,
                              max_abs_error=args.max_abs_error, custom_features_type=args.custom_features)
 
-    if os.path.exists(os.path.join(experiment_dir, f"{args.method}_data.json")):
-        method_data = MethodData.load(os.path.join(experiment_dir, f"{args.method}_data.json"))
+    if os.path.exists(os.path.join(args.experiment_dir, f"{args.method}_data.json")):
+        method_data = MethodData.load(os.path.join(args.experiment_dir, f"{args.method}_data.json"))
 
     start_from = args.start_from if args.start_from is not None else len(method_data)
     start_from = min(start_from, len(test_set))
@@ -185,46 +131,34 @@ if __name__ == "__main__":
     until = min(until, len(test_set))
 
     print(f"Running computation from example#{start_from} (inclusive) to example#{until} (exclusive)")
-    for idx_example, curr_example in enumerate(DataLoader(test_set, batch_size=1, shuffle=False)):
-        if idx_example < start_from:
-            continue
-        if idx_example >= until:
-            break
-
-        _curr_example = {k: v.to(DEVICE) for k, v in curr_example.items() if k not in {"words",
-                                                                                       "labels",
-                                                                                       "special_tokens_mask"}}
-        probas = model.score(**_curr_example)
+    for idx_example, curr_example in enumerate(DataLoader(Subset(test_set, range(start_from, until)), batch_size=1, shuffle=False),
+                                               start=start_from):
+        probas = model.score(**{k: v.to(DEVICE) for k, v in curr_example.items() if k not in {"words",
+                                                                                              "labels",
+                                                                                              "special_tokens_mask"}})
         predicted_label = int(torch.argmax(probas))
         actual_label = int(curr_example["labels"])
 
-        input_text = (df_test.iloc[idx_example]["sentence1"],
-                      df_test.iloc[idx_example]["sentence2"])
         if args.method == "whole_word_ime":
             input_text = pretokenized_test_data[idx_example]
+        else:
+            input_text = (df_test.iloc[idx_example]["sentence1"], df_test.iloc[idx_example]["sentence2"])
 
         curr_features = None
         if args.method in {"ime", "sequential_ime"} and args.custom_features in ["words", "sentences"]:
-            feature_key = "word_ids" if args.custom_features == "words" else "sentence_ids"
+            if args.custom_features == "sentences":
+                raise NotImplementedError()
+
+            encoded = model.to_internal(pretokenized_text_data=[pretokenized_test_data[idx_example]])
+            feature_ids = encoded["aux_data"]["alignment_ids"][0].tolist()
 
             input_tokens = model.tokenizer.convert_ids_to_tokens(curr_example["input_ids"][0])
-            res = stanza_bert_words(input_tokens=input_tokens,
-                                    perturbable_mask=torch.logical_not(curr_example["special_tokens_mask"][0]),
-                                    raw_example=input_text,
-                                    pipe=nlp,
-                                    lowercase=args.lowercase)
-            curr_features = []
-            for idx_feature, feature_units in groupby(enumerate(res[feature_key]), lambda index_item: index_item[1]):
-                if idx_feature == -1:  # special tokens (unperturbable) -> don't include
-                    continue
+            curr_features = extract_groups(feature_ids)
 
-                curr_features.append(list(map(lambda tup: tup[0], feature_units)))
+            print("Features:")
+            for curr_word in curr_features:
+                print([input_tokens[_i] for _i in curr_word])
 
-            # print("Features:")
-            # for curr_word in curr_features:
-            #     print([input_tokens[_i] for _i in curr_word])
-
-            # method = method  # type: IMEExplainer
             t1 = time()
             res = method.explain_text(input_text,
                                       label=predicted_label, min_samples_per_feature=args.min_samples_per_feature,
@@ -259,11 +193,11 @@ if __name__ == "__main__":
                                               for scores in res["scores"]] if args.return_model_scores else [])
 
         if (1 + idx_example) % args.save_every_n_examples == 0:
-            print(f"Saving data to {experiment_dir}")
-            method_data.save(experiment_dir, file_name=f"{args.method}_data.json")
+            print(f"Saving data to {args.experiment_dir}")
+            method_data.save(args.experiment_dir, file_name=f"{args.method}_data.json")
 
             highlight_plot(method_data.sequences, method_data.importances,
                            pred_labels=[method_data.possible_labels[i] for i in method_data.pred_labels],
                            actual_labels=[method_data.possible_labels[i] for i in method_data.actual_labels],
                            custom_features=method_data.custom_features,
-                           path=os.path.join(experiment_dir, f"{args.method}_importances.html"))
+                           path=os.path.join(args.experiment_dir, f"{args.method}_importances.html"))

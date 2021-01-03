@@ -5,84 +5,130 @@ import stanza
 import torch
 from transformers import BertTokenizer
 
+from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
 
-def stanza_bert_words(input_tokens: List[str], perturbable_mask: torch.Tensor,
-                      raw_example: Union[str, Tuple[str, ...]],
-                      pipe: stanza.Pipeline, lowercase=False):
-    # print(input_tokens)
-    flattened_tokens = []
-    sentence_ids, curr_sentence_id = [], 0
-    _raw_example = raw_example if isinstance(raw_example, tuple) else (raw_example,)
-    for curr_seq in _raw_example:
-        curr_doc = pipe(curr_seq)  # type: stanza.Document
-        for curr_sent in curr_doc.sentences:
-            for curr_token in curr_sent.tokens:
-                flattened_tokens.append(curr_token.words[0].text.lower() if lowercase else curr_token.words[0].text)
-                sentence_ids.append(curr_sentence_id)
-            curr_sentence_id += 1
 
-    subword_to_word = []
-    subword_to_sent = []
-    cursor_words = 0
-    cursor_char = 0
-    for i, (curr_unit, is_perturbable) in enumerate(zip(input_tokens, perturbable_mask)):
-        if not is_perturbable:
-            subword_to_word.append(-1)
-            subword_to_sent.append(-1)
+def extract_groups(feature_ids, ignore_index=-1):
+    # e.g. [-1, 0, 0, 1, 0, 2] -> [[1, 2, 4], [3], [5]], assuming ignore_index=-1
+    occurences = {}
+    for i, el in enumerate(feature_ids):
+        if el == ignore_index:
             continue
 
-        curr_unit_norm = curr_unit[2:] if curr_unit.startswith("##") else curr_unit
-        # Some tokens present in original sequence might have been truncated, skip those
-        while cursor_words < len(flattened_tokens) and \
-                flattened_tokens[cursor_words].find(curr_unit_norm, cursor_char) == -1:
-            cursor_words += 1
-            cursor_char = 0
+        curr_occurences = occurences.get(el, [])
+        curr_occurences.append(i)
+        occurences[el] = curr_occurences
 
-        if cursor_words == len(flattened_tokens):
-            raise ValueError(f"Could not find unit '{curr_unit_norm}' among tokens {flattened_tokens}")
-
-        subword_position = flattened_tokens[cursor_words].find(curr_unit_norm, cursor_char)
-        subword_to_word.append(cursor_words)
-        subword_to_sent.append(sentence_ids[cursor_words])
-
-        if subword_position + len(curr_unit_norm) == len(flattened_tokens[cursor_words]):
-            cursor_words += 1
-            cursor_char = 0
-        else:
-            cursor_char += len(curr_unit_norm)
+    return list(occurences.values())
 
 
-    return {
-        "word_ids": subword_to_word,
-        "sentence_ids": subword_to_sent
+def stanza_word_features(raw_example: Union[str, Tuple[str, ...]], pipe: stanza.Pipeline,
+                         do_depparse=False):
+    """ Extract features for words inside `raw_example`. If a tuple is provided, examples are handled
+    independently, but the word IDs do not reset. """
+    global_word_id, global_sent_id = 0, 0
+    eff_example = raw_example if isinstance(raw_example, tuple) else (raw_example,)
+    ret_dict = {
+        "words": [],
+        "word_id_to_sent_id": {}
     }
+    if do_depparse:
+        ret_dict["word_id_to_head_id"] = {}
+        ret_dict["word_id_to_deprel"] = {}
+        ret_dict["word_id_to_depth"] = {}
+
+    for curr_example in eff_example:
+        doc = pipe(curr_example)  # type: stanza.Document
+
+        for curr_sent in doc.sentences:
+            for curr_word in curr_sent.words:
+                ret_dict["words"].append(curr_word.text)
+                ret_dict["word_id_to_sent_id"][global_word_id] = global_sent_id
+
+                if do_depparse:
+                    ret_dict["word_id_to_deprel"][global_word_id] = curr_word.deprel
+                    # If word is a root, assign head word ID to itself
+                    head_word_id = (global_word_id + (curr_word.head - curr_word.id)) if curr_word.head != 0 else global_word_id
+                    ret_dict["word_id_to_head_id"][global_word_id] = head_word_id
+
+                    # How far is the current word from ROOT in the dependency tree
+                    head_id = curr_word.head
+                    depth = 0
+                    while head_id != 0:
+                        head_id = curr_sent.words[head_id - 1].head  # head_id is 1-based as 0 = ROOT
+                        depth += 1
+
+                    ret_dict["word_id_to_depth"][global_word_id] = depth
+
+                global_word_id += 1
+
+            global_sent_id += 1
+
+    return ret_dict
+
+
+def depparse_custom_groups_1(head_ids, deprels):
+    """ Group some "supporting" words with their "main" words. Heuristic approach"""
+    num_words = len(head_ids)
+    group_to_words = {i: [i] for i in range(num_words)}
+    word_to_group = {i: i for i in range(num_words)}
+    MERGED_DEPRELS = {"det", "aux", "nummod"}
+
+    for idx_word in range(num_words):
+        word_group = word_to_group[idx_word]
+        head_group = word_to_group[head_ids[idx_word]]
+        if word_group == head_group:
+            continue
+
+        merge = False
+
+        if deprels[idx_word] in MERGED_DEPRELS:
+            merge = True
+
+        if merge:
+            # Transfer units from current word's group to head's group
+            for unit in group_to_words[word_group]:
+                word_to_group[unit] = head_group
+                group_to_words[head_group].append(unit)
+
+            del group_to_words[word_group]
+
+    return word_to_group
 
 
 if __name__ == "__main__":
-    example = ("Stretching high in the air, the player in the black shirt reaches for the football as the other stretches toward him to steal it away.",
-               "A wide reciever is trying to make a catch.")
+    example = ("Unbelieveable, Jeff. What a goal!", "Peter Crouch scores and it's one nil for Stoke.")
 
     tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-    do_lower = True
+    do_depparse = True
+    USED_PROCESSORS = "tokenize{}".format(",pos,lemma,depparse" if do_depparse else "")
+    nlp = stanza.Pipeline(lang="en", processors=USED_PROCESSORS)
 
-    if do_lower:
-        example = (example[0].lower(), example[1].lower())
+    model = InterpretableBertForSequenceClassification(
+        model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased",
+        tokenizer_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased",
+        batch_size=2,
+        max_seq_len=41,
+        device="cpu"
+    )
 
-    bert_encoded = tokenizer.encode_plus(*example, return_special_tokens_mask=True, max_length=41, padding="max_length")
-    input_tokens = tokenizer.convert_ids_to_tokens(bert_encoded["input_ids"])
-    print(input_tokens)
+    pretokenized_example = [
+        (
+            [word.text for sent in nlp(example[0]).sentences for word in sent.words],
+            [word.text for sent in nlp(example[1]).sentences for word in sent.words]
+        )
+    ]
+    encoded_input = model.to_internal(pretokenized_text_data=pretokenized_example)
+    input_tokens = model.convert_ids_to_tokens(encoded_input["input_ids"])[0]
+    res = stanza_word_features(example, pipe=nlp, do_depparse=do_depparse)
 
-    nlp = stanza.Pipeline(lang="en", processors="tokenize")
-    # word_ids, sentence_ids
-    res = stanza_bert_words(input_tokens, [not is_special for is_special in bert_encoded["special_tokens_mask"]],
-                                     example, nlp, lowercase=do_lower)
+    word_ids = encoded_input["aux_data"]["alignment_ids"][0].tolist()
+    custom_ids = [res["word_id_to_sent_id"].get(curr_word_id, -1) for curr_word_id in word_ids]
 
-    word_features = []
-    for idx_word, word_units in groupby(enumerate(res["sentence_ids"]), lambda index_item: index_item[1]):
-        if idx_word == -1:  # special tokens (unperturbable) -> don't include
-            continue
+    if do_depparse:
+        word_to_custom_group = depparse_custom_groups_1(res["word_id_to_head_id"], res["word_id_to_deprel"])
+        custom_ids = [word_to_custom_group.get(curr_word_id, -1) for curr_word_id in word_ids]
 
-        word_features.append(list(map(lambda tup: tup[0], word_units)))
-
-    for curr_word in word_features:
-        print([input_tokens[_i] for _i in curr_word])
+    custom_features = extract_groups(custom_ids)
+    for curr_group in custom_features:
+        print([input_tokens[_i] for _i in curr_group])

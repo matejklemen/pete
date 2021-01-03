@@ -157,7 +157,7 @@ def highlight_plot(sequences: List[List[str]],
                 if is_multiunit[idx_tok]:
                     tok_parts.append(f"<span class='unit-id'>#{token_to_importance[idx_tok]}</span>")
 
-            tok_parts.append(curr_tok)
+            tok_parts.append(str(curr_tok))
 
             if is_end[idx_tok]:
                 tok_parts.append(f"</span>")
