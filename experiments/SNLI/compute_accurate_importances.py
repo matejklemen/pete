@@ -10,7 +10,7 @@ from experiments.SNLI.handle_generator import load_generator
 from explain_nlp.experimental.core import MethodData, MethodType
 from explain_nlp.experimental.arguments import parser
 from explain_nlp.methods.dependent_ime_mlm import DependentIMEMaskedLMExplainer
-from explain_nlp.methods.features import extract_groups
+from explain_nlp.methods.features import extract_groups, stanza_word_features, depparse_custom_groups_1
 from explain_nlp.methods.ime import IMEExplainer, SequentialIMEExplainer, WholeWordIMEExplainer
 from explain_nlp.methods.ime_mlm import IMEMaskedLMExplainer
 from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
@@ -130,6 +130,9 @@ if __name__ == "__main__":
     until = args.until if args.until is not None else len(test_set)
     until = min(until, len(test_set))
 
+    if args.custom_features.startswith("depparse"):
+        nlp = stanza.Pipeline(lang="en", processors="tokenize,lemma,pos,depparse")
+
     print(f"Running computation from example#{start_from} (inclusive) to example#{until} (exclusive)")
     for idx_example, curr_example in enumerate(DataLoader(Subset(test_set, range(start_from, until)), batch_size=1, shuffle=False),
                                                start=start_from):
@@ -146,14 +149,36 @@ if __name__ == "__main__":
 
         curr_features = None
         if args.method in {"ime", "sequential_ime"} and args.custom_features is not None:
-            if args.custom_features == "sentences":
-                raise NotImplementedError()
-
+            # Obtain word IDs for subwords in all cases as the custom features are usually obtained from words
             encoded = model.to_internal(pretokenized_text_data=[pretokenized_test_data[idx_example]])
-            feature_ids = encoded["aux_data"]["alignment_ids"][0].tolist()
+            word_ids = encoded["aux_data"]["alignment_ids"][0].tolist()
+
+            if args.custom_features == "words":
+                feature_ids = word_ids
+            elif args.custom_features == "sentences":
+                res = stanza_word_features(
+                    raw_example=(df_test.iloc[idx_example]["sentence1"], df_test.iloc[idx_example]["sentence2"]),
+                    pipe=nlp
+                )
+                feature_ids = [res["word_id_to_sent_id"].get(curr_word_id, -1) for curr_word_id in word_ids]
+            elif args.custom_features.startswith("depparse"):
+                res = stanza_word_features(
+                    raw_example=(df_test.iloc[idx_example]["sentence1"], df_test.iloc[idx_example]["sentence2"]),
+                    pipe=nlp,
+                    do_depparse=True
+                )
+
+                if args.custom_features == "depparse_simple":
+                    custom_groups = depparse_custom_groups_1(res["word_id_to_head_id"], res["word_id_to_deprel"])
+                else:
+                    raise ValueError(f"Unrecognized option for custom_features: '{args.custom_features}'")
+
+                feature_ids = [custom_groups.get(curr_word_id, -1) for curr_word_id in word_ids]
+            else:
+                raise NotImplementedError
 
             input_tokens = model.tokenizer.convert_ids_to_tokens(curr_example["input_ids"][0])
-            curr_features = extract_groups(feature_ids)
+            curr_features = extract_groups(feature_ids, ignore_index=-1)
 
             t1 = time()
             res = method.explain_text(input_text, pretokenized_text_data=pretokenized_test_data[idx_example],
