@@ -130,7 +130,7 @@ if __name__ == "__main__":
     until = args.until if args.until is not None else len(test_set)
     until = min(until, len(test_set))
 
-    if args.custom_features.startswith("depparse"):
+    if args.custom_features is not None and args.custom_features.startswith("depparse"):
         nlp = stanza.Pipeline(lang="en", processors="tokenize,lemma,pos,depparse")
 
     print(f"Running computation from example#{start_from} (inclusive) to example#{until} (exclusive)")
