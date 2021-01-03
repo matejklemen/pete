@@ -48,7 +48,7 @@ if __name__ == "__main__":
                           tokenizer=model.tokenizer,
                           max_seq_len=args.model_max_seq_len)
 
-    if args.method == "whole_word_ime" or args.custom_features == "words":
+    if args.method == "whole_word_ime" or args.custom_features is not None:
         pretokenized_test_data = []
         for idx_subset in range((df_test.shape[0] + 1024 - 1) // 1024):
             s, e = idx_subset * 1024, (1 + idx_subset) * 1024
@@ -145,7 +145,7 @@ if __name__ == "__main__":
             input_text = (df_test.iloc[idx_example]["sentence1"], df_test.iloc[idx_example]["sentence2"])
 
         curr_features = None
-        if args.method in {"ime", "sequential_ime"} and args.custom_features in ["words", "sentences"]:
+        if args.method in {"ime", "sequential_ime"} and args.custom_features is not None:
             if args.custom_features == "sentences":
                 raise NotImplementedError()
 
@@ -155,12 +155,8 @@ if __name__ == "__main__":
             input_tokens = model.tokenizer.convert_ids_to_tokens(curr_example["input_ids"][0])
             curr_features = extract_groups(feature_ids)
 
-            print("Features:")
-            for curr_word in curr_features:
-                print([input_tokens[_i] for _i in curr_word])
-
             t1 = time()
-            res = method.explain_text(input_text,
+            res = method.explain_text(input_text, pretokenized_text_data=pretokenized_test_data[idx_example],
                                       label=predicted_label, min_samples_per_feature=args.min_samples_per_feature,
                                       custom_features=curr_features)
             t2 = time()

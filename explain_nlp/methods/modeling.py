@@ -14,7 +14,11 @@ class InterpretableModel:
         """ Convert from internal model representation to text."""
         raise NotImplementedError
 
-    def to_internal(self, text_data: List[Union[str, Tuple[str, ...]]]) -> Dict:
+    def to_internal(self, text_data: List[Union[str, Tuple[str, ...]]],
+                    pretokenized_text_data: Optional[Union[
+                        List[List[str]],
+                        List[Tuple[List[str], ...]]
+                    ]] = None) -> Dict:
         """ Convert from text to internal model representation. Make sure to include 'perturbable_mask' in the
         returned dictionary."""
         raise NotImplementedError
@@ -348,7 +352,7 @@ class DummySentiment(InterpretableModel):
                       take_as_single_sequence: bool = False) -> List[str]:
         return [" ".join([self.id2tok[i] for i in sequence]) for sequence in encoded_data.tolist()]
 
-    def to_internal(self, text_data: List[str]) -> Dict:
+    def to_internal(self, text_data: List[str], pretokenized_text_data=None) -> Dict:
         tokenized_examples = [text.split(" ") for text in text_data]
         encoded_tokens = []
         # Encode and pad/truncate to max length

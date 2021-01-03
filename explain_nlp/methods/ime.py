@@ -302,9 +302,11 @@ class IMEExplainer:
 
     def explain_text(self, text_data: Union[str, Tuple[str, ...]], label: Optional[int] = 0,
                      min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None,
+                     pretokenized_text_data: Optional[Union[List[str], Tuple[List[str], ...]]] = None,
                      custom_features: Optional[List[List[int]]] = None):
         # Convert instance being interpreted to representation of interpreted model
-        model_instance = self.model.to_internal([text_data])
+        model_instance = self.model.to_internal([text_data],
+                                                pretokenized_text_data=[pretokenized_text_data] if pretokenized_text_data is not None else None)
 
         res = self.explain(model_instance["input_ids"], label, perturbable_mask=model_instance["perturbable_mask"],
                            min_samples_per_feature=min_samples_per_feature, max_samples=max_samples,
@@ -502,6 +504,7 @@ class WholeWordIMEExplainer(IMEExplainer):
 
     def explain_text(self, text_data: Union[List[str], Tuple[List[str], ...]], label: Optional[int] = 0,
                      min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None,
+                     pretokenized_text_data: Optional[Union[List[str], Tuple[List[str], ...]]] = None,  # unused
                      custom_features: Optional[List[List[int]]] = None):
         # Convert instance being interpreted to representation of interpreted model
         model_instance = self.model.words_to_internal([text_data])
