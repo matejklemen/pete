@@ -68,11 +68,12 @@ def stanza_word_features(raw_example: Union[str, Tuple[str, ...]], pipe: stanza.
 
 
 def depparse_custom_groups_1(head_ids, deprels):
-    """ Group some "supporting" words with their "main" words. Heuristic approach"""
+    """ A very simple heuristic approach for grouping words into bigger units.
+        Group some "supporting" words with their "main" words or group multi-word expressions."""
     num_words = len(head_ids)
     group_to_words = {i: [i] for i in range(num_words)}
     word_to_group = {i: i for i in range(num_words)}
-    MERGED_DEPRELS = {"det", "aux", "nummod"}
+    MERGED_DEPRELS = {"det", "det:predet", "aux", "flat", "flat:foreign", "flat:name", "compound"}
 
     for idx_word in range(num_words):
         word_group = word_to_group[idx_word]
@@ -97,7 +98,7 @@ def depparse_custom_groups_1(head_ids, deprels):
 
 
 if __name__ == "__main__":
-    example = ("Unbelieveable, Jeff. What a goal!", "Peter Crouch scores and it's one nil for Stoke.")
+    example = ("Unbelieveable, Jeff. What a goal!", "Peter Crouch scores and it's one nil for Stoke City.")
 
     tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
     do_depparse = True
