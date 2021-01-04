@@ -12,12 +12,14 @@ from explain_nlp.experimental.handle_explainer import load_explainer
 from explain_nlp.experimental.handle_features import handle_features
 from explain_nlp.experimental.handle_generator import load_generator
 from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
+from explain_nlp.methods.utils import estimate_max_samples
 from explain_nlp.visualizations.highlight import highlight_plot
 
 if __name__ == "__main__":
     args = parser.parse_args()
 
     DEVICE = torch.device("cpu") if args.use_cpu else torch.device("cuda")
+    print(f"Experiment type: '{args.experiment_type}'")
     print(f"Used device: {DEVICE}")
     print(f"Using method '{args.method}'")
     if args.custom_features is not None:
@@ -25,10 +27,11 @@ if __name__ == "__main__":
 
     nlp = stanza.Pipeline(lang="en", processors="tokenize", use_gpu=not args.use_cpu, tokenize_no_ssplit=True)
     pretokenized_test_data = []
+    compute_accurately = args.experiment_type == "accurate_importances"
 
     if args.experiment_dir is None:
         test_file_name = args.test_path.split(os.path.sep)[-1][:-len(".txt")]  # test file without .txt
-        args.experiment_dir = f"{test_file_name}_compute_accurate_importances"
+        args.experiment_dir = f"{test_file_name}_compute_{args.experiment_type}"
 
     if not os.path.exists(args.experiment_dir):
         os.makedirs(args.experiment_dir)
@@ -85,8 +88,10 @@ if __name__ == "__main__":
 
             used_sample_data = model.words_to_internal(pretokenized_train_data)["input_ids"]
 
-    method, method_type = load_explainer(method=args.method, model=model, confidence_interval=args.confidence_interval,
-                                         max_abs_error=args.max_abs_error, return_model_scores=args.return_model_scores,
+    method, method_type = load_explainer(method=args.method, model=model,
+                                         confidence_interval=args.confidence_interval if compute_accurately else None,
+                                         max_abs_error=args.max_abs_error if compute_accurately else None,
+                                         return_model_scores=args.return_model_scores,
                                          return_generated_samples=args.return_generated_samples,
                                          # Method-specific options below:
                                          used_sample_data=used_sample_data, generator=generator,
@@ -149,8 +154,16 @@ if __name__ == "__main__":
                                       label=predicted_label, min_samples_per_feature=args.min_samples_per_feature)
             t2 = time()
 
-        print(f"[{args.method}] Taken samples: {res['taken_samples']}")
-        print(f"[{args.method}] Time taken: {t2 - t1}")
+        taken_or_estimated_samples = None
+        if compute_accurately:
+            taken_or_estimated_samples = res['taken_samples']
+        else:
+            taken_or_estimated_samples = int(estimate_max_samples(res["var"] * res["num_samples"],
+                                                                  alpha=(1 - args.confidence_interval),
+                                                                  max_abs_error=args.max_abs_error))
+
+        print(f"[{args.method}] {'taken' if compute_accurately else '(estimated) required'} samples: {taken_or_estimated_samples}")
+        print(f"[{args.method}] Time taken: {t2 - t1:.2f}s")
 
         sequence_tokens = res["input"]
 

@@ -6,7 +6,6 @@ from explain_nlp.methods.ime_mlm import IMEMaskedLMExplainer
 
 def load_explainer(method: str, model, confidence_interval, max_abs_error,
                    return_model_scores, return_generated_samples, **kwargs):
-    # TODO: use this method in scripts instead of the actual code
     if method in {"ime", "sequential_ime", "whole_word_ime"}:
         method_type = MethodType.IME
 

@@ -1,17 +1,19 @@
 import argparse
 
 parser = argparse.ArgumentParser()
+parser.add_argument("--experiment_type", type=str, choices=["accurate_importances", "required_samples"],
+                    default="required_samples")
 parser.add_argument("--method", type=str, default="ime",
                     choices=["ime", "sequential_ime", "whole_word_ime", "ime_mlm", "ime_dependent_mlm"])
-parser.add_argument("--custom_features", type=str, default=None,
+parser.add_argument("--custom_features", type=str, default="depparse_simple",
                     choices=[None, "words", "sentences", "depparse_simple", "depparse_depth"])
 parser.add_argument("--lowercase", action="store_true",
                     help="Indicate that lowercase tokenization is used. Only relevant if using custom (larger) "
                          "features, for aligning primary units (e.g. subwords) with custom features (e.g. words).")
 parser.add_argument("--min_samples_per_feature", type=int, default=10,
                     help="Minimum number of samples that get created for each feature for initial variance estimation")
-parser.add_argument("--confidence_interval", type=float, default=0.5)
-parser.add_argument("--max_abs_error", type=float, default=1.00)
+parser.add_argument("--confidence_interval", type=float, default=0.99)
+parser.add_argument("--max_abs_error", type=float, default=0.01)
 parser.add_argument("--return_generated_samples", action="store_true")
 parser.add_argument("--return_model_scores", action="store_true")
 
