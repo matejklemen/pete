@@ -10,7 +10,8 @@ from experiments.SNLI.handle_generator import load_generator
 from explain_nlp.experimental.core import MethodData, MethodType
 from explain_nlp.experimental.arguments import parser
 from explain_nlp.methods.dependent_ime_mlm import DependentIMEMaskedLMExplainer
-from explain_nlp.methods.features import extract_groups, stanza_word_features, depparse_custom_groups_1
+from explain_nlp.methods.features import extract_groups, stanza_word_features, depparse_custom_groups_1, \
+    depparse_custom_groups_2
 from explain_nlp.methods.ime import IMEExplainer, SequentialIMEExplainer, WholeWordIMEExplainer
 from explain_nlp.methods.ime_mlm import IMEMaskedLMExplainer
 from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
@@ -170,6 +171,8 @@ if __name__ == "__main__":
 
                 if args.custom_features == "depparse_simple":
                     custom_groups = depparse_custom_groups_1(res["word_id_to_head_id"], res["word_id_to_deprel"])
+                elif args.custom_features == "depparse_depth":
+                    custom_groups = depparse_custom_groups_2(res["word_id_to_head_id"], res["word_id_to_depth"])
                 else:
                     raise ValueError(f"Unrecognized option for custom_features: '{args.custom_features}'")
 

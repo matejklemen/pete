@@ -81,9 +81,34 @@ def depparse_custom_groups_1(head_ids, deprels):
         if word_group == head_group:
             continue
 
+        merge = deprels[idx_word] in MERGED_DEPRELS
+
+        if merge:
+            # Transfer units from current word's group to head's group
+            for unit in group_to_words[word_group]:
+                word_to_group[unit] = head_group
+                group_to_words[head_group].append(unit)
+
+            del group_to_words[word_group]
+
+    return word_to_group
+
+
+def depparse_custom_groups_2(head_ids, depths):
+    """ Heuristic approach that groups together words in same subtree at depth >= 1. """
+    num_words = len(head_ids)
+    group_to_words = {i: [i] for i in range(num_words)}
+    word_to_group = {i: i for i in range(num_words)}
+
+    for idx_word in range(num_words):
+        word_group = word_to_group[idx_word]
+        head_group = word_to_group[head_ids[idx_word]]
+        if word_group == head_group:
+            continue
+
         merge = False
 
-        if deprels[idx_word] in MERGED_DEPRELS:
+        if depths[head_ids[idx_word]] >= 1:
             merge = True
 
         if merge:
@@ -127,7 +152,11 @@ if __name__ == "__main__":
     custom_ids = [res["word_id_to_sent_id"].get(curr_word_id, -1) for curr_word_id in word_ids]
 
     if do_depparse:
-        word_to_custom_group = depparse_custom_groups_1(res["word_id_to_head_id"], res["word_id_to_deprel"])
+        # Custom heuristics
+        # word_to_custom_group = depparse_custom_groups_1(res["word_id_to_head_id"], res["word_id_to_deprel"])
+
+        # Merge subtrees with root depth >= 1 together
+        word_to_custom_group = depparse_custom_groups_2(res["word_id_to_head_id"], res["word_id_to_depth"])
         custom_ids = [word_to_custom_group.get(curr_word_id, -1) for curr_word_id in word_ids]
 
     custom_features = extract_groups(custom_ids)
