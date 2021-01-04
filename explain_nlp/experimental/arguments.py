@@ -3,7 +3,7 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument("--method", type=str, default="ime",
                     choices=["ime", "sequential_ime", "whole_word_ime", "ime_mlm", "ime_dependent_mlm"])
-parser.add_argument("--custom_features", type=str, default="depparse_depth",
+parser.add_argument("--custom_features", type=str, default=None,
                     choices=[None, "words", "sentences", "depparse_simple", "depparse_depth"])
 parser.add_argument("--lowercase", action="store_true",
                     help="Indicate that lowercase tokenization is used. Only relevant if using custom (larger) "
