@@ -6,14 +6,11 @@ import torch
 from torch.utils.data import DataLoader, Subset
 
 from explain_nlp.experimental.arguments import parser
-from explain_nlp.experimental.core import MethodData, MethodType
+from explain_nlp.experimental.core import MethodData
 from explain_nlp.experimental.data import load_nli, TransformerSeqPairDataset, LABEL_TO_IDX, IDX_TO_LABEL
+from explain_nlp.experimental.handle_explainer import load_explainer
+from explain_nlp.experimental.handle_features import handle_features
 from explain_nlp.experimental.handle_generator import load_generator
-from explain_nlp.methods.dependent_ime_mlm import DependentIMEMaskedLMExplainer
-from explain_nlp.methods.features import extract_groups, stanza_word_features, depparse_custom_groups_1, \
-    depparse_custom_groups_2
-from explain_nlp.methods.ime import IMEExplainer, SequentialIMEExplainer, WholeWordIMEExplainer
-from explain_nlp.methods.ime_mlm import IMEMaskedLMExplainer
 from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
 from explain_nlp.visualizations.highlight import highlight_plot
 
@@ -22,6 +19,10 @@ if __name__ == "__main__":
 
     DEVICE = torch.device("cpu") if args.use_cpu else torch.device("cuda")
     print(f"Used device: {DEVICE}")
+    print(f"Using method '{args.method}'")
+    if args.custom_features is not None:
+        print(f"Using custom features: '{args.custom_features}'")
+
     nlp = stanza.Pipeline(lang="en", processors="tokenize", use_gpu=not args.use_cpu, tokenize_no_ssplit=True)
     pretokenized_test_data = []
 
@@ -39,7 +40,7 @@ if __name__ == "__main__":
                                                        max_seq_len=args.model_max_seq_len,
                                                        max_words=args.model_max_words,
                                                        device="cpu" if args.use_cpu else "cuda")
-    temp_model_desc = {"type": "bert", "max_seq_len": args.model_max_seq_len, "handle": args.model_dir}
+    model_desc = {"type": "bert", "max_seq_len": args.model_max_seq_len, "handle": args.model_dir}
     generator, gen_desc = load_generator(args,
                                          clm_labels=[IDX_TO_LABEL["snli"][i] for i in sorted(IDX_TO_LABEL["snli"])])
 
@@ -51,7 +52,6 @@ if __name__ == "__main__":
                                          max_seq_len=args.model_max_seq_len)
 
     if args.method == "whole_word_ime" or args.custom_features is not None:
-        pretokenized_test_data = []
         for idx_subset in range((df_test.shape[0] + 1024 - 1) // 1024):
             s, e = idx_subset * 1024, (1 + idx_subset) * 1024
             for s0, s1 in zip(nlp("\n\n".join(df_test["sentence1"].iloc[s: e].values)).sentences,
@@ -62,30 +62,17 @@ if __name__ == "__main__":
                 ))
 
     used_data = {"test_path": args.test_path}
-    print(f"Using method '{args.method}'")
-    if args.custom_features is not None:
-        print(f"Using custom features: '{args.custom_features}'")
-
-    # Define explanation methods
+    used_sample_data = None
     if args.method in {"ime", "sequential_ime", "whole_word_ime"}:
-        method_type = MethodType.IME
         used_data["train_path"] = args.train_path
         df_train = load_nli(args.train_path).sample(frac=1.0).reset_index(drop=True)
-        train_set = TransformerSeqPairDataset(df_train["sentence1"].values,
-                                              df_train["sentence2"].values,
+        train_set = TransformerSeqPairDataset(df_train["sentence1"].values, df_train["sentence2"].values,
                                               labels=df_train["gold_label"].apply(
                                                   lambda label_str: LABEL_TO_IDX["snli"][label_str]).values,
-                                              tokenizer=model.tokenizer,
-                                              max_seq_len=args.model_max_seq_len)
+                                              tokenizer=model.tokenizer, max_seq_len=args.model_max_seq_len)
 
         used_sample_data = train_set.input_ids
-        if args.method == "ime":
-            explainer_cls = IMEExplainer
-        elif args.method == "sequential_ime":
-            explainer_cls = SequentialIMEExplainer
-        elif args.method == "whole_word_ime":
-            explainer_cls = WholeWordIMEExplainer
-
+        if args.method == "whole_word_ime":
             pretokenized_train_data = []
             for idx_subset in range((df_train.shape[0] + 1024 - 1) // 1024):
                 s, e = idx_subset * 1024, (1 + idx_subset) * 1024
@@ -97,34 +84,18 @@ if __name__ == "__main__":
                     ))
 
             used_sample_data = model.words_to_internal(pretokenized_train_data)["input_ids"]
-        else:
-            raise ValueError(f"'Unrecognized method: '{args.method}'")
 
-        method = explainer_cls(sample_data=used_sample_data, model=model,
-                               confidence_interval=args.confidence_interval, max_abs_error=args.max_abs_error,
-                               return_scores=args.return_model_scores, return_num_samples=True,
-                               return_samples=args.return_generated_samples, return_variance=True)
-    elif args.method == "ime_mlm":
-        method_type = MethodType.INDEPENDENT_IME_MLM
-        method = IMEMaskedLMExplainer(model=model, generator=generator,
-                                      confidence_interval=args.confidence_interval, max_abs_error=args.max_abs_error,
-                                      num_generated_samples=args.num_generated_samples,
-                                      return_scores=args.return_model_scores, return_num_samples=True,
-                                      return_samples=args.return_generated_samples, return_variance=True)
-    elif args.method == "ime_dependent_mlm":
-        method_type = MethodType.DEPENDENT_IME_MLM
-        method = DependentIMEMaskedLMExplainer(model=model, generator=generator, verbose=args.verbose,
-                                               confidence_interval=args.confidence_interval, max_abs_error=args.max_abs_error,
-                                               return_scores=args.return_model_scores, return_num_samples=True,
-                                               return_samples=args.return_generated_samples, return_variance=True,
-                                               controlled=args.controlled,
-                                               seed_start_with_ground_truth=args.seed_start_with_ground_truth,
-                                               reset_seed_after_first=args.reset_seed_after_first)
-    else:
-        raise NotImplementedError(f"Unsupported method: '{args.method}'")
+    method, method_type = load_explainer(method=args.method, model=model, confidence_interval=args.confidence_interval,
+                                         max_abs_error=args.max_abs_error, return_model_scores=args.return_model_scores,
+                                         return_generated_samples=args.return_generated_samples,
+                                         # Method-specific options below:
+                                         used_sample_data=used_sample_data, generator=generator,
+                                         num_generated_samples=args.num_generated_samples, controlled=args.controlled,
+                                         seed_start_with_ground_truth=args.seed_start_with_ground_truth,
+                                         reset_seed_after_first=args.reset_seed_after_first)
 
     # Container that wraps debugging data and a lot of repetitive appends
-    method_data = MethodData(method_type=method_type, model_description=temp_model_desc,
+    method_data = MethodData(method_type=method_type, model_description=model_desc,
                              generator_description=gen_desc, min_samples_per_feature=args.min_samples_per_feature,
                              possible_labels=[IDX_TO_LABEL["snli"][i] for i in sorted(IDX_TO_LABEL["snli"])],
                              used_data=used_data, confidence_interval=args.confidence_interval,
@@ -161,34 +132,11 @@ if __name__ == "__main__":
             encoded = model.to_internal(pretokenized_text_data=[pretokenized_test_data[idx_example]])
             word_ids = encoded["aux_data"]["alignment_ids"][0].tolist()
 
-            if args.custom_features == "words":
-                feature_ids = word_ids
-            elif args.custom_features == "sentences":
-                res = stanza_word_features(
-                    raw_example=(df_test.iloc[idx_example]["sentence1"], df_test.iloc[idx_example]["sentence2"]),
-                    pipe=nlp
-                )
-                feature_ids = [res["word_id_to_sent_id"].get(curr_word_id, -1) for curr_word_id in word_ids]
-            elif args.custom_features.startswith("depparse"):
-                res = stanza_word_features(
-                    raw_example=(df_test.iloc[idx_example]["sentence1"], df_test.iloc[idx_example]["sentence2"]),
-                    pipe=nlp,
-                    do_depparse=True
-                )
-
-                if args.custom_features == "depparse_simple":
-                    custom_groups = depparse_custom_groups_1(res["word_id_to_head_id"], res["word_id_to_deprel"])
-                elif args.custom_features == "depparse_depth":
-                    custom_groups = depparse_custom_groups_2(res["word_id_to_head_id"], res["word_id_to_depth"])
-                else:
-                    raise ValueError(f"Unrecognized option for custom_features: '{args.custom_features}'")
-
-                feature_ids = [custom_groups.get(curr_word_id, -1) for curr_word_id in word_ids]
-            else:
-                raise NotImplementedError
-
-            input_tokens = model.tokenizer.convert_ids_to_tokens(curr_example["input_ids"][0])
-            curr_features = extract_groups(feature_ids, ignore_index=-1)
+            curr_features = handle_features(args.custom_features,
+                                            word_ids=word_ids,
+                                            raw_example=(df_test.iloc[idx_example]["sentence1"],
+                                                         df_test.iloc[idx_example]["sentence2"]),
+                                            pipe=nlp)
 
             t1 = time()
             res = method.explain_text(input_text, pretokenized_text_data=pretokenized_test_data[idx_example],
