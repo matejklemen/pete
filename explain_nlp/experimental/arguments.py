@@ -7,9 +7,6 @@ parser.add_argument("--method", type=str, default="ime",
                     choices=["ime", "sequential_ime", "whole_word_ime", "ime_mlm", "ime_dependent_mlm"])
 parser.add_argument("--custom_features", type=str, default="depparse_simple",
                     choices=[None, "words", "sentences", "depparse_simple", "depparse_depth"])
-parser.add_argument("--lowercase", action="store_true",
-                    help="Indicate that lowercase tokenization is used. Only relevant if using custom (larger) "
-                         "features, for aligning primary units (e.g. subwords) with custom features (e.g. words).")
 parser.add_argument("--min_samples_per_feature", type=int, default=10,
                     help="Minimum number of samples that get created for each feature for initial variance estimation")
 parser.add_argument("--confidence_interval", type=float, default=0.99)
