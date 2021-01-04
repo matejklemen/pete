@@ -1,8 +1,9 @@
-from experiments.SNLI.data import IDX_TO_LABEL
+from typing import List, Optional
+
 from explain_nlp.methods.generation import BertForMaskedLMGenerator, GPTLMGenerator, GPTControlledLMGenerator
 
 
-def load_generator(args):
+def load_generator(args, clm_labels: Optional[List[str]] = None):
     # IME does not require a generator and loading it would be a waste of a lot of memory
     if args.method in ["ime", "sequential_ime", "whole_word_ime"]:
         return None, {}
@@ -34,7 +35,7 @@ def load_generator(args):
     elif args.generator_type == "gpt_controlled_lm":
         generator = GPTControlledLMGenerator(tokenizer_name=args.generator_dir,
                                              model_name=args.generator_dir,
-                                             possible_labels=[IDX_TO_LABEL[i] for i in sorted(IDX_TO_LABEL.keys())],
+                                             possible_labels=clm_labels,
                                              batch_size=args.generator_batch_size,
                                              max_seq_len=args.generator_max_seq_len,
                                              device="cpu" if args.use_cpu else "cuda",

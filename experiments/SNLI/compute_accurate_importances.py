@@ -5,10 +5,10 @@ import stanza
 import torch
 from torch.utils.data import DataLoader, Subset
 
-from explain_nlp.experimental.data import load_nli, TransformerSeqPairDataset, LABEL_TO_IDX, IDX_TO_LABEL
-from experiments.SNLI.handle_generator import load_generator
-from explain_nlp.experimental.core import MethodData, MethodType
 from explain_nlp.experimental.arguments import parser
+from explain_nlp.experimental.core import MethodData, MethodType
+from explain_nlp.experimental.data import load_nli, TransformerSeqPairDataset, LABEL_TO_IDX, IDX_TO_LABEL
+from explain_nlp.experimental.handle_generator import load_generator
 from explain_nlp.methods.dependent_ime_mlm import DependentIMEMaskedLMExplainer
 from explain_nlp.methods.features import extract_groups, stanza_word_features, depparse_custom_groups_1, \
     depparse_custom_groups_2
@@ -40,7 +40,8 @@ if __name__ == "__main__":
                                                        max_words=args.model_max_words,
                                                        device="cpu" if args.use_cpu else "cuda")
     temp_model_desc = {"type": "bert", "max_seq_len": args.model_max_seq_len, "handle": args.model_dir}
-    generator, gen_desc = load_generator(args)
+    generator, gen_desc = load_generator(args,
+                                         clm_labels=[IDX_TO_LABEL["snli"][i] for i in sorted(IDX_TO_LABEL["snli"])])
 
     df_test = load_nli(args.test_path)
     test_set = TransformerSeqPairDataset(df_test["sentence1"].values, df_test["sentence2"].values,
