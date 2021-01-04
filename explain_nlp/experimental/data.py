@@ -1,13 +1,19 @@
+from typing import Iterable
+
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-LABEL_TO_IDX = {"entailment": 0, "neutral": 1, "contradiction": 2}
-IDX_TO_LABEL = {i: label for label, i in LABEL_TO_IDX.items()}
+LABEL_TO_IDX = {
+    "snli": {"entailment": 0, "neutral": 1, "contradiction": 2}
+}
+IDX_TO_LABEL = {dataset: {i: lbl for lbl, i in label_mapping.items()}
+                for dataset, label_mapping in LABEL_TO_IDX.items()}
 
 
-class NLIDataset(Dataset):
-    def __init__(self, premises, hypotheses, labels, tokenizer, max_seq_len=41):
+class TransformerSeqPairDataset(Dataset):
+    def __init__(self, first: Iterable[str], second: Iterable[str], labels: Iterable[int],
+                 tokenizer, max_seq_len: int = 41):
         self.input_ids = []
         self.segments = []
         self.attn_masks = []
@@ -15,8 +21,8 @@ class NLIDataset(Dataset):
         self.labels = []
         self.max_seq_len = max_seq_len
 
-        for curr_premise, curr_hypothesis, curr_label in zip(premises, hypotheses, labels):
-            processed = tokenizer.encode_plus(curr_premise, curr_hypothesis, max_length=max_seq_len,
+        for seq1, seq2, curr_label in zip(first, second, labels):
+            processed = tokenizer.encode_plus(seq1, seq2, max_length=max_seq_len,
                                               padding="max_length", truncation="longest_first",
                                               return_special_tokens_mask=True)
             self.input_ids.append(processed["input_ids"])

@@ -5,7 +5,7 @@ import stanza
 import torch
 from torch.utils.data import DataLoader, Subset
 
-from experiments.SNLI.data import load_nli, NLIDataset, LABEL_TO_IDX, IDX_TO_LABEL
+from explain_nlp.experimental.data import load_nli, TransformerSeqPairDataset, LABEL_TO_IDX, IDX_TO_LABEL
 from experiments.SNLI.handle_generator import load_generator
 from explain_nlp.experimental.core import MethodData, MethodType
 from explain_nlp.experimental.arguments import parser
@@ -43,11 +43,11 @@ if __name__ == "__main__":
     generator, gen_desc = load_generator(args)
 
     df_test = load_nli(args.test_path)
-    test_set = NLIDataset(premises=df_test["sentence1"].values,
-                          hypotheses=df_test["sentence2"].values,
-                          labels=df_test["gold_label"].apply(lambda label_str: LABEL_TO_IDX[label_str]).values,
-                          tokenizer=model.tokenizer,
-                          max_seq_len=args.model_max_seq_len)
+    test_set = TransformerSeqPairDataset(df_test["sentence1"].values, df_test["sentence2"].values,
+                                         labels=df_test["gold_label"].apply(
+                                             lambda label_str: LABEL_TO_IDX["snli"][label_str]).values,
+                                         tokenizer=model.tokenizer,
+                                         max_seq_len=args.model_max_seq_len)
 
     if args.method == "whole_word_ime" or args.custom_features is not None:
         pretokenized_test_data = []
@@ -70,15 +70,19 @@ if __name__ == "__main__":
         method_type = MethodType.IME
         used_data["train_path"] = args.train_path
         df_train = load_nli(args.train_path).sample(frac=1.0).reset_index(drop=True)
-        train_set = NLIDataset(premises=df_train["sentence1"].values,
-                               hypotheses=df_train["sentence2"].values,
-                               labels=df_train["gold_label"].apply(lambda label_str: LABEL_TO_IDX[label_str]).values,
-                               tokenizer=model.tokenizer,
-                               max_seq_len=args.model_max_seq_len)
-        explainer_cls = IMEExplainer if args.method == "ime" else SequentialIMEExplainer
+        train_set = TransformerSeqPairDataset(df_train["sentence1"].values,
+                                              df_train["sentence2"].values,
+                                              labels=df_train["gold_label"].apply(
+                                                  lambda label_str: LABEL_TO_IDX["snli"][label_str]).values,
+                                              tokenizer=model.tokenizer,
+                                              max_seq_len=args.model_max_seq_len)
 
         used_sample_data = train_set.input_ids
-        if args.method == "whole_word_ime":
+        if args.method == "ime":
+            explainer_cls = IMEExplainer
+        elif args.method == "sequential_ime":
+            explainer_cls = SequentialIMEExplainer
+        elif args.method == "whole_word_ime":
             explainer_cls = WholeWordIMEExplainer
 
             pretokenized_train_data = []
@@ -92,6 +96,8 @@ if __name__ == "__main__":
                     ))
 
             used_sample_data = model.words_to_internal(pretokenized_train_data)["input_ids"]
+        else:
+            raise ValueError(f"'Unrecognized method: '{args.method}'")
 
         method = explainer_cls(sample_data=used_sample_data, model=model,
                                confidence_interval=args.confidence_interval, max_abs_error=args.max_abs_error,
@@ -119,7 +125,7 @@ if __name__ == "__main__":
     # Container that wraps debugging data and a lot of repetitive appends
     method_data = MethodData(method_type=method_type, model_description=temp_model_desc,
                              generator_description=gen_desc, min_samples_per_feature=args.min_samples_per_feature,
-                             possible_labels=[IDX_TO_LABEL[i] for i in sorted(IDX_TO_LABEL.keys())],
+                             possible_labels=[IDX_TO_LABEL["snli"][i] for i in sorted(IDX_TO_LABEL["snli"])],
                              used_data=used_data, confidence_interval=args.confidence_interval,
                              max_abs_error=args.max_abs_error, custom_features_type=args.custom_features)
 
