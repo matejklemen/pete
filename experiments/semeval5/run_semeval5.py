@@ -1,81 +1,40 @@
-import argparse
 import os
 from time import time
 
+import stanza
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
-from handle_generator import load_generator
-from data import load_semeval, ToxicDataset, LABEL_TO_IDX, IDX_TO_LABEL
-from explain_nlp.experimental.core import MethodData, MethodType
-from explain_nlp.methods.dependent_ime_mlm import DependentIMEMaskedLMExplainer
-from explain_nlp.methods.ime import IMEExplainer, SequentialIMEExplainer
-from explain_nlp.methods.ime_mlm import IMEMaskedLMExplainer
+from explain_nlp.experimental.arguments import parser
+from explain_nlp.experimental.core import MethodData
+from explain_nlp.experimental.data import load_semeval5, TransformerSeqDataset, IDX_TO_LABEL, LABEL_TO_IDX
+from explain_nlp.experimental.handle_explainer import load_explainer
+from explain_nlp.experimental.handle_features import handle_features
+from explain_nlp.experimental.handle_generator import load_generator
 from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
+from explain_nlp.methods.utils import estimate_max_samples
 from explain_nlp.visualizations.highlight import highlight_plot
-
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--method", type=str, default="ime", choices=["ime", "sequential_ime",
-                                                                  "ime_mlm", "ime_dependent_mlm"])
-parser.add_argument("--min_samples_per_feature", type=int, default=10,
-                    help="Minimum number of samples that get created for each feature for initial variance estimation")
-parser.add_argument("--confidence_interval", type=float, default=0.5)
-parser.add_argument("--max_abs_error", type=float, default=1.00)
-parser.add_argument("--return_generated_samples", action="store_true")
-parser.add_argument("--return_model_scores", action="store_true")
-
-parser.add_argument("--train_path", type=str, default="/home/matej/Documents/projects/semeval5/data/split_2labels_noaugm_balanced/train.csv")
-parser.add_argument("--test_path", type=str, default="/home/matej/Documents/projects/semeval5/data/split_2labels/dev.csv")
-
-parser.add_argument("--model_dir", type=str, default="/home/matej/Documents/projects/semeval5/weights/textcls_bert_base_cased_2e-5_maxlen155")
-parser.add_argument("--model_max_seq_len", type=int, default=155)
-parser.add_argument("--model_batch_size", type=int, default=2)
-
-parser.add_argument("--generator_type", type=str, default="bert_mlm")
-parser.add_argument("--controlled", action="store_true",
-                    help="Whether to use controlled LM/MLM for generation")
-parser.add_argument("--generator_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/bert-base-uncased-snli-mlm",
-                    help="Path or handle of model to be used as a language modeling generator")
-parser.add_argument("--generator_batch_size", type=int, default=2)
-parser.add_argument("--generator_max_seq_len", type=int, default=155)
-parser.add_argument("--num_generated_samples", type=int, default=10)
-parser.add_argument("--top_p", type=float, default=None)
-
-# Experimental (only in Bert MLM generator) for now
-parser.add_argument("--strategy", type=str, choices=["top_k", "top_p", "threshold", "num_samples"], default="top_k")
-parser.add_argument("--top_k", type=int, default=5)
-parser.add_argument("--threshold", type=float, default=0.1)
-
-parser.add_argument("--seed_start_with_ground_truth", action="store_true")
-parser.add_argument("--reset_seed_after_first", action="store_true")
-
-parser.add_argument("--experiment_dir", type=str, default="debug")
-parser.add_argument("--save_every_n_examples", type=int, default=1,
-                    help="Save experiment data every N examples in order to avoid losing data on longer computations")
-
-parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU")
-parser.add_argument("--verbose", action="store_true")
-
-parser.add_argument("--start_from", type=int, default=None, help="From which example onwards to do computation")
-parser.add_argument("--until", type=int, default=None, help="Until which example to do computation")
-
 
 if __name__ == "__main__":
     args = parser.parse_args()
 
-    alpha = 1 - args.confidence_interval
     DEVICE = torch.device("cpu") if args.use_cpu else torch.device("cuda")
+    print(f"Experiment type: '{args.experiment_type}'")
     print(f"Used device: {DEVICE}")
+    print(f"Using method '{args.method}'")
+    if args.custom_features is not None:
+        print(f"Using custom features: '{args.custom_features}'")
 
-    experiment_dir = args.experiment_dir
-    if experiment_dir is None:
+    nlp = stanza.Pipeline(lang="en", processors="tokenize", use_gpu=not args.use_cpu, tokenize_no_ssplit=True)
+    pretokenized_test_data = []
+    compute_accurately = args.experiment_type == "accurate_importances"
+
+    if args.experiment_dir is None:
         test_file_name = args.test_path.split(os.path.sep)[-1][:-len(".txt")]  # test file without .txt
-        experiment_dir = f"{test_file_name}_compute_accurate_importances"
-    args.experiment_dir = experiment_dir
+        args.experiment_dir = f"{test_file_name}_compute_{args.experiment_type}"
 
-    if not os.path.exists(experiment_dir):
-        os.makedirs(experiment_dir)
+    if not os.path.exists(args.experiment_dir):
+        os.makedirs(args.experiment_dir)
 
     # Define model and generator
     model = InterpretableBertForSequenceClassification(tokenizer_name=args.model_dir,
@@ -83,83 +42,119 @@ if __name__ == "__main__":
                                                        batch_size=args.model_batch_size,
                                                        max_seq_len=args.model_max_seq_len,
                                                        device="cpu" if args.use_cpu else "cuda")
-    temp_model_desc = {"type": "bert", "max_seq_len": args.model_max_seq_len, "handle": args.model_dir}
-    generator, gen_desc = load_generator(args)
+    model_desc = {"type": "bert", "max_seq_len": args.model_max_seq_len, "handle": args.model_dir}
+    generator, gen_desc = load_generator(args,
+                                         clm_labels=[IDX_TO_LABEL["semeval5"][i] for i in sorted(IDX_TO_LABEL["semeval5"])])
 
-    df_test = load_semeval(args.test_path)
-    test_set = ToxicDataset(sequences=df_test["text"].values,
-                            labels=df_test["contains_toxic"].apply(lambda lbl: LABEL_TO_IDX[lbl]).values,
-                            tokenizer=model.tokenizer,
-                            max_seq_len=args.model_max_seq_len)
+    df_test = load_semeval5(args.test_path)
+    test_set = TransformerSeqDataset(df_test["text"].values,
+                                     labels=df_test["contains_toxic"].apply(
+                                         lambda lbl: LABEL_TO_IDX["semeval5"][lbl]).values,
+                                     tokenizer=model.tokenizer,
+                                     max_seq_len=args.model_max_seq_len)
+
+    if args.method == "whole_word_ime" or args.custom_features is not None:
+        for idx_subset in range((df_test.shape[0] + 1024 - 1) // 1024):
+            s, e = idx_subset * 1024, (1 + idx_subset) * 1024
+            for s0 in nlp("\n\n".join(df_test["text"].iloc[s: e].values)).sentences:
+                pretokenized_test_data.append([token.words[0].text for token in s0.tokens])
 
     used_data = {"test_path": args.test_path}
-    print(f"Using method '{args.method}'")
+    used_sample_data = None
     # Define explanation methods
-    if args.method in {"ime", "sequential_ime"}:
-        method_type = MethodType.IME
+    if args.method in {"ime", "sequential_ime", "whole_word_ime"}:
         used_data["train_path"] = args.train_path
-        df_train = load_semeval(args.train_path).sample(frac=1.0).reset_index(drop=True)
-        train_set = ToxicDataset(sequences=df_train["text"].values,
-                                 labels=df_train["contains_toxic"].apply(lambda lbl: LABEL_TO_IDX[lbl]).values,
-                                 tokenizer=model.tokenizer,
-                                 max_seq_len=args.model_max_seq_len)
-        explainer_cls = IMEExplainer if args.method == "ime" else SequentialIMEExplainer
-        method = explainer_cls(sample_data=train_set.input_ids, model=model,
-                               confidence_interval=args.confidence_interval, max_abs_error=args.max_abs_error,
-                               return_scores=args.return_model_scores, return_num_samples=True,
-                               return_samples=args.return_generated_samples, return_variance=True)
-    elif args.method == "ime_mlm":
-        method_type = MethodType.INDEPENDENT_IME_MLM
-        method = IMEMaskedLMExplainer(model=model, generator=generator,
-                                      confidence_interval=args.confidence_interval, max_abs_error=args.max_abs_error,
-                                      num_generated_samples=args.num_generated_samples,
-                                      return_scores=args.return_model_scores, return_num_samples=True,
-                                      return_samples=args.return_generated_samples, return_variance=True)
-    elif args.method == "ime_dependent_mlm":
-        method_type = MethodType.DEPENDENT_IME_MLM
-        method = DependentIMEMaskedLMExplainer(model=model, generator=generator, verbose=args.verbose,
-                                               confidence_interval=args.confidence_interval, max_abs_error=args.max_abs_error,
-                                               return_scores=args.return_model_scores, return_num_samples=True,
-                                               return_samples=args.return_generated_samples, return_variance=True,
-                                               controlled=args.controlled,
-                                               seed_start_with_ground_truth=args.seed_start_with_ground_truth,
-                                               reset_seed_after_first=args.reset_seed_after_first)
-    else:
-        raise NotImplementedError(f"Unsupported method: '{args.method}'")
+        df_train = load_semeval5(args.train_path).sample(frac=1.0).reset_index(drop=True)
+        train_set = TransformerSeqDataset(df_train["text"].values,
+                                          labels=df_train["contains_toxic"].apply(
+                                              lambda lbl: LABEL_TO_IDX["semeval5"][lbl]).values,
+                                          tokenizer=model.tokenizer,
+                                          max_seq_len=args.model_max_seq_len)
+
+        used_sample_data = train_set.input_ids
+        if args.method == "whole_word_ime":
+            pretokenized_train_data = []
+            for idx_subset in range((df_train.shape[0] + 1024 - 1) // 1024):
+                s, e = idx_subset * 1024, (1 + idx_subset) * 1024
+                for s0 in nlp("\n\n".join(df_train["text"].iloc[s: e].values)).sentences:
+                    pretokenized_train_data.append([token.words[0].text for token in s0.tokens])
+
+            used_sample_data = model.words_to_internal(pretokenized_train_data)["input_ids"]
+
+    method, method_type = load_explainer(method=args.method, model=model,
+                                         confidence_interval=args.confidence_interval if compute_accurately else None,
+                                         max_abs_error=args.max_abs_error if compute_accurately else None,
+                                         return_model_scores=args.return_model_scores,
+                                         return_generated_samples=args.return_generated_samples,
+                                         # Method-specific options below:
+                                         used_sample_data=used_sample_data, generator=generator,
+                                         num_generated_samples=args.num_generated_samples, controlled=args.controlled,
+                                         seed_start_with_ground_truth=args.seed_start_with_ground_truth,
+                                         reset_seed_after_first=args.reset_seed_after_first)
 
     # Container that wraps debugging data and a lot of repetitive appends
-    method_data = MethodData(method_type=method_type, model_description=temp_model_desc,
+    method_data = MethodData(method_type=method_type, model_description=model_desc,
                              generator_description=gen_desc, min_samples_per_feature=args.min_samples_per_feature,
-                             possible_labels=[IDX_TO_LABEL[i] for i in sorted(IDX_TO_LABEL.keys())],
+                             possible_labels=[IDX_TO_LABEL["semeval5"][i] for i in sorted(IDX_TO_LABEL["semeval5"])],
                              used_data=used_data, confidence_interval=args.confidence_interval,
-                             max_abs_error=args.max_abs_error)
+                             max_abs_error=args.max_abs_error, custom_features_type=args.custom_features)
 
-    if os.path.exists(os.path.join(experiment_dir, f"{args.method}_data.json")):
-        method_data = MethodData.load(os.path.join(experiment_dir, f"{args.method}_data.json"))
+    if os.path.exists(os.path.join(args.experiment_dir, f"{args.method}_data.json")):
+        method_data = MethodData.load(os.path.join(args.experiment_dir, f"{args.method}_data.json"))
 
     start_from = args.start_from if args.start_from is not None else len(method_data)
     start_from = min(start_from, len(test_set))
     until = args.until if args.until is not None else len(test_set)
     until = min(until, len(test_set))
 
-    print(f"Running computation from example#{start_from} (inclusive) to example#{until} (exclusive)")
-    for idx_example, curr_example in enumerate(DataLoader(test_set, batch_size=1, shuffle=False)):
-        if idx_example < start_from:
-            continue
-        if idx_example >= until:
-            break
+    if args.custom_features is not None and args.custom_features.startswith("depparse"):
+        nlp = stanza.Pipeline(lang="en", processors="tokenize,lemma,pos,depparse")
 
-        _curr_example = {k: v.to(DEVICE) for k, v in curr_example.items() if k not in {"labels", "special_tokens_mask"}}
-        probas = model.score(**_curr_example)
+    print(f"Running computation from example#{start_from} (inclusive) to example#{until} (exclusive)")
+    for idx_example, curr_example in enumerate(DataLoader(Subset(test_set, range(start_from, until)), batch_size=1, shuffle=False),
+                                               start=start_from):
+        probas = model.score(**{k: v.to(DEVICE) for k, v in curr_example.items() if k not in {"words",
+                                                                                              "labels",
+                                                                                              "special_tokens_mask"}})
         predicted_label = int(torch.argmax(probas))
         actual_label = int(curr_example["labels"])
 
-        t1 = time()
-        res = method.explain_text(df_test.iloc[idx_example]["text"],
-                                  label=predicted_label, min_samples_per_feature=args.min_samples_per_feature)
-        t2 = time()
-        print(f"[{args.method}] Taken samples: {res['taken_samples']}")
-        print(f"[{args.method}] Time taken: {t2 - t1}")
+        if args.method == "whole_word_ime":
+            input_text = pretokenized_test_data[idx_example]
+        else:
+            input_text = df_test.iloc[idx_example]["text"]
+
+        curr_features = None
+        if args.method in {"ime", "sequential_ime"} and args.custom_features is not None:
+            # Obtain word IDs for subwords in all cases as the custom features are usually obtained from words
+            encoded = model.to_internal(pretokenized_text_data=[pretokenized_test_data[idx_example]])
+            word_ids = encoded["aux_data"]["alignment_ids"][0].tolist()
+
+            curr_features = handle_features(args.custom_features,
+                                            word_ids=word_ids,
+                                            raw_example=df_test.iloc[idx_example]["text"],
+                                            pipe=nlp)
+
+            t1 = time()
+            res = method.explain_text(input_text, pretokenized_text_data=pretokenized_test_data[idx_example],
+                                      label=predicted_label, min_samples_per_feature=args.min_samples_per_feature,
+                                      custom_features=curr_features)
+            t2 = time()
+        else:
+            t1 = time()
+            res = method.explain_text(input_text,
+                                      label=predicted_label, min_samples_per_feature=args.min_samples_per_feature)
+            t2 = time()
+
+        if compute_accurately:
+            taken_or_estimated_samples = res['taken_samples']
+        else:
+            taken_or_estimated_samples = int(estimate_max_samples(res["var"] * res["num_samples"],
+                                                                  alpha=(1 - args.confidence_interval),
+                                                                  max_abs_error=args.max_abs_error))
+
+        print(f"[{args.method}] {'taken' if compute_accurately else '(estimated) required'} samples: {taken_or_estimated_samples}")
+        print(f"[{args.method}] Time taken: {t2 - t1:.2f}s")
 
         sequence_tokens = res["input"]
 
@@ -173,17 +168,19 @@ if __name__ == "__main__":
                                                                   take_as_single_sequence=True))
 
         method_data.add_example(sequence=sequence_tokens, label=predicted_label, probas=probas[0].tolist(),
-                                actual_label=actual_label, importances=res["importance"].tolist(),
+                                actual_label=actual_label, custom_features=curr_features,
+                                importances=res["importance"].tolist(),
                                 variances=res["var"].tolist(), num_samples=res["num_samples"].tolist(),
                                 samples=gen_samples, num_estimated_samples=res["taken_samples"], time_taken=(t2 - t1),
                                 model_scores=[[] if scores is None else scores.tolist()
                                               for scores in res["scores"]] if args.return_model_scores else [])
 
         if (1 + idx_example) % args.save_every_n_examples == 0:
-            print(f"Saving data to {experiment_dir}")
-            method_data.save(experiment_dir, file_name=f"{args.method}_data.json")
+            print(f"Saving data to {args.experiment_dir}")
+            method_data.save(args.experiment_dir, file_name=f"{args.method}_data.json")
 
             highlight_plot(method_data.sequences, method_data.importances,
                            pred_labels=[method_data.possible_labels[i] for i in method_data.pred_labels],
                            actual_labels=[method_data.possible_labels[i] for i in method_data.actual_labels],
-                           path=os.path.join(experiment_dir, f"{args.method}_importances.html"))
+                           custom_features=method_data.custom_features,
+                           path=os.path.join(args.experiment_dir, f"{args.method}_importances.html"))
