@@ -154,7 +154,6 @@ if __name__ == "__main__":
                                       label=predicted_label, min_samples_per_feature=args.min_samples_per_feature)
             t2 = time()
 
-        taken_or_estimated_samples = None
         if compute_accurately:
             taken_or_estimated_samples = res['taken_samples']
         else:
