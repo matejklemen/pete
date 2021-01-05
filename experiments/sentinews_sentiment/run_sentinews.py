@@ -3,7 +3,7 @@ from time import time
 
 import stanza
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from explain_nlp.experimental.arguments import parser
 from explain_nlp.experimental.core import MethodData
@@ -44,7 +44,8 @@ if __name__ == "__main__":
                                                        max_words=args.model_max_words,
                                                        device="cpu" if args.use_cpu else "cuda")
     model_desc = {"type": "bert", "max_seq_len": args.model_max_seq_len, "handle": args.model_dir}
-    generator, gen_desc = load_generator(args)
+    generator, gen_desc = load_generator(args,
+                                         clm_labels=[IDX_TO_LABEL["sentinews"][i] for i in sorted(IDX_TO_LABEL["sentinews"])])
 
     df_test = load_sentinews(args.test_path)
     test_set = TransformerSeqDataset(df_test["content"].values,
@@ -111,7 +112,8 @@ if __name__ == "__main__":
         nlp = stanza.Pipeline(lang="sl", processors="tokenize,lemma,pos,depparse")
 
     print(f"Running computation from example#{start_from} (inclusive) to example#{until} (exclusive)")
-    for idx_example, curr_example in enumerate(DataLoader(test_set, batch_size=1, shuffle=False)):
+    for idx_example, curr_example in enumerate(DataLoader(Subset(test_set, range(start_from, until)), batch_size=1, shuffle=False),
+                                               start=start_from):
         probas = model.score(**{k: v.to(DEVICE) for k, v in curr_example.items() if k not in {"words",
                                                                                               "labels",
                                                                                               "special_tokens_mask"}})
