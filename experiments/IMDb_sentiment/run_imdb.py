@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader, Subset
 
 from explain_nlp.experimental.arguments import parser
 from explain_nlp.experimental.core import MethodData
-from explain_nlp.experimental.data import load_semeval5, TransformerSeqDataset, IDX_TO_LABEL, LABEL_TO_IDX
+from explain_nlp.experimental.data import load_imdb, TransformerSeqDataset, LABEL_TO_IDX, IDX_TO_LABEL
 from explain_nlp.experimental.handle_explainer import load_explainer
 from explain_nlp.experimental.handle_features import handle_features
 from explain_nlp.experimental.handle_generator import load_generator
@@ -30,7 +30,7 @@ if __name__ == "__main__":
     compute_accurately = args.experiment_type == "accurate_importances"
 
     if args.experiment_dir is None:
-        test_file_name = args.test_path.split(os.path.sep)[-1][:-len(".txt")]  # test file without .txt
+        test_file_name = args.test_path.split(os.path.sep)[-1][:-len(".csv")]  # test file without .csv
         args.experiment_dir = f"{test_file_name}_compute_{args.experiment_type}"
 
     if not os.path.exists(args.experiment_dir):
@@ -41,42 +41,42 @@ if __name__ == "__main__":
                                                        model_name=args.model_dir,
                                                        batch_size=args.model_batch_size,
                                                        max_seq_len=args.model_max_seq_len,
+                                                       max_words=args.model_max_words,
                                                        device="cpu" if args.use_cpu else "cuda")
     model_desc = {"type": "bert", "max_seq_len": args.model_max_seq_len, "handle": args.model_dir}
     generator, gen_desc = load_generator(args,
-                                         clm_labels=[IDX_TO_LABEL["semeval5"][i] for i in sorted(IDX_TO_LABEL["semeval5"])])
+                                         clm_labels=[IDX_TO_LABEL["imdb"][i] for i in sorted(IDX_TO_LABEL["imdb"])])
 
-    df_test = load_semeval5(args.test_path)
-    test_set = TransformerSeqDataset(df_test["text"].values,
-                                     labels=df_test["contains_toxic"].apply(
-                                         lambda lbl: LABEL_TO_IDX["semeval5"][lbl]).values,
+    df_test = load_imdb(args.test_path)
+    test_set = TransformerSeqDataset(df_test["review"].values,
+                                     labels=df_test["label"].apply(
+                                         lambda lbl: LABEL_TO_IDX["imdb"][lbl]).values,
                                      tokenizer=model.tokenizer,
                                      max_seq_len=args.model_max_seq_len)
 
     if args.method == "whole_word_ime" or args.custom_features is not None:
+        pretokenized_test_data = []
         for idx_subset in range((df_test.shape[0] + 1024 - 1) // 1024):
             s, e = idx_subset * 1024, (1 + idx_subset) * 1024
-            for s0 in nlp("\n\n".join(df_test["text"].iloc[s: e].values)).sentences:
+            for s0 in nlp("\n\n".join(df_test["review"].iloc[s: e].values)).sentences:
                 pretokenized_test_data.append([token.words[0].text for token in s0.tokens])
 
     used_data = {"test_path": args.test_path}
     used_sample_data = None
-    # Define explanation methods
     if args.method in {"ime", "sequential_ime", "whole_word_ime"}:
         used_data["train_path"] = args.train_path
-        df_train = load_semeval5(args.train_path).sample(frac=1.0).reset_index(drop=True)
-        train_set = TransformerSeqDataset(df_train["text"].values,
-                                          labels=df_train["contains_toxic"].apply(
-                                              lambda lbl: LABEL_TO_IDX["semeval5"][lbl]).values,
-                                          tokenizer=model.tokenizer,
-                                          max_seq_len=args.model_max_seq_len)
+        df_train = load_imdb(args.train_path).sample(frac=1.0).reset_index(drop=True)
+        train_set = TransformerSeqDataset(df_train["review"].values,
+                                          labels=df_train["label"].apply(
+                                              lambda lbl: LABEL_TO_IDX["imdb"][lbl]).values,
+                                          tokenizer=model.tokenizer, max_seq_len=args.model_max_seq_len)
 
         used_sample_data = train_set.input_ids
         if args.method == "whole_word_ime":
             pretokenized_train_data = []
             for idx_subset in range((df_train.shape[0] + 1024 - 1) // 1024):
                 s, e = idx_subset * 1024, (1 + idx_subset) * 1024
-                for s0 in nlp("\n\n".join(df_train["text"].iloc[s: e].values)).sentences:
+                for s0 in nlp("\n\n".join(df_train["review"].iloc[s: e].values)).sentences:
                     pretokenized_train_data.append([token.words[0].text for token in s0.tokens])
 
             used_sample_data = model.words_to_internal(pretokenized_train_data)["input_ids"]
@@ -88,14 +88,15 @@ if __name__ == "__main__":
                                          return_generated_samples=args.return_generated_samples,
                                          # Method-specific options below:
                                          used_sample_data=used_sample_data, generator=generator,
-                                         num_generated_samples=args.num_generated_samples, controlled=args.controlled,
+                                         num_generated_samples=args.num_generated_samples,
+                                         controlled=args.controlled,
                                          seed_start_with_ground_truth=args.seed_start_with_ground_truth,
                                          reset_seed_after_first=args.reset_seed_after_first)
 
     # Container that wraps debugging data and a lot of repetitive appends
     method_data = MethodData(method_type=method_type, model_description=model_desc,
                              generator_description=gen_desc, min_samples_per_feature=args.min_samples_per_feature,
-                             possible_labels=[IDX_TO_LABEL["semeval5"][i] for i in sorted(IDX_TO_LABEL["semeval5"])],
+                             possible_labels=[IDX_TO_LABEL["imdb"][i] for i in sorted(IDX_TO_LABEL["imdb"])],
                              used_data=used_data, confidence_interval=args.confidence_interval,
                              max_abs_error=args.max_abs_error, custom_features_type=args.custom_features)
 
@@ -125,7 +126,7 @@ if __name__ == "__main__":
         if args.method == "whole_word_ime":
             input_text = pretokenized_test_data[idx_example]
         else:
-            input_text = df_test.iloc[idx_example]["text"]
+            input_text = df_test.iloc[idx_example]["review"]
 
         curr_features = None
         if args.method in {"ime", "sequential_ime"} and args.custom_features is not None:
@@ -135,9 +136,8 @@ if __name__ == "__main__":
 
             curr_features = handle_features(args.custom_features,
                                             word_ids=word_ids,
-                                            raw_example=df_test.iloc[idx_example]["text"],
+                                            raw_example=df_test.iloc[idx_example]["review"],
                                             pipe=nlp)
-
             t1 = time()
             res = method.explain_text(input_text, pretokenized_text_data=pretokenized_test_data[idx_example],
                                       label=predicted_label, min_samples_per_feature=args.min_samples_per_feature,

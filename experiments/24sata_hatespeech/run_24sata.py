@@ -108,8 +108,11 @@ if __name__ == "__main__":
     until = args.until if args.until is not None else len(test_set)
     until = min(until, len(test_set))
 
-    if args.custom_features is not None and args.custom_features.startswith("depparse"):
-        nlp = stanza.Pipeline(lang="hr", processors="tokenize,lemma,pos,depparse")
+    if args.custom_features is not None:
+        if args.custom_features.startswith("depparse"):
+            nlp = stanza.Pipeline(lang="hr", processors="tokenize,lemma,pos,depparse")
+        else:
+            nlp = stanza.Pipeline(lang="hr", processors="tokenize")
 
     print(f"Running computation from example#{start_from} (inclusive) to example#{until} (exclusive)")
     for idx_example, curr_example in enumerate(DataLoader(Subset(test_set, range(start_from, until)), batch_size=1, shuffle=False),
