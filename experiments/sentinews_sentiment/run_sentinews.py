@@ -98,7 +98,7 @@ if __name__ == "__main__":
                              generator_description=gen_desc, min_samples_per_feature=args.min_samples_per_feature,
                              possible_labels=[IDX_TO_LABEL["sentinews"][i] for i in sorted(IDX_TO_LABEL["sentinews"])],
                              used_data=used_data, confidence_interval=args.confidence_interval,
-                             max_abs_error=args.max_abs_error)
+                             max_abs_error=args.max_abs_error, custom_features_type=args.custom_features)
 
     if os.path.exists(os.path.join(args.experiment_dir, f"{args.method}_data.json")):
         method_data = MethodData.load(os.path.join(args.experiment_dir, f"{args.method}_data.json"))
