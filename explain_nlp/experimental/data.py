@@ -7,11 +7,13 @@ from torch.utils.data import Dataset
 LABEL_TO_IDX = {
     "snli": {"entailment": 0, "neutral": 1, "contradiction": 2},
     "sentinews": {"neutral": 0, "negative": 1, "positive": 2},
-    "semeval5": {0: 0, 1: 1}  # no-op, labels are pre-encoded
+    "semeval5": {0: 0, 1: 1},  # no-op, labels are pre-encoded
+    "24sata": {0: 0, 1: 1}  # no-op, labels are pre-encoded
 }
 IDX_TO_LABEL = {dataset: {i: lbl for lbl, i in label_mapping.items()}
                 for dataset, label_mapping in LABEL_TO_IDX.items()}
 IDX_TO_LABEL["semeval5"] = {0: "clean", 1: "toxic"}
+IDX_TO_LABEL["24sata"] = {0: "clean", 1: "hateful"}
 
 
 class TransformerSeqPairDataset(Dataset):
@@ -108,3 +110,7 @@ def load_sentinews(file_path, sample_size=None):
 
 def load_semeval5(file_path, sample_size=None):
     return pd.read_csv(file_path, nrows=sample_size, encoding="utf-8")
+
+
+def load_24sata(file_path, sample_size=None):
+    return pd.read_csv(file_path, nrows=sample_size)
