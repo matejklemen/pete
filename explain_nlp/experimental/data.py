@@ -9,13 +9,15 @@ LABEL_TO_IDX = {
     "sentinews": {"neutral": 0, "negative": 1, "positive": 2},
     "semeval5": {0: 0, 1: 1},  # no-op, labels are pre-encoded
     "24sata": {0: 0, 1: 1},  # no-op, labels are pre-encoded
-    "imdb": {0: 0, 1: 1}  # no-op, labels are pre-encoded
+    "imdb": {0: 0, 1: 1},  # no-op, labels are pre-encoded
+    "qqp": {0: 0, 1: 1}  # no-op, labels are pre-encoded
 }
 IDX_TO_LABEL = {dataset: {i: lbl for lbl, i in label_mapping.items()}
                 for dataset, label_mapping in LABEL_TO_IDX.items()}
 IDX_TO_LABEL["semeval5"] = {0: "clean", 1: "toxic"}
 IDX_TO_LABEL["24sata"] = {0: "clean", 1: "hateful"}
 IDX_TO_LABEL["imdb"] = {0: "negative", 1: "positive"}
+IDX_TO_LABEL["qqp"] = {0: "different", 1: "duplicate"}
 
 
 class TransformerSeqPairDataset(Dataset):
@@ -121,5 +123,19 @@ def load_24sata(file_path, sample_size=None):
 def load_imdb(file_path, sample_size=None):
     df = pd.read_csv(file_path, nrows=sample_size)
     df["review"] = df["review"].apply(lambda s: s.replace("<br />", ""))
+
+    return df
+
+
+def load_qqp(file_path, sample_size=None):
+    df = pd.read_csv(file_path, sep="\t", nrows=sample_size, encoding="utf-8", quoting=3)
+    AVAILABLE_COLS = ["question1", "question2"]
+    if "is_duplicate" in df.columns:
+        AVAILABLE_COLS.append("is_duplicate")
+
+    df = df.dropna(axis=0, how="any", subset=AVAILABLE_COLS)
+
+    if "is_duplicate" in df.columns:
+        df["is_duplicate"] = df["is_duplicate"].apply(lambda lbl: int(lbl))
 
     return df
