@@ -2,7 +2,7 @@ from typing import List, Dict, Union, Tuple, Optional
 
 import torch
 import torch.nn.functional as F
-from transformers import BertTokenizer, BertForSequenceClassification
+from transformers import BertTokenizer, BertForSequenceClassification, BertForMaskedLM
 
 
 # TODO: mask, mask_token_id properties
@@ -133,24 +133,8 @@ class BertAlignedTokenizationMixin:
         return ret_dict
 
 
-class InterpretableBertForSequenceClassification(InterpretableModel, BertAlignedTokenizationMixin):
-    def __init__(self, tokenizer_name, model_name, batch_size=8, max_seq_len=64, max_words: Optional[int] = 16,
-                 device="cuda"):
-        self.tokenizer_name = tokenizer_name
-        self.model_name = model_name
-        self.batch_size = batch_size
-        self.max_seq_len = max_seq_len
-        self.max_words = max_words
-
-        assert device in ["cpu", "cuda"]
-        if device == "cuda" and not torch.cuda.is_available():
-            raise ValueError("Device is set to 'cuda', but no CUDA device could be found. If you want to run the model "
-                             "on CPU, set device to 'cpu'")
-        self.device = torch.device(device)
-
-        self.tokenizer = BertTokenizer.from_pretrained(tokenizer_name)
-        self.model = BertForSequenceClassification.from_pretrained(model_name).to(self.device)
-        self.model.eval()
+class InterpretableBertBase(InterpretableModel, BertAlignedTokenizationMixin):
+    tokenizer: BertTokenizer
 
     @property
     def special_token_ids(self):
@@ -252,6 +236,84 @@ class InterpretableBertForSequenceClassification(InterpretableModel, BertAligned
 
     def convert_ids_to_tokens(self, ids):
         return [self.tokenizer.convert_ids_to_tokens(curr_ids) for curr_ids in ids.tolist()]
+
+    @torch.no_grad()
+    def score(self, input_ids: torch.Tensor, **kwargs):
+        raise NotImplementedError
+
+
+class InterpretableBertForMaskedLM(InterpretableBertBase):
+    def __init__(self, tokenizer_name, model_name, batch_size=8, max_seq_len=64, max_words: Optional[int] = 16,
+                 device="cuda"):
+        self.tokenizer_name = tokenizer_name
+        self.model_name = model_name
+        self.batch_size = batch_size
+        self.max_seq_len = max_seq_len
+        self.max_words = max_words
+
+        assert device in ["cpu", "cuda"]
+        if device == "cuda" and not torch.cuda.is_available():
+            raise ValueError("Device is set to 'cuda', but no CUDA device could be found. If you want to run the model "
+                             "on CPU, set device to 'cpu'")
+        self.device = torch.device(device)
+
+        self.tokenizer = BertTokenizer.from_pretrained(tokenizer_name)
+        self.model = BertForMaskedLM.from_pretrained(model_name).to(self.device)
+        self.model.eval()
+
+    @torch.no_grad()
+    def score(self, input_ids: torch.Tensor, **kwargs):
+        raise NotImplementedError("This function should get overriden by `set_token_scorer`")
+
+    def set_token_scorer(self, idx_token):
+        @torch.no_grad()
+        def curr_score(input_ids: torch.Tensor, **kwargs):
+            # If a single example is provided, broadcast it to input size, otherwise assume correct shapes are provided
+            if kwargs["token_type_ids"].shape[0] != input_ids.shape[0]:
+                aux_data = {additional_arg: kwargs[additional_arg].repeat((input_ids.shape[0], 1))
+                            for additional_arg in ["token_type_ids", "attention_mask"]}
+            else:
+                aux_data = {additional_arg: kwargs[additional_arg]
+                            for additional_arg in ["token_type_ids", "attention_mask"]}
+
+            # Mask the currently predicted token
+            # TODO: should attention_mask be 0 for [MASK] token? Currently, the transformers library doesn't do so
+            input_ids[:, idx_token] = self.tokenizer.mask_token_id
+
+            num_total_batches = (input_ids.shape[0] + self.batch_size - 1) // self.batch_size
+            probas = torch.zeros((input_ids.shape[0], self.tokenizer.vocab_size))
+            for idx_batch in range(num_total_batches):
+                s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
+                curr_input_ids = input_ids[s_b: e_b].to(self.device)
+                res = self.model(curr_input_ids, **{k: v[s_b: e_b].to(self.device) for k, v in aux_data.items()},
+                                 return_dict=True)
+
+                tmpo = res["logits"][:, idx_token, :]
+                probas[s_b: e_b] = F.softmax(tmpo, dim=-1)
+
+            return probas
+
+        self.score = curr_score
+
+
+class InterpretableBertForSequenceClassification(InterpretableBertBase, BertAlignedTokenizationMixin):
+    def __init__(self, tokenizer_name, model_name, batch_size=8, max_seq_len=64, max_words: Optional[int] = 16,
+                 device="cuda"):
+        self.tokenizer_name = tokenizer_name
+        self.model_name = model_name
+        self.batch_size = batch_size
+        self.max_seq_len = max_seq_len
+        self.max_words = max_words
+
+        assert device in ["cpu", "cuda"]
+        if device == "cuda" and not torch.cuda.is_available():
+            raise ValueError("Device is set to 'cuda', but no CUDA device could be found. If you want to run the model "
+                             "on CPU, set device to 'cpu'")
+        self.device = torch.device(device)
+
+        self.tokenizer = BertTokenizer.from_pretrained(tokenizer_name)
+        self.model = BertForSequenceClassification.from_pretrained(model_name).to(self.device)
+        self.model.eval()
 
     @torch.no_grad()
     def score(self, input_ids: torch.Tensor, **kwargs):
@@ -380,11 +442,13 @@ class DummySentiment(InterpretableModel):
 
 
 if __name__ == "__main__":
-    model = InterpretableBertForSequenceClassification(tokenizer_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased",
-                                                       model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased",
-                                                       batch_size=4,
-                                                       max_seq_len=10,
-                                                       device="cpu")
+    model = InterpretableBertForSequenceClassification(
+        tokenizer_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased",
+        model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased",
+        batch_size=4,
+        max_seq_len=10,
+        device="cpu"
+    )
 
     encoded = model.to_internal(
         text_data=[
@@ -396,8 +460,14 @@ if __name__ == "__main__":
             (["I", "am", "Iron", "Man"], ["My", "name", "is", "Iron", "Man"]),
             (["Do", "not", "blink"], ["Blink", "and", "you", "'re", "dead"]),
             (["Unbelieveable", ",", "Jeff"], ["I", "do", "n't", "know", ",", "Sammy"])
-        ]
-    )
-    print(model.from_internal(encoded["input_ids"]))
+        ])
+
+    print(encoded)
+    print(model.convert_ids_to_tokens(encoded["input_ids"]))
+    model.set_token_scorer(0)
+    probas = model.score(encoded["input_ids"], **encoded["aux_data"])
+    print(probas)
+
+    model.set_token_scorer(3)
     probas = model.score(encoded["input_ids"], **encoded["aux_data"])
     print(probas)
