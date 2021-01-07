@@ -26,7 +26,7 @@ if __name__ == "__main__":
         print(f"Using custom features: '{args.custom_features}'")
 
     nlp = stanza.Pipeline(lang="en", processors="tokenize", use_gpu=not args.use_cpu, tokenize_no_ssplit=True)
-    pretokenized_test_data = []
+    pretokenized_test_data = None
     compute_accurately = args.experiment_type == "accurate_importances"
 
     if args.experiment_dir is None:
@@ -49,14 +49,6 @@ if __name__ == "__main__":
                                          clm_labels=MODEL_LABELS)
 
     df_test = load_imdb(args.test_path)
-    # Note: because we are doing MLM, we will be ignoring the intended label, as the labels will be the tokens themself
-    # (predicting the [MASK] token)
-    test_set = TransformerSeqDataset(df_test["review"].values,
-                                     labels=df_test["label"].apply(
-                                         lambda lbl: LABEL_TO_IDX["imdb"][lbl]).values,
-                                     tokenizer=model.tokenizer,
-                                     max_seq_len=args.model_max_seq_len)
-
     if args.method == "whole_word_ime" or args.custom_features is not None:
         pretokenized_test_data = []
         for idx_subset in range((df_test.shape[0] + 1024 - 1) // 1024):
@@ -111,9 +103,9 @@ if __name__ == "__main__":
                          f"is interpreted independently, so we cannot reliably determine start from saved experiment data.")
 
     start_from = args.start_from if args.start_from is not None else len(method_data)
-    start_from = min(start_from, len(test_set))
-    until = args.until if args.until is not None else len(test_set)
-    until = min(until, len(test_set))
+    start_from = min(start_from, df_test.shape[0])
+    until = args.until if args.until is not None else df_test.shape[0]
+    until = min(until, df_test.shape[0])
 
     if args.custom_features is not None:
         if args.custom_features.startswith("depparse"):
@@ -122,37 +114,42 @@ if __name__ == "__main__":
             nlp = stanza.Pipeline(lang="en", processors="tokenize")
 
     print(f"Running computation from example#{start_from} (inclusive) to example#{until} (exclusive)")
-    for idx_example, curr_example in enumerate(DataLoader(Subset(test_set, range(start_from, until)), batch_size=1, shuffle=False),
+    for idx_example, curr_example in enumerate(df_test.iloc[start_from: until]["review"].values,
                                                start=start_from):
-        perturbable_mask = torch.logical_not(curr_example["special_tokens_mask"][0])
+        if args.method == "whole_word_ime" or args.custom_features is not None:
+            encoded_example = model.to_internal(pretokenized_text_data=[pretokenized_test_data[idx_example]])
+        else:
+            encoded_example = model.to_internal(text_data=[curr_example])
+
+        perturbable_mask = encoded_example["perturbable_mask"][0]
         token_predictions_to_interpret = torch.arange(args.model_max_seq_len)[perturbable_mask]
 
         for idx_curr_label in token_predictions_to_interpret:
             # Mask the currently interpreted token for obtaining prediction
-            input_ids_copy = curr_example["input_ids"].clone()
+            input_ids_copy = encoded_example["input_ids"].clone()
             input_ids_copy[0, idx_curr_label] = model.tokenizer.mask_token_id
-            _curr_input = {k: v.to(DEVICE) for k, v in curr_example.items() if k not in {"words",
-                                                                                         "labels",
-                                                                                         "special_tokens_mask"}}
-            _curr_input["input_ids"] = input_ids_copy
+            _curr_input = {
+                "input_ids": input_ids_copy.to(DEVICE),
+                "token_type_ids": encoded_example["aux_data"]["token_type_ids"].to(DEVICE),
+                "attention_mask": encoded_example["aux_data"]["attention_mask"].to(DEVICE)
+            }
 
             model.set_token_scorer(idx_curr_label)
             probas = model.score(**_curr_input)
             predicted_label = int(torch.argmax(probas))
-            actual_label = int(curr_example["input_ids"][0, idx_curr_label])
+            actual_label = int(encoded_example["input_ids"][0, idx_curr_label])
 
             if args.method == "whole_word_ime":
                 # input_text = pretokenized_test_data[idx_example]
                 raise NotImplementedError("WholeWordIME option is currently not implemented for MLM experiment as it "
                                           "needs to be planned out some more")
             else:
-                input_text = df_test.iloc[idx_example]["review"]
+                input_text = curr_example
 
             curr_features = None
             if args.method in {"ime", "sequential_ime"} and args.custom_features is not None:
                 # Obtain word IDs for subwords in all cases as the custom features are usually obtained from words
-                encoded = model.to_internal(pretokenized_text_data=[pretokenized_test_data[idx_example]])
-                word_ids = encoded["aux_data"]["alignment_ids"][0].tolist()
+                word_ids = encoded_example["aux_data"]["alignment_ids"][0].tolist()
 
                 curr_features = handle_features(args.custom_features,
                                                 word_ids=word_ids,
