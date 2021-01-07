@@ -47,9 +47,11 @@ class MethodData:
                  used_data: Optional[Dict] = None,
                  confidence_interval: Optional[float] = None,
                  max_abs_error: Optional[float] = None,
+                 custom_features_type: Optional[str] = None,
                  **existing_data):
         # General method description
         self.method_type: MethodType = method_type if isinstance(method_type, MethodType) else MethodType[method_type]
+        self.custom_features_type: str = custom_features_type
         self.model_description = model_description
         self.generator_description = generator_description
         self.min_samples_per_feature = min_samples_per_feature
@@ -63,6 +65,7 @@ class MethodData:
         self.pred_probas: List[List[float]] = existing_data.get("pred_probas", [])
         self.pred_labels: List = existing_data.get("pred_labels", [])
         self.actual_labels: List = existing_data.get("actual_labels", [])
+        self.custom_features: List = existing_data.get("custom_features", [])
 
         self.importances: List[List[float]] = existing_data.get("importances", [])
         self.variances: List[List[float]] = existing_data.get("variances", [])
@@ -79,6 +82,7 @@ class MethodData:
                     num_samples: List[int],
                     probas: Optional[List[float]] = None,
                     actual_label: Optional = None,
+                    custom_features: List[List[int]] = None,
                     samples: Optional[List[Union[str, List[str]]]] = None,
                     model_scores: Optional[List[List[float]]] = None,
                     num_estimated_samples: Optional[int] = None,
@@ -87,6 +91,7 @@ class MethodData:
         self.pred_probas.append(probas if probas is not None else [])
         self.pred_labels.append(label)
         self.actual_labels.append(actual_label)
+        self.custom_features.append(custom_features if custom_features is not None else [])
 
         self.importances.append(importances)
         self.variances.append(variances)
@@ -106,6 +111,7 @@ class MethodData:
             "pred_probas": self.pred_probas[item],
             "pred_label": self.pred_labels[item],
             "actual_label": self.actual_labels[item],
+            "custom_features": self.custom_features[item],
             "importances": self.importances[item],
             "variances": self.variances[item],
             "num_samples": self.num_samples[item],
@@ -121,6 +127,7 @@ class MethodData:
         return {
             # General method description
             "method_type": self.method_type.name,
+            "custom_features_type": self.custom_features_type,
             "model_description": self.model_description,
             "generator_description": self.generator_description,
             "min_samples_per_feature": self.min_samples_per_feature,
@@ -133,6 +140,7 @@ class MethodData:
             "pred_probas": self.pred_probas,
             "pred_labels": self.pred_labels,
             "actual_labels": list(map(lambda label: label if label is not None else NA_STR, self.actual_labels)),
+            "custom_features": self.custom_features,
             "importances": self.importances,
             "variances": self.variances,
             "num_samples": list(map(lambda ns: ns if ns is not None else NA_STR, self.num_samples)),

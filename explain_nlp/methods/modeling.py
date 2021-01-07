@@ -2,7 +2,7 @@ from typing import List, Dict, Union, Tuple, Optional
 
 import torch
 import torch.nn.functional as F
-from transformers import BertTokenizer, BertForSequenceClassification
+from transformers import BertTokenizer, BertForSequenceClassification, BertForMaskedLM
 
 
 # TODO: mask, mask_token_id properties
@@ -14,7 +14,11 @@ class InterpretableModel:
         """ Convert from internal model representation to text."""
         raise NotImplementedError
 
-    def to_internal(self, text_data: List[Union[str, Tuple[str, ...]]]) -> Dict:
+    def to_internal(self, text_data: List[Union[str, Tuple[str, ...]]],
+                    pretokenized_text_data: Optional[Union[
+                        List[List[str]],
+                        List[Tuple[List[str], ...]]
+                    ]] = None) -> Dict:
         """ Convert from text to internal model representation. Make sure to include 'perturbable_mask' in the
         returned dictionary."""
         raise NotImplementedError
@@ -36,24 +40,101 @@ class InterpretableModel:
         raise NotImplementedError
 
 
-class InterpretableBertForSequenceClassification(InterpretableModel):
-    def __init__(self, tokenizer_name, model_name, batch_size=8, max_seq_len=64, max_words: Optional[int] = 16,
-                 device="cuda"):
-        self.tokenizer_name = tokenizer_name
-        self.model_name = model_name
-        self.batch_size = batch_size
-        self.max_seq_len = max_seq_len
-        self.max_words = max_words
+class BertAlignedTokenizationMixin:
+    tokenizer: BertTokenizer
+    max_seq_len: int
+    max_words: int
 
-        assert device in ["cpu", "cuda"]
-        if device == "cuda" and not torch.cuda.is_available():
-            raise ValueError("Device is set to 'cuda', but no CUDA device could be found. If you want to run the model "
-                             "on CPU, set device to 'cpu'")
-        self.device = torch.device(device)
+    def tokenize_aligned(self, curr_example_or_pair: Union[List[str], Tuple[List[str], ...]],
+                         return_raw=False, group_words=False):
+        """Note: alignment_ids might not be consecutive as some IDs can get truncated! """
+        combine_list = list.append if group_words else list.extend  # in-place extension of list with another list
+        MAX_LEN = self.max_words if group_words else self.max_seq_len
+        is_text_pair = isinstance(curr_example_or_pair, tuple)
 
-        self.tokenizer = BertTokenizer.from_pretrained(tokenizer_name)
-        self.model = BertForSequenceClassification.from_pretrained(model_name).to(self.device)
-        self.model.eval()
+        raw_example = []
+
+        ex0, ex1 = curr_example_or_pair if is_text_pair else (curr_example_or_pair, None)
+        formatted_ex0, formatted_ex1 = ([], []) if is_text_pair else ([], None)
+        word_ids_0, word_ids_1 = ([], []) if is_text_pair else ([], None)
+        global_word_id = 0
+
+        for idx_word, curr_word in enumerate(ex0, start=global_word_id):
+            curr_subwords = self.tokenizer.encode(curr_word, add_special_tokens=False)
+            combine_list(formatted_ex0, curr_subwords)
+            word_ids_0.extend([idx_word] * len(curr_subwords))
+
+        global_word_id += len(ex0)
+
+        if is_text_pair:
+            for idx_word, curr_word in enumerate(ex1, start=global_word_id):
+                curr_subwords = self.tokenizer.encode(curr_word, add_special_tokens=False)
+                combine_list(formatted_ex1, curr_subwords)
+                word_ids_1.extend([idx_word] * len(curr_subwords))
+
+            global_word_id += len(ex0)
+
+        proxy_ex0 = ["a"] * len(formatted_ex0)
+        proxy_ex1 = ["b"] * len(formatted_ex1) if is_text_pair else None
+
+        curr_seq_len = len(formatted_ex0) + (len(formatted_ex1) if is_text_pair else 0)
+        num_special_tokens = 3 if is_text_pair else 2
+        curr_res = self.tokenizer.encode_plus(text=proxy_ex0, text_pair=proxy_ex1, is_pretokenized=True,
+                                              return_special_tokens_mask=True, return_tensors="pt",
+                                              padding="max_length", max_length=MAX_LEN,
+                                              truncation="longest_first")
+        proxy_ex0, proxy_ex1, _ = self.tokenizer.truncate_sequences(ids=proxy_ex0, pair_ids=proxy_ex1,
+                                                                    truncation_strategy="longest_first",
+                                                                    num_tokens_to_remove=((curr_seq_len + num_special_tokens) - MAX_LEN))
+
+        # [CLS] <seq1> [SEP] [<seq2> [SEP]]
+        formatted_example = []
+        formatted_example.append([self.tokenizer.cls_token_id] if group_words else self.tokenizer.cls_token_id)
+        formatted_example.extend(formatted_ex0[:len(proxy_ex0)])
+        formatted_example.append([self.tokenizer.sep_token_id] if group_words else self.tokenizer.sep_token_id)
+        word_ids = [-1] + word_ids_0[:len(proxy_ex0)] + [-1]
+
+        if return_raw:
+            raw_example.append(self.tokenizer.cls_token)
+            raw_example.extend(ex0[:len(proxy_ex0)])
+            raw_example.append(self.tokenizer.sep_token)
+
+        if is_text_pair:
+            formatted_example.extend(formatted_ex1[:len(proxy_ex1)])
+            formatted_example.append([self.tokenizer.sep_token_id] if group_words else self.tokenizer.sep_token_id)
+
+            word_ids.extend(word_ids_1[:len(proxy_ex1)])
+            word_ids.append(-1)
+
+            if return_raw:
+                raw_example.extend(ex1[:len(proxy_ex1)])
+                raw_example.append(self.tokenizer.sep_token)
+
+        word_ids += [-1] * (self.max_seq_len - len(word_ids))
+        PAD_TOKEN = [self.tokenizer.pad_token_id] if group_words else self.tokenizer.pad_token_id
+        formatted_example.extend([PAD_TOKEN for _ in range(MAX_LEN - len(formatted_example))])
+
+        ret_dict = {
+            "input_ids": formatted_example if group_words else torch.tensor([formatted_example]),
+            "perturbable_mask": torch.logical_not(curr_res["special_tokens_mask"]),
+            "aux_data": {
+                "token_type_ids": curr_res["token_type_ids"],
+                "attention_mask": curr_res["attention_mask"]
+            }
+        }
+
+        if return_raw:
+            raw_example.extend([self.tokenizer.pad_token for _ in range(MAX_LEN - len(raw_example))])
+            ret_dict["words"] = raw_example
+
+        if not group_words:
+            ret_dict["aux_data"]["alignment_ids"] = word_ids
+
+        return ret_dict
+
+
+class InterpretableBertBase(InterpretableModel, BertAlignedTokenizationMixin):
+    tokenizer: BertTokenizer
 
     @property
     def special_token_ids(self):
@@ -75,22 +156,52 @@ class InterpretableBertForSequenceClassification(InterpretableModel):
 
         return decoded_data
 
-    def to_internal(self, text_data):
-        res = self.tokenizer.batch_encode_plus(text_data, return_special_tokens_mask=True, return_tensors="pt",
-                                               padding="max_length", max_length=self.max_seq_len,
-                                               truncation="longest_first")
-        formatted_res = {
-            "input_ids": res["input_ids"],
-            "perturbable_mask": torch.logical_not(res["special_tokens_mask"]),
-            "aux_data": {
-                "token_type_ids": res["token_type_ids"],
-                "attention_mask": res["attention_mask"]
+    def to_internal(self,
+                    text_data: Optional[List[Union[str, Tuple[str, ...]]]] = None,
+                    pretokenized_text_data: Optional[Union[
+                        List[List[str]],
+                        List[Tuple[List[str], ...]]
+                    ]] = None):
+        """ Convert text into model's representation. If `pretokenized_text_data` is given, the word IDs for each
+        subword will be given inside ["aux_data"]["alignment_ids"] (id=-1 if it's an unperturbable token)"""
+        if pretokenized_text_data is not None:
+            res = {
+                "input_ids": [], "perturbable_mask": [],
+                "aux_data": {"token_type_ids": [], "attention_mask": [], "alignment_ids": []}
             }
-        }
 
-        return formatted_res
+            for curr_example_or_pair in pretokenized_text_data:
+                curr_res = self.tokenize_aligned(curr_example_or_pair)
 
-    def words_to_internal(self, text_data: List[Union[List[str], Tuple[List[str], ...]]]) -> Dict:
+                res["input_ids"].append(curr_res["input_ids"])
+                res["perturbable_mask"].append(curr_res["perturbable_mask"])
+                res["aux_data"]["token_type_ids"].append(curr_res["aux_data"]["token_type_ids"])
+                res["aux_data"]["attention_mask"].append(curr_res["aux_data"]["attention_mask"])
+                res["aux_data"]["alignment_ids"].append(curr_res["aux_data"]["alignment_ids"])
+
+            res["input_ids"] = torch.cat(res["input_ids"])
+            res["perturbable_mask"] = torch.cat(res["perturbable_mask"])
+            res["aux_data"]["token_type_ids"] = torch.cat(res["aux_data"]["token_type_ids"])
+            res["aux_data"]["attention_mask"] = torch.cat(res["aux_data"]["attention_mask"])
+            res["aux_data"]["alignment_ids"] = torch.tensor(res["aux_data"]["alignment_ids"])
+        elif text_data is not None:
+            res = self.tokenizer.batch_encode_plus(text_data, return_special_tokens_mask=True, return_tensors="pt",
+                                                   padding="max_length", max_length=self.max_seq_len,
+                                                   truncation="longest_first")
+            res = {
+                "input_ids": res["input_ids"],
+                "perturbable_mask": torch.logical_not(res["special_tokens_mask"]),
+                "aux_data": {
+                    "token_type_ids": res["token_type_ids"],
+                    "attention_mask": res["attention_mask"]
+                }
+            }
+        else:
+            raise ValueError("One of 'text_data' or 'pretokenized_text_data' must be given")
+
+        return res
+
+    def words_to_internal(self, pretokenized_text_data: List[Union[List[str], Tuple[List[str], ...]]]) -> Dict:
         """ Convert examples into model's representation, keeping the word boundaries intact.
 
         Args:
@@ -98,7 +209,6 @@ class InterpretableBertForSequenceClassification(InterpretableModel):
         text_data:
             Pre-tokenized examples or example pairs
         """
-        is_seq_pair = isinstance(text_data[0], tuple)
         ret_dict = {
             "words": [],  # text data, augmented with any additional control tokens (used to align importances)
             "input_ids": [],  # list of encoded token subwords for each example/example pair; type: List[List[List[int]]
@@ -107,58 +217,16 @@ class InterpretableBertForSequenceClassification(InterpretableModel):
             "aux_data": {"token_type_ids": [], "attention_mask": []}
         }
 
-        for curr_example in text_data:
-            raw_example = []
-            formatted_example = []
-            ex0, ex1 = curr_example if is_seq_pair else (curr_example, None)
-            formatted_ex0, formatted_ex1 = [], None
+        for curr_example_or_pair in pretokenized_text_data:
+            res = self.tokenize_aligned(curr_example_or_pair,
+                                        return_raw=True,
+                                        group_words=True)
 
-            for curr_token in ex0:
-                formatted_ex0.append(self.tokenizer.encode(curr_token, add_special_tokens=False))
-            proxy_ex0 = ["a"] * len(formatted_ex0)
-
-            if is_seq_pair:
-                formatted_ex1 = []
-                for curr_token in ex1:
-                    formatted_ex1.append(self.tokenizer.encode(curr_token, add_special_tokens=False))
-
-            proxy_ex1 = ["b"] * len(formatted_ex1) if is_seq_pair else None
-            curr_seq_len = len(proxy_ex0) + (len(proxy_ex1) if is_seq_pair else 0)
-            num_special_tokens = 3 if is_seq_pair else 2
-
-            res = self.tokenizer.encode_plus(text=proxy_ex0, text_pair=proxy_ex1,
-                                             return_special_tokens_mask=True, return_tensors="pt",
-                                             padding="max_length", max_length=self.max_words,
-                                             truncation="longest_first")
-            proxy_ex0, proxy_ex1, _ = self.tokenizer.truncate_sequences(ids=proxy_ex0, pair_ids=proxy_ex1,
-                                                                        num_tokens_to_remove=((curr_seq_len + num_special_tokens) - self.max_words))
-            formatted_ex0 = formatted_ex0[: len(proxy_ex0)]
-            ex0 = ex0[: len(proxy_ex0)]
-
-            formatted_example.append([self.tokenizer.cls_token_id])
-            formatted_example.extend(formatted_ex0)
-            formatted_example.append([self.tokenizer.sep_token_id])
-            raw_example.append(self.tokenizer.cls_token)
-            raw_example.extend(ex0)
-            raw_example.append(self.tokenizer.sep_token)
-            if is_seq_pair:
-                formatted_ex1 = formatted_ex1[: len(proxy_ex1)]
-                ex1 = ex1[: len(proxy_ex1)]
-
-                formatted_example.extend(formatted_ex1)
-                formatted_example.append([self.tokenizer.sep_token_id])
-                raw_example.extend(ex1)
-                raw_example.append(self.tokenizer.sep_token)
-
-            formatted_example.extend([[self.tokenizer.pad_token_id]
-                                      for _ in range(self.max_words - len(formatted_example))])
-            raw_example.extend([self.tokenizer.pad_token for _ in range(self.max_words - len(raw_example))])
-
-            ret_dict["words"].append(raw_example)
-            ret_dict["input_ids"].append(formatted_example)
-            ret_dict["perturbable_mask"].append(torch.logical_not(res["special_tokens_mask"]))
-            ret_dict["aux_data"]["token_type_ids"].append(res["token_type_ids"])
-            ret_dict["aux_data"]["attention_mask"].append(res["attention_mask"])
+            ret_dict["words"].append(res["words"])
+            ret_dict["input_ids"].append(res["input_ids"])
+            ret_dict["perturbable_mask"].append(res["perturbable_mask"])
+            ret_dict["aux_data"]["token_type_ids"].append(res["aux_data"]["token_type_ids"])
+            ret_dict["aux_data"]["attention_mask"].append(res["aux_data"]["attention_mask"])
 
         ret_dict["perturbable_mask"] = torch.cat(ret_dict["perturbable_mask"])
         ret_dict["aux_data"]["token_type_ids"] = torch.cat(ret_dict["aux_data"]["token_type_ids"])
@@ -168,6 +236,84 @@ class InterpretableBertForSequenceClassification(InterpretableModel):
 
     def convert_ids_to_tokens(self, ids):
         return [self.tokenizer.convert_ids_to_tokens(curr_ids) for curr_ids in ids.tolist()]
+
+    @torch.no_grad()
+    def score(self, input_ids: torch.Tensor, **kwargs):
+        raise NotImplementedError
+
+
+class InterpretableBertForMaskedLM(InterpretableBertBase):
+    def __init__(self, tokenizer_name, model_name, batch_size=8, max_seq_len=64, max_words: Optional[int] = 16,
+                 device="cuda"):
+        self.tokenizer_name = tokenizer_name
+        self.model_name = model_name
+        self.batch_size = batch_size
+        self.max_seq_len = max_seq_len
+        self.max_words = max_words
+
+        assert device in ["cpu", "cuda"]
+        if device == "cuda" and not torch.cuda.is_available():
+            raise ValueError("Device is set to 'cuda', but no CUDA device could be found. If you want to run the model "
+                             "on CPU, set device to 'cpu'")
+        self.device = torch.device(device)
+
+        self.tokenizer = BertTokenizer.from_pretrained(tokenizer_name)
+        self.model = BertForMaskedLM.from_pretrained(model_name).to(self.device)
+        self.model.eval()
+
+    @torch.no_grad()
+    def score(self, input_ids: torch.Tensor, **kwargs):
+        raise NotImplementedError("This function should get overriden by `set_token_scorer`")
+
+    def set_token_scorer(self, idx_token):
+        @torch.no_grad()
+        def curr_score(input_ids: torch.Tensor, **kwargs):
+            # If a single example is provided, broadcast it to input size, otherwise assume correct shapes are provided
+            if kwargs["token_type_ids"].shape[0] != input_ids.shape[0]:
+                aux_data = {additional_arg: kwargs[additional_arg].repeat((input_ids.shape[0], 1))
+                            for additional_arg in ["token_type_ids", "attention_mask"]}
+            else:
+                aux_data = {additional_arg: kwargs[additional_arg]
+                            for additional_arg in ["token_type_ids", "attention_mask"]}
+
+            # Mask the currently predicted token
+            # TODO: should attention_mask be 0 for [MASK] token? Currently, the transformers library doesn't do so
+            input_ids[:, idx_token] = self.tokenizer.mask_token_id
+
+            num_total_batches = (input_ids.shape[0] + self.batch_size - 1) // self.batch_size
+            probas = torch.zeros((input_ids.shape[0], self.tokenizer.vocab_size))
+            for idx_batch in range(num_total_batches):
+                s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
+                curr_input_ids = input_ids[s_b: e_b].to(self.device)
+                res = self.model(curr_input_ids, **{k: v[s_b: e_b].to(self.device) for k, v in aux_data.items()},
+                                 return_dict=True)
+
+                tmpo = res["logits"][:, idx_token, :]
+                probas[s_b: e_b] = F.softmax(tmpo, dim=-1)
+
+            return probas
+
+        self.score = curr_score
+
+
+class InterpretableBertForSequenceClassification(InterpretableBertBase, BertAlignedTokenizationMixin):
+    def __init__(self, tokenizer_name, model_name, batch_size=8, max_seq_len=64, max_words: Optional[int] = 16,
+                 device="cuda"):
+        self.tokenizer_name = tokenizer_name
+        self.model_name = model_name
+        self.batch_size = batch_size
+        self.max_seq_len = max_seq_len
+        self.max_words = max_words
+
+        assert device in ["cpu", "cuda"]
+        if device == "cuda" and not torch.cuda.is_available():
+            raise ValueError("Device is set to 'cuda', but no CUDA device could be found. If you want to run the model "
+                             "on CPU, set device to 'cpu'")
+        self.device = torch.device(device)
+
+        self.tokenizer = BertTokenizer.from_pretrained(tokenizer_name)
+        self.model = BertForSequenceClassification.from_pretrained(model_name).to(self.device)
+        self.model.eval()
 
     @torch.no_grad()
     def score(self, input_ids: torch.Tensor, **kwargs):
@@ -268,7 +414,7 @@ class DummySentiment(InterpretableModel):
                       take_as_single_sequence: bool = False) -> List[str]:
         return [" ".join([self.id2tok[i] for i in sequence]) for sequence in encoded_data.tolist()]
 
-    def to_internal(self, text_data: List[str]) -> Dict:
+    def to_internal(self, text_data: List[str], pretokenized_text_data=None) -> Dict:
         tokenized_examples = [text.split(" ") for text in text_data]
         encoded_tokens = []
         # Encode and pad/truncate to max length
@@ -296,13 +442,32 @@ class DummySentiment(InterpretableModel):
 
 
 if __name__ == "__main__":
-    model = InterpretableBertForSequenceClassification(tokenizer_name="bert-base-uncased",
-                                                       model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/snli_bert_uncased",
-                                                       batch_size=4,
-                                                       device="cpu")
+    model = InterpretableBertForSequenceClassification(
+        tokenizer_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased",
+        model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased",
+        batch_size=4,
+        max_seq_len=10,
+        device="cpu"
+    )
 
-    encoded = model.to_internal([("I am Iron Man", "My name is Iron Man"), ("Do not blink", "Blink and you're dead")])
+    encoded = model.to_internal(
+        text_data=[
+            ("I am Iron Man", "My name is Iron Man"),
+            ("Do not blink", "Blink and you're dead"),
+            ("Unbelieveable, Jeff", "I don't know, Sammy")
+        ],
+        pretokenized_text_data=[
+            (["I", "am", "Iron", "Man"], ["My", "name", "is", "Iron", "Man"]),
+            (["Do", "not", "blink"], ["Blink", "and", "you", "'re", "dead"]),
+            (["Unbelieveable", ",", "Jeff"], ["I", "do", "n't", "know", ",", "Sammy"])
+        ])
+
     print(encoded)
-    print(model.from_internal(encoded["input_ids"]))
+    print(model.convert_ids_to_tokens(encoded["input_ids"]))
+    model.set_token_scorer(0)
+    probas = model.score(encoded["input_ids"], **encoded["aux_data"])
+    print(probas)
+
+    model.set_token_scorer(3)
     probas = model.score(encoded["input_ids"], **encoded["aux_data"])
     print(probas)
