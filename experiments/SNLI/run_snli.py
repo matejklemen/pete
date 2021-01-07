@@ -3,7 +3,6 @@ from time import time
 
 import stanza
 import torch
-from torch.utils.data import DataLoader, Subset
 
 from explain_nlp.experimental.arguments import parser
 from explain_nlp.experimental.core import MethodData
@@ -26,7 +25,7 @@ if __name__ == "__main__":
         print(f"Using custom features: '{args.custom_features}'")
 
     nlp = stanza.Pipeline(lang="en", processors="tokenize", use_gpu=not args.use_cpu, tokenize_no_ssplit=True)
-    pretokenized_test_data = []
+    pretokenized_test_data = None
     compute_accurately = args.experiment_type == "accurate_importances"
 
     if args.experiment_dir is None:
@@ -48,13 +47,8 @@ if __name__ == "__main__":
                                          clm_labels=[IDX_TO_LABEL["snli"][i] for i in sorted(IDX_TO_LABEL["snli"])])
 
     df_test = load_nli(args.test_path)
-    test_set = TransformerSeqPairDataset(df_test["sentence1"].values, df_test["sentence2"].values,
-                                         labels=df_test["gold_label"].apply(
-                                             lambda label_str: LABEL_TO_IDX["snli"][label_str]).values,
-                                         tokenizer=model.tokenizer,
-                                         max_seq_len=args.model_max_seq_len)
-
     if args.method == "whole_word_ime" or args.custom_features is not None:
+        pretokenized_test_data = []
         for idx_subset in range((df_test.shape[0] + 1024 - 1) // 1024):
             s, e = idx_subset * 1024, (1 + idx_subset) * 1024
             for s0, s1 in zip(nlp("\n\n".join(df_test["sentence1"].iloc[s: e].values)).sentences,
@@ -69,10 +63,10 @@ if __name__ == "__main__":
     if args.method in {"ime", "sequential_ime", "whole_word_ime"}:
         used_data["train_path"] = args.train_path
         df_train = load_nli(args.train_path).sample(frac=1.0).reset_index(drop=True)
-        train_set = TransformerSeqPairDataset(df_train["sentence1"].values, df_train["sentence2"].values,
-                                              labels=df_train["gold_label"].apply(
-                                                  lambda label_str: LABEL_TO_IDX["snli"][label_str]).values,
-                                              tokenizer=model.tokenizer, max_seq_len=args.model_max_seq_len)
+        train_set = TransformerSeqPairDataset.build(df_train["sentence1"].values, df_train["sentence2"].values,
+                                                    labels=df_train["gold_label"].apply(
+                                                        lambda label_str: LABEL_TO_IDX["snli"][label_str]).values,
+                                                    tokenizer=model.tokenizer, max_seq_len=args.model_max_seq_len)
 
         used_sample_data = train_set.input_ids
         if args.method == "whole_word_ime":
@@ -110,9 +104,9 @@ if __name__ == "__main__":
         method_data = MethodData.load(os.path.join(args.experiment_dir, f"{args.method}_data.json"))
 
     start_from = args.start_from if args.start_from is not None else len(method_data)
-    start_from = min(start_from, len(test_set))
-    until = args.until if args.until is not None else len(test_set)
-    until = min(until, len(test_set))
+    start_from = min(start_from, df_test.shape[0])
+    until = args.until if args.until is not None else df_test.shape[0]
+    until = min(until, df_test.shape[0])
 
     if args.custom_features is not None:
         if args.custom_features.startswith("depparse"):
@@ -121,24 +115,29 @@ if __name__ == "__main__":
             nlp = stanza.Pipeline(lang="en", processors="tokenize")
 
     print(f"Running computation from example#{start_from} (inclusive) to example#{until} (exclusive)")
-    for idx_example, curr_example in enumerate(DataLoader(Subset(test_set, range(start_from, until)), batch_size=1, shuffle=False),
-                                               start=start_from):
-        probas = model.score(**{k: v.to(DEVICE) for k, v in curr_example.items() if k not in {"words",
-                                                                                              "labels",
-                                                                                              "special_tokens_mask"}})
+    for idx_example, input_pair in enumerate(df_test.iloc[start_from: until][["sentence1", "sentence2"]].values.tolist(),
+                                             start=start_from):
+        if args.method == "whole_word_ime" or args.custom_features is not None:
+            encoded_example = model.to_internal(pretokenized_text_data=[pretokenized_test_data[idx_example]])
+        else:
+            encoded_example = model.to_internal(text_data=[input_pair])
+
+        probas = model.score(input_ids=encoded_example["input_ids"].to(DEVICE),
+                             token_type_ids=encoded_example["aux_data"]["token_type_ids"].to(DEVICE),
+                             attention_mask=encoded_example["aux_data"]["attention_mask"].to(DEVICE))
         predicted_label = int(torch.argmax(probas))
-        actual_label = int(curr_example["labels"])
+        actual_label = int(df_test.iloc[[idx_example]]["gold_label"].apply(
+                                                        lambda label_str: LABEL_TO_IDX["snli"][label_str]))
 
         if args.method == "whole_word_ime":
             input_text = pretokenized_test_data[idx_example]
         else:
-            input_text = (df_test.iloc[idx_example]["sentence1"], df_test.iloc[idx_example]["sentence2"])
+            input_text = input_pair
 
         curr_features = None
         if args.method in {"ime", "sequential_ime"} and args.custom_features is not None:
             # Obtain word IDs for subwords in all cases as the custom features are usually obtained from words
-            encoded = model.to_internal(pretokenized_text_data=[pretokenized_test_data[idx_example]])
-            word_ids = encoded["aux_data"]["alignment_ids"][0].tolist()
+            word_ids = encoded_example["aux_data"]["alignment_ids"][0].tolist()
 
             curr_features = handle_features(args.custom_features,
                                             word_ids=word_ids,

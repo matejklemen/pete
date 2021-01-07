@@ -21,30 +21,22 @@ IDX_TO_LABEL["qqp"] = {0: "different", 1: "duplicate"}
 
 
 class TransformerSeqPairDataset(Dataset):
-    def __init__(self, first: Iterable[str], second: Iterable[str], labels: Iterable[int],
-                 tokenizer, max_seq_len: int = 41):
-        self.input_ids = []
-        self.segments = []
-        self.attn_masks = []
-        self.special_tokens_masks = []
-        self.labels = []
+    def __init__(self, input_ids, token_type_ids, attention_mask, special_tokens_mask, labels, max_seq_len: int = 41):
+        self.input_ids = input_ids
+        self.segments = token_type_ids
+        self.attn_masks = attention_mask
+        self.special_tokens_masks = special_tokens_mask
+        self.labels = labels
         self.max_seq_len = max_seq_len
 
-        for seq1, seq2, curr_label in zip(first, second, labels):
-            processed = tokenizer.encode_plus(seq1, seq2, max_length=max_seq_len,
-                                              padding="max_length", truncation="longest_first",
-                                              return_special_tokens_mask=True)
-            self.input_ids.append(processed["input_ids"])
-            self.segments.append(processed["token_type_ids"])
-            self.attn_masks.append(processed["attention_mask"])
-            self.special_tokens_masks.append(processed["special_tokens_mask"])
-            self.labels.append(curr_label)
-
-        self.input_ids = torch.tensor(self.input_ids)
-        self.segments = torch.tensor(self.segments)
-        self.attn_masks = torch.tensor(self.attn_masks)
-        self.special_tokens_masks = torch.tensor(self.special_tokens_masks)
-        self.labels = torch.tensor(self.labels)
+    @staticmethod
+    def build(first: Iterable[str], second: Iterable[str], labels: Iterable[int],
+              tokenizer, max_seq_len: int = 41):
+        dataset_dict = tokenizer.batch_encode_plus(zip(first, second), max_length=max_seq_len,
+                                                   padding="max_length", truncation="longest_first",
+                                                   return_special_tokens_mask=True, return_tensors="pt")
+        dataset_dict["labels"] = torch.tensor(labels)
+        return TransformerSeqPairDataset(**dataset_dict)
 
     def __getitem__(self, idx):
         return {

@@ -2,13 +2,14 @@ import json
 
 import torch
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, Subset
+from torch.utils.data import DataLoader, Subset
 from transformers import BertTokenizer, BertForSequenceClassification
-import pandas as pd
 
 import argparse
 import os
 import logging
+
+from explain_nlp.experimental.data import load_nli, TransformerSeqPairDataset, LABEL_TO_IDX
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -30,58 +31,8 @@ parser.add_argument("--validate_every_n_examples", type=int, default=5_000)
 parser.add_argument("--early_stopping_rounds", type=int, default=5)
 
 
-class NLIDataset(Dataset):
-    def __init__(self, premises, hypotheses, labels, tokenizer, max_seq_len=41):
-        self.input_ids = []
-        self.segments = []
-        self.attn_masks = []
-        self.special_tokens_masks = []
-        self.labels = []
-        self.max_seq_len = max_seq_len
-
-        for curr_premise, curr_hypothesis, curr_label in zip(premises, hypotheses, labels):
-            processed = tokenizer.encode_plus(curr_premise, curr_hypothesis, max_length=max_seq_len,
-                                              padding="max_length", truncation="longest_first",
-                                              return_special_tokens_mask=True)
-            self.input_ids.append(processed["input_ids"])
-            self.segments.append(processed["token_type_ids"])
-            self.attn_masks.append(processed["attention_mask"])
-            self.special_tokens_masks.append(processed["special_tokens_mask"])
-            self.labels.append(curr_label)
-
-        self.input_ids = torch.tensor(self.input_ids)
-        self.segments = torch.tensor(self.segments)
-        self.attn_masks = torch.tensor(self.attn_masks)
-        self.special_tokens_masks = torch.tensor(self.special_tokens_masks)
-        self.labels = torch.tensor(self.labels)
-
-    def __getitem__(self, idx):
-        return {
-            "input_ids": self.input_ids[idx],
-            "token_type_ids": self.segments[idx],
-            "attention_mask": self.attn_masks[idx],
-            "special_tokens_mask": self.special_tokens_masks[idx],
-            "labels": self.labels[idx]
-        }
-
-    def __len__(self):
-        return self.input_ids.shape[0]
-
-
-def load_nli(file_path, sample_size=None):
-    """ Common loader for SNLI/MultiNLI """
-    df = pd.read_csv(file_path, sep="\t", na_values=[""], nrows=sample_size, encoding="utf-8", quoting=3)
-    # Drop examples where one of the sentences is "n/a"
-    df = df.dropna(axis=0, how="any", subset=["sentence1", "sentence2"])
-    mask = df["gold_label"] != "-"
-    df = df.loc[mask].reset_index(drop=True)
-
-    return df
-
-
 if __name__ == "__main__":
     args = parser.parse_args()
-    LABEL_TO_IDX = {"entailment": 0, "neutral": 1, "contradiction": 2}
 
     os.makedirs(args.model_save_dir, exist_ok=True)
     logging.basicConfig(
@@ -96,7 +47,7 @@ if __name__ == "__main__":
     with open(os.path.join(args.model_save_dir, "training_args.json"), "w", encoding="utf-8") as f:
         json.dump(vars(args), fp=f, indent=4)
 
-    num_labels = len(LABEL_TO_IDX)
+    num_labels = len(LABEL_TO_IDX["snli"])
     logging.info(f"Using {num_labels} labels")
     model = BertForSequenceClassification.from_pretrained(args.pretrained_name_or_path,
                                                           num_labels=num_labels).to(DEVICE)
@@ -108,21 +59,21 @@ if __name__ == "__main__":
     logging.info(f"Loaded {df_train.shape[0]} train, {df_dev.shape[0]} dev and {df_test.shape[0]} test examples")
 
     logging.info("Constructing datasets")
-    train_set = NLIDataset(premises=df_train["sentence1"].values,
-                           hypotheses=df_train["sentence2"].values,
-                           labels=df_train["gold_label"].apply(lambda label_str: LABEL_TO_IDX[label_str]).values,
-                           tokenizer=tokenizer,
-                           max_seq_len=args.max_seq_len)
-    dev_set = NLIDataset(premises=df_dev["sentence1"].values,
-                         hypotheses=df_dev["sentence2"].values,
-                         labels=df_dev["gold_label"].apply(lambda label_str: LABEL_TO_IDX[label_str]).values,
-                         tokenizer=tokenizer,
-                         max_seq_len=args.max_seq_len)
-    test_set = NLIDataset(premises=df_test["sentence1"].values,
-                          hypotheses=df_test["sentence2"].values,
-                          labels=df_test["gold_label"].apply(lambda label_str: LABEL_TO_IDX[label_str]).values,
-                          tokenizer=tokenizer,
-                          max_seq_len=args.max_seq_len)
+    train_set = TransformerSeqPairDataset.build(df_train["sentence1"].values, df_train["sentence2"].values,
+                                                labels=df_train["gold_label"].apply(
+                                                    lambda label_str: LABEL_TO_IDX["snli"][label_str]).values,
+                                                tokenizer=tokenizer,
+                                                max_seq_len=args.max_seq_len)
+    dev_set = TransformerSeqPairDataset.build(df_dev["sentence1"].values, df_dev["sentence2"].values,
+                                              labels=df_dev["gold_label"].apply(
+                                                  lambda label_str: LABEL_TO_IDX["snli"][label_str]).values,
+                                              tokenizer=tokenizer,
+                                              max_seq_len=args.max_seq_len)
+    test_set = TransformerSeqPairDataset.build(df_test["sentence1"].values,df_test["sentence2"].values,
+                                               labels=df_test["gold_label"].apply(
+                                                   lambda label_str: LABEL_TO_IDX["snli"][label_str]).values,
+                                               tokenizer=tokenizer,
+                                               max_seq_len=args.max_seq_len)
 
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
 
