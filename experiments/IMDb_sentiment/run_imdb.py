@@ -48,12 +48,6 @@ if __name__ == "__main__":
                                          clm_labels=[IDX_TO_LABEL["imdb"][i] for i in sorted(IDX_TO_LABEL["imdb"])])
 
     df_test = load_imdb(args.test_path)
-    test_set = TransformerSeqDataset(df_test["review"].values,
-                                     labels=df_test["label"].apply(
-                                         lambda lbl: LABEL_TO_IDX["imdb"][lbl]).values,
-                                     tokenizer=model.tokenizer,
-                                     max_seq_len=args.model_max_seq_len)
-
     if args.method == "whole_word_ime" or args.custom_features is not None:
         pretokenized_test_data = []
         for idx_subset in range((df_test.shape[0] + 1024 - 1) // 1024):
@@ -104,9 +98,9 @@ if __name__ == "__main__":
         method_data = MethodData.load(os.path.join(args.experiment_dir, f"{args.method}_data.json"))
 
     start_from = args.start_from if args.start_from is not None else len(method_data)
-    start_from = min(start_from, len(test_set))
-    until = args.until if args.until is not None else len(test_set)
-    until = min(until, len(test_set))
+    start_from = min(start_from, df_test.shape[0])
+    until = args.until if args.until is not None else df_test.shape[0]
+    until = min(until, df_test.shape[0])
 
     if args.custom_features is not None:
         if args.custom_features.startswith("depparse"):
@@ -115,24 +109,28 @@ if __name__ == "__main__":
             nlp = stanza.Pipeline(lang="en", processors="tokenize")
 
     print(f"Running computation from example#{start_from} (inclusive) to example#{until} (exclusive)")
-    for idx_example, curr_example in enumerate(DataLoader(Subset(test_set, range(start_from, until)), batch_size=1, shuffle=False),
+    for idx_example, curr_example in enumerate(df_test.iloc[start_from: until]["review"].values,
                                                start=start_from):
-        probas = model.score(**{k: v.to(DEVICE) for k, v in curr_example.items() if k not in {"words",
-                                                                                              "labels",
-                                                                                              "special_tokens_mask"}})
+        if args.method == "whole_word_ime" or args.custom_features is not None:
+            encoded_example = model.to_internal(pretokenized_text_data=[pretokenized_test_data[idx_example]])
+        else:
+            encoded_example = model.to_internal(text_data=[curr_example])
+
+        probas = model.score(input_ids=encoded_example["input_ids"].to(DEVICE),
+                             token_type_ids=encoded_example["aux_data"]["token_type_ids"].to(DEVICE),
+                             attention_mask=encoded_example["aux_data"]["attention_mask"].to(DEVICE))
         predicted_label = int(torch.argmax(probas))
-        actual_label = int(curr_example["labels"])
+        actual_label = int(df_test.iloc[[idx_example]]["label"].apply(lambda lbl: LABEL_TO_IDX["imdb"][lbl]))
 
         if args.method == "whole_word_ime":
             input_text = pretokenized_test_data[idx_example]
         else:
-            input_text = df_test.iloc[idx_example]["review"]
+            input_text = curr_example
 
         curr_features = None
         if args.method in {"ime", "sequential_ime"} and args.custom_features is not None:
             # Obtain word IDs for subwords in all cases as the custom features are usually obtained from words
-            encoded = model.to_internal(pretokenized_text_data=[pretokenized_test_data[idx_example]])
-            word_ids = encoded["aux_data"]["alignment_ids"][0].tolist()
+            word_ids = encoded_example["aux_data"]["alignment_ids"][0].tolist()
 
             curr_features = handle_features(args.custom_features,
                                             word_ids=word_ids,
