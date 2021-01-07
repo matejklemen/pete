@@ -160,6 +160,7 @@ if __name__ == "__main__":
         if compute_accurately:
             taken_or_estimated_samples = res['taken_samples']
         else:
+            # TODO: this needs to be updated, taking into account that too many samples might have been taken
             taken_or_estimated_samples = int(estimate_max_samples(res["var"] * res["num_samples"],
                                                                   alpha=(1 - args.confidence_interval),
                                                                   max_abs_error=args.max_abs_error))

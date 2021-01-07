@@ -6,7 +6,7 @@ from copy import deepcopy
 
 from explain_nlp.methods.modeling import InterpretableModel
 from explain_nlp.methods.utils import estimate_max_samples, sample_permutations, incremental_mean, incremental_var, \
-    tensor_indexer, list_indexer
+    tensor_indexer, list_indexer, estimate_feature_samples
 
 
 class IMEExplainer:
@@ -232,11 +232,14 @@ class IMEExplainer:
                 feature_debug_data[idx_feature]["scores"].append(res["scores"])
 
         if self.error_constraint_given:
-            eff_max_samples = int(estimate_max_samples(importance_vars,
-                                                       alpha=(1 - self.confidence_interval),
-                                                       max_abs_error=self.max_abs_error))
-            # If really relaxed constraints are given, #taken samples may already exceed #required samples
-            eff_max_samples = max(taken_samples, eff_max_samples)
+            # Calculate required samples to satisfy constraint, making sure that if "too many" samples were already
+            # taken for some feature (min_samples_per_feature > required_samples_per_feature[i]), that does not count
+            # towards lowering the total amount of required samples
+            required_samples_per_feature = estimate_feature_samples(importance_vars,
+                                                                    alpha=(1 - self.confidence_interval),
+                                                                    max_abs_error=self.max_abs_error)
+            required_samples_per_feature -= samples_per_feature
+            eff_max_samples = int(taken_samples + torch.sum(required_samples_per_feature[required_samples_per_feature > 0]))
 
         while taken_samples < eff_max_samples:
             var_diffs = (importance_vars / samples_per_feature) - (importance_vars / (samples_per_feature + 1))
