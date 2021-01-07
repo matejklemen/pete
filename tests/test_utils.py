@@ -3,7 +3,7 @@ import unittest
 import torch
 import numpy as np
 
-from explain_nlp.methods.utils import estimate_feature_samples, estimate_max_samples, sample_permutations, \
+from explain_nlp.methods.utils import estimate_feature_samples, sample_permutations, \
     incremental_mean, incremental_var
 
 
@@ -17,9 +17,6 @@ class TestUtils(unittest.TestCase):
 
         estimate2 = estimate_feature_samples(torch.tensor([1.0, 0.1, 5.0]), alpha, max_abs_error=1)
         self.assertEqual(estimate2.tolist(), [3, 0, 19])
-
-        estimate3 = estimate_max_samples(torch.tensor([1.0, 0.1, 5.0]), alpha, max_abs_error=1)
-        self.assertEqual(int(estimate3), 22)
 
     def test_permutations(self):
         PERMUTED_INDICES = torch.tensor([0, 1, 5, 6, 7])

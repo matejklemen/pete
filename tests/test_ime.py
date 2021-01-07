@@ -2,7 +2,6 @@ import unittest
 import torch
 from explain_nlp.methods.ime import IMEExplainer
 from explain_nlp.methods.modeling import InterpretableDummy
-from explain_nlp.methods.utils import estimate_feature_samples, estimate_max_samples
 
 
 class TestIMEExplainer(unittest.TestCase):

@@ -8,6 +8,7 @@ import numpy as np
 import shap
 from explain_nlp.methods.ime import IMEExplainer, estimate_max_samples
 from explain_nlp.methods.modeling import InterpretableModel
+from explain_nlp.methods.utils import estimate_feature_samples
 
 
 class InterpretableLR(InterpretableModel):
@@ -49,12 +50,18 @@ if __name__ == "__main__":
     # Our implementation (part 1: estimate required number of samples to satisfy the max allowed error constraint)
     custom_implementation = IMEExplainer(model=InterpretableLR(skl_model=model),
                                          sample_data=torch.from_numpy(X_tr.values),
-                                         return_variance=True)
+                                         return_variance=True,
+                                         return_num_samples=True)
     res = custom_implementation.explain(torch.from_numpy(chosen_instance),
                                         min_samples_per_feature=1000, max_samples=8*1000)
     # Note: for estimation of number of samples, we need the variance of differences, not variance of importances
-    required_max_samples = estimate_max_samples(res["var"] * res["taken_samples"],
-                                                alpha=(1 - 0.99), max_abs_error=0.1)
+    required_samples_per_feature = estimate_feature_samples(res["var"] * res["num_samples"],
+                                                            alpha=(1 - 0.99),
+                                                            max_abs_error=0.1)
+    required_samples_per_feature -= res["num_samples"]
+    required_max_samples = int(
+        res["taken_samples"] + torch.sum(required_samples_per_feature[required_samples_per_feature > 0])
+    )
     print(f"Required max samples: {required_max_samples}")
 
     # SHAP implementation of IME (seems to be a modified version of the original algorithm though)

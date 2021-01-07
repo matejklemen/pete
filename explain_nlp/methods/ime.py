@@ -5,7 +5,7 @@ import torch
 from copy import deepcopy
 
 from explain_nlp.methods.modeling import InterpretableModel
-from explain_nlp.methods.utils import estimate_max_samples, sample_permutations, incremental_mean, incremental_var, \
+from explain_nlp.methods.utils import sample_permutations, incremental_mean, incremental_var, \
     tensor_indexer, list_indexer, estimate_feature_samples
 
 
@@ -240,9 +240,6 @@ class IMEExplainer:
                                                                     max_abs_error=self.max_abs_error)
             required_samples_per_feature -= samples_per_feature
             eff_max_samples = int(taken_samples + torch.sum(required_samples_per_feature[required_samples_per_feature > 0]))
-
-            print(f"Previous estimate: {max(taken_samples, estimate_max_samples(importance_vars,alpha=(1 - self.confidence_interval), max_abs_error=self.max_abs_error))}")
-            print(f"Updated estimate: {eff_max_samples}")
 
         while taken_samples < eff_max_samples:
             var_diffs = (importance_vars / samples_per_feature) - (importance_vars / (samples_per_feature + 1))

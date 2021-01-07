@@ -12,7 +12,7 @@ from explain_nlp.experimental.handle_explainer import load_explainer
 from explain_nlp.experimental.handle_features import handle_features
 from explain_nlp.experimental.handle_generator import load_generator
 from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
-from explain_nlp.methods.utils import estimate_max_samples, estimate_feature_samples
+from explain_nlp.methods.utils import estimate_feature_samples
 from explain_nlp.visualizations.highlight import highlight_plot
 
 if __name__ == "__main__":
@@ -160,21 +160,13 @@ if __name__ == "__main__":
         if compute_accurately:
             taken_or_estimated_samples = res['taken_samples']
         else:
-            # TODO: this needs to be updated, taking into account that too many samples might have been taken
-            taken_or_estimated_samples = int(estimate_max_samples(res["var"] * res["num_samples"],
-                                                                  alpha=(1 - args.confidence_interval),
-                                                                  max_abs_error=args.max_abs_error))
-
             required_samples_per_feature = estimate_feature_samples(res["var"] * res["num_samples"],
                                                                     alpha=(1 - args.confidence_interval),
                                                                     max_abs_error=args.max_abs_error)
             required_samples_per_feature -= res["num_samples"]
-            eff_max_samples = int(
-                res["taken_samples"] + torch.sum(required_samples_per_feature[required_samples_per_feature > 0]))
-
-            print(
-                f"Previous estimate: {max(res['taken_samples'], estimate_max_samples(res['var'] * res['num_samples'], alpha=(1 - args.confidence_interval), max_abs_error=args.max_abs_error))}")
-            print(f"Updated estimate: {eff_max_samples}")
+            taken_or_estimated_samples = int(
+                res["taken_samples"] + torch.sum(required_samples_per_feature[required_samples_per_feature > 0])
+            )
 
         print(f"[{args.method}] {'taken' if compute_accurately else '(estimated) required'} samples: {taken_or_estimated_samples}")
         print(f"[{args.method}] Time taken: {t2 - t1:.2f}s")
