@@ -44,7 +44,7 @@ if __name__ == "__main__":
                                                        device="cpu" if args.use_cpu else "cuda")
     model_desc = {"type": "bert", "max_seq_len": args.model_max_seq_len, "handle": args.model_dir}
     generator, gen_desc = load_generator(args,
-                                         clm_labels=[IDX_TO_LABEL["snli"][i] for i in sorted(IDX_TO_LABEL["snli"])])
+                                         clm_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"])
 
     df_test = load_nli(args.test_path)
     if args.method == "whole_word_ime" or args.custom_features is not None:

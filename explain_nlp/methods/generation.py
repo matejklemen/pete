@@ -9,13 +9,15 @@ from explain_nlp.methods.decoding import greedy_decoding, top_p_decoding, top_p_
 
 # TODO: mask, mask_token_id properties
 # TODO: mask token in generator is not necessarily same as mask token in model (e.g. <MASK> vs [MASK])
+from explain_nlp.methods.utils import extend_tensor
+
+
 class SampleGenerator:
     def from_internal(self, encoded_data: torch.Tensor) -> List[Union[str, Tuple[str, ...]]]:
         """ Convert from internal generator representation to text."""
         raise NotImplementedError
 
-    def to_internal(self, text_data: List[Union[str, Tuple[str, ...]]],
-                    labels: List[int]) -> Dict:
+    def to_internal(self, text_data: List[Union[str, Tuple[str, ...]]]) -> Dict:
         """ Convert from text to internal generator representation.
         Make sure to include 'input_ids', 'perturbable_mask' and 'aux_data' in the returned dictionary."""
         raise NotImplementedError
@@ -73,17 +75,8 @@ class GPTControlledLMGenerator(SampleGenerator):
 
         return decoded_data
 
-    def to_internal(self, text_data: List[Union[str, Tuple[str, ...]]], labels: List[int]) -> Dict:
-        formatted_text = []
-        for curr_text, curr_lbl in zip(text_data, labels):
-            curr_lbl_str = self.possible_labels[curr_lbl]
-            if isinstance(curr_text, str):
-                formatted_text.append(f"<{curr_lbl_str.upper()}> {curr_text} {self.tokenizer.eos_token}")
-            else:
-                formatted_text.append(f"<{curr_lbl_str.upper()}> {curr_text[0]} {self.tokenizer.sep_token} "
-                                      f"{curr_text[1]} {self.tokenizer.eos_token}")
-
-        res = self.tokenizer.batch_encode_plus(formatted_text, return_special_tokens_mask=True, return_tensors="pt",
+    def to_internal(self, text_data: List[Union[str, Tuple[str, ...]]]) -> Dict:
+        res = self.tokenizer.batch_encode_plus(text_data, return_special_tokens_mask=True, return_tensors="pt",
                                                padding="max_length", max_length=self.max_seq_len,
                                                truncation="longest_first")
 
@@ -203,17 +196,8 @@ class GPTLMGenerator(SampleGenerator):
 
         return decoded_data
 
-    def to_internal(self, text_data: List[Union[str, Tuple[str, ...]]],
-                    labels: List[Union[int, str]] = None) -> Dict:
-        formatted_text = []
-        for curr_text in text_data:
-            if isinstance(curr_text, str):
-                formatted_text.append(f"{self.tokenizer.bos_token} {curr_text} {self.tokenizer.eos_token}")
-            else:
-                formatted_text.append(f"{self.tokenizer.bos_token} {curr_text[0]} {self.tokenizer.sep_token} "
-                                      f"{curr_text[1]} {self.tokenizer.eos_token}")
-
-        res = self.tokenizer.batch_encode_plus(formatted_text, return_special_tokens_mask=True, return_tensors="pt",
+    def to_internal(self, text_data: List[Union[str, Tuple[str, ...]]]) -> Dict:
+        res = self.tokenizer.batch_encode_plus(text_data, return_special_tokens_mask=True, return_tensors="pt",
                                                padding="max_length", max_length=self.max_seq_len,
                                                truncation="longest_first")
 
@@ -299,19 +283,17 @@ class BertForMaskedLMGenerator(SampleGenerator):
 
     def __init__(self, tokenizer_name, model_name, batch_size=8, max_seq_len=64, device="cuda",
                  strategy: Optional[str] = "top_k", top_p: Optional[float] = None, top_k: Optional[int] = 5,
-                 threshold: Optional[float] = 0.1, is_controlled_lm: Optional[bool] = False):
+                 threshold: Optional[float] = 0.1):
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
         self.batch_size = batch_size
         self.max_seq_len = max_seq_len
 
         self.strategy = strategy
-        assert self.strategy in ["top_k", "top_p", "threshold"]
+        assert self.strategy in ["top_k", "top_p", "threshold", "greedy"]
         self.top_p = top_p
         self.top_k = top_k
         self.threshold = threshold
-
-        self.is_controlled_lm = is_controlled_lm
 
         assert self.batch_size > 1 and self.batch_size % 2 == 0
         assert device in ["cpu", "cuda"]
@@ -321,7 +303,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
         self.device = torch.device(device)
 
         self.tokenizer = BertTokenizer.from_pretrained(self.tokenizer_name)
-        self.generator = BertForMaskedLM.from_pretrained(self.model_name).to(self.device)
+        self.generator = BertForMaskedLM.from_pretrained(self.model_name, return_dict=True).to(self.device)
         self.generator.eval()
 
     @property
@@ -348,22 +330,8 @@ class BertForMaskedLMGenerator(SampleGenerator):
 
         return decoded_data
 
-    def to_internal(self, text_data, labels: List[Union[int, str]] = None):
-        _text_data = text_data
-        # Format examples in a controlled LM fashion (<LABEL> <seq1> [<seq2>])
-        if self.is_controlled_lm and labels is not None:
-            assert isinstance(labels[0], str)  # currently assuming label of example is passed in raw form
-            assert len(text_data) == len(labels)
-
-            control_formatted = []
-            for curr_text, curr_lbl in zip(text_data, labels):
-                if isinstance(curr_text, tuple):
-                    control_formatted.append(f"{curr_lbl} {curr_text[0]} {curr_text[1]}")
-                elif isinstance(curr_text, str):
-                    control_formatted.append(f"{curr_lbl} {curr_text}")
-            _text_data = control_formatted
-
-        res = self.tokenizer.batch_encode_plus(_text_data, return_special_tokens_mask=True, return_tensors="pt",
+    def to_internal(self, text_data):
+        res = self.tokenizer.batch_encode_plus(text_data, return_special_tokens_mask=True, return_tensors="pt",
                                                padding="max_length", max_length=self.max_seq_len,
                                                truncation="longest_first")
         formatted_res = {
@@ -379,7 +347,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
 
     @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
-                 num_samples: Optional[int] = -1, label=None, **aux_data) -> Dict:
+                 num_samples, label=None, **aux_data) -> Dict:
         num_features = int(input_ids.shape[1])
 
         perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
@@ -489,32 +457,83 @@ class BertForMaskedLMGenerator(SampleGenerator):
         }
 
 
-if __name__ == "__main__":
-    generator = GPTControlledLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/gpt_snli_clm_maxseqlen42",
-                                         model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/gpt_snli_clm_maxseqlen42",
-                                         possible_labels=["entailment", "neutral", "contradiction"],
-                                         batch_size=2,
-                                         max_seq_len=42,
-                                         top_p=0.9,
-                                         device="cpu")
+class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
+    def __init__(self, tokenizer_name, model_name, control_labels: List[str], batch_size=8, max_seq_len=64, device="cuda",
+                 strategy: Optional[str] = "greedy", top_p: Optional[float] = None, top_k: Optional[int] = 5,
+                 threshold: Optional[float] = 0.1, label_weights: List = None):
+        super().__init__(tokenizer_name=tokenizer_name, model_name=model_name,
+                         batch_size=batch_size, max_seq_len=max_seq_len, device=device,
+                         strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
 
-    # generator = GPTLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/gpt_snli_lm_maxseqlen42",
-    #                            model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/gpt_snli_lm_maxseqlen42",
-    #                            batch_size=2,
-    #                            max_seq_len=42,
-    #                            top_p=0.9,
-    #                            device="cpu")
-    # generator = BertForMaskedLMGenerator(tokenizer_name="bert-base-uncased",
-    #                                      model_name="bert-base-uncased",
-    #                                      batch_size=2,
-    #                                      device="cpu")
+        assert strategy == "greedy"  # TODO: remove once expanded
+        assert all(curr_control in self.tokenizer.all_special_tokens for curr_control in control_labels)
+        self.control_labels = torch.tensor(self.tokenizer.encode(control_labels, add_special_tokens=False))
+
+        self.label_weights = label_weights
+        if self.label_weights is None:
+            self.label_weights = [1.0] * len(self.control_labels)
+        self.label_weights = torch.tensor(self.label_weights)
+
+    def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
+                 num_samples: Optional[int], **aux_data):
+        # Make room for control label at start of sequence (at pos. 1)
+        extended_input_ids = extend_tensor(input_ids).repeat((num_samples, 1))
+        extended_pert_mask = extend_tensor(perturbable_mask)
+        extended_token_type_ids = extend_tensor(aux_data["token_type_ids"]).repeat((self.batch_size, 1)).to(self.device)
+        extended_attention_mask = extend_tensor(aux_data["attention_mask"]).repeat((self.batch_size, 1)).to(self.device)
+
+        # Randomly select control labels for examples to be generated and set as attendable
+        selected_control_labels = torch.multinomial(self.label_weights, num_samples=num_samples, replacement=True)
+        selected_control_labels = self.control_labels[selected_control_labels]
+        extended_input_ids[:, 1] = selected_control_labels
+        extended_attention_mask[:, 1] = 1
+
+        # Shuffled greedy text generation
+        perturbable_inds = torch.arange(extended_input_ids.shape[1])[extended_pert_mask[0]]
+        weights = torch.zeros_like(extended_input_ids, dtype=torch.float32)
+        weights[:, perturbable_inds] = 1
+        shuffled_order = torch.multinomial(weights, num_samples=perturbable_inds.shape[0], replacement=False)
+
+        num_batches = (num_samples + self.batch_size - 1) // self.batch_size
+        for idx_batch in range(num_batches):
+            s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
+            curr_input_ids = extended_input_ids[s_b: e_b]  # view
+            curr_gen_order = shuffled_order[s_b: e_b]
+
+            curr_batch_size = curr_input_ids.shape[0]
+            batch_indexer = torch.arange(curr_batch_size)
+
+            for i in range(curr_gen_order.shape[1]):
+                curr_indices = curr_gen_order[:, i]
+                curr_input_ids[batch_indexer, curr_indices] = self.mask_token_id
+
+                res = self.generator(input_ids=curr_input_ids.to(self.device),
+                                     token_type_ids=extended_token_type_ids,
+                                     attention_mask=extended_attention_mask)
+
+                logits = res["logits"]  # [batch_size, max_seq_len, |V|]
+                preds = greedy_decoding(logits[batch_indexer, curr_indices, :])
+                curr_input_ids[batch_indexer, curr_indices] = preds[:, 0]
+
+        valid_tokens = torch.ones_like(extended_pert_mask)
+        valid_tokens[0, 1] = False
+
+        return {
+            "input_ids": extended_input_ids[:, valid_tokens[0]]
+        }
+
+
+if __name__ == "__main__":
+    generator = BertForControlledMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/bert_snli_clm_best",
+                                                   model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/bert_snli_clm_best",
+                                                   control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
+                                                   batch_size=2,
+                                                   device="cpu")
 
     seq = ("A patient is being worked on by doctors and nurses", "A man is sleeping.")
     label = 0  # "entailment"
-    encoded = generator.to_internal([seq], labels=[label])
+    encoded = generator.to_internal([seq])
 
-    generator.generate(encoded["input_ids"], label=label, perturbable_mask=encoded["perturbable_mask"], num_samples=10,
-                       **encoded["aux_data"])
-
-
+    generated = generator.generate(encoded["input_ids"], label=label, perturbable_mask=encoded["perturbable_mask"],
+                                   num_samples=5, **encoded["aux_data"])["input_ids"]
 

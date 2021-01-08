@@ -34,3 +34,12 @@ def tensor_indexer(obj: torch.Tensor, indices) -> torch.Tensor:
 
 def list_indexer(obj: List[List], indices) -> torch.Tensor:
     return torch.tensor(list(itertools.chain(*[obj[_i] for _i in indices])), dtype=torch.long)
+
+
+def extend_tensor(curr_tensor: torch.Tensor, num_new=1):
+    # e.g. [1, 2, 3], num_new=2 -> [1, 0, 0, 2, 3], where 0s are new elements
+    num_ex, num_features = curr_tensor.shape
+    extended_tensor = torch.zeros((num_ex, num_features + num_new), dtype=curr_tensor.dtype)
+    extended_tensor[:, 0] = curr_tensor[:, 0]
+    extended_tensor[:, 1 + num_new:] = curr_tensor[:, 1:]
+    return extended_tensor

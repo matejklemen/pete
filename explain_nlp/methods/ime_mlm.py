@@ -2,11 +2,9 @@ from typing import Optional, Union, Tuple, List
 
 import torch
 
-from explain_nlp.methods.generation import SampleGenerator, BertForMaskedLMGenerator
+from explain_nlp.methods.generation import SampleGenerator
 from explain_nlp.methods.ime import IMEExplainer
-from explain_nlp.methods.modeling import InterpretableModel, InterpretableBertForSequenceClassification
-
-DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+from explain_nlp.methods.modeling import InterpretableModel
 
 
 class IMEMaskedLMExplainer(IMEExplainer):
@@ -30,46 +28,28 @@ class IMEMaskedLMExplainer(IMEExplainer):
                      pretokenized_text_data: Optional[Union[List[str], Tuple[List[str], ...]]] = None,
                      custom_features: Optional[List[List[int]]] = None):
         # Convert to representation of generator
-        generator_instance = self.generator.to_internal([text_data], [label])
+        generator_instance = self.generator.to_internal([text_data])
 
         # Generate new samples in representation of generator
-        # TODO: figure out how to make weights doable when using different model and generator
-        #  (tokens can be misaligned, split differently, etc.) -- currently assuming SAME model and generator tokenization
         generator_res = self.generator.generate(input_ids=generator_instance["input_ids"],
                                                 perturbable_mask=generator_instance["perturbable_mask"],
                                                 num_samples=self.num_generated_samples,
                                                 label=label,
                                                 **generator_instance["aux_data"])
         generated_samples = generator_res["input_ids"]
-        weights = generator_res["weights"]
 
         # Convert from representation of generator to text
         generated_text = self.generator.from_internal(generated_samples)
 
         # Convert from text to representation of interpreted model
         sample_data = self.model.to_internal(generated_text)
+        self.update_sample_data(sample_data["input_ids"])
 
         # Convert instance being interpreted to representation of interpreted model
         model_instance = self.model.to_internal([text_data],
                                                 pretokenized_text_data=[pretokenized_text_data] if pretokenized_text_data is not None else None)
         input_ids = model_instance["input_ids"]
         perturbable_mask = model_instance["perturbable_mask"]
-
-        # Note down the indices of examples which have a certain feature different from instance
-        all_indices = torch.arange(sample_data["input_ids"].shape[0])
-        for idx_feature in range(input_ids.shape[1]):
-            if not perturbable_mask[0, idx_feature]:
-                weights[:, idx_feature] = 0.0
-                continue
-
-            different_example_mask = sample_data["input_ids"][:, idx_feature] != input_ids[0, idx_feature]
-            different_example_inds = all_indices[different_example_mask]
-            if different_example_inds.shape[0] == 0:
-                print(f"Warning: No unique values were found in generated data for feature {idx_feature}")
-            else:
-                weights[torch.logical_not(different_example_mask), idx_feature] = 0.0
-
-        self.update_sample_data(sample_data["input_ids"], weights)
 
         res = super().explain(input_ids, label, perturbable_mask=perturbable_mask,
                               min_samples_per_feature=min_samples_per_feature, max_samples=max_samples,
@@ -81,18 +61,20 @@ class IMEMaskedLMExplainer(IMEExplainer):
 
 
 if __name__ == "__main__":
+    from explain_nlp.methods.generation import BertForControlledMaskedLMGenerator
+    from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
     model = InterpretableBertForSequenceClassification(tokenizer_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased",
                                                        model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased",
                                                        batch_size=2,
                                                        device="cpu")
-    LANG_MODEL_HANDLE = "/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/bert-base-uncased-snli-mlm"
+    LANG_MODEL_HANDLE = "/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/bert_snli_clm_best"
     # LANG_MODEL_HANDLE = "bert-base-uncased"
-    generator = BertForMaskedLMGenerator(tokenizer_name=LANG_MODEL_HANDLE,
-                                         model_name=LANG_MODEL_HANDLE,
-                                         batch_size=2,
-                                         strategy="top_k",
-                                         top_k=2,
-                                         device="cpu")
+    generator = BertForControlledMaskedLMGenerator(tokenizer_name=LANG_MODEL_HANDLE,
+                                                   model_name=LANG_MODEL_HANDLE,
+                                                   control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
+                                                   batch_size=2,
+                                                   strategy="greedy",
+                                                   device="cpu")
 
     explainer = IMEMaskedLMExplainer(model=model,
                                      generator=generator,
