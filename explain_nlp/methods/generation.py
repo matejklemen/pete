@@ -306,7 +306,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
         self.max_seq_len = max_seq_len
 
         self.strategy = strategy
-        assert self.strategy in ["top_k", "top_p", "threshold", "num_samples"]
+        assert self.strategy in ["top_k", "top_p", "threshold"]
         self.top_p = top_p
         self.top_k = top_k
         self.threshold = threshold
@@ -380,25 +380,12 @@ class BertForMaskedLMGenerator(SampleGenerator):
     @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
                  num_samples: Optional[int] = -1, label=None, **aux_data) -> Dict:
-        if num_samples > 0 and self.strategy != "num_samples":
-            warn("Strategy is not set to 'num_samples', so the argument is being ignored")
-
         num_features = int(input_ids.shape[1])
 
         perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
         num_perturbable = perturbable_inds.shape[0]
 
         _sequence_indexer = torch.arange(num_features).unsqueeze(0)  # used for selecting all tokens
-
-        # For each feature, reserve some amount of samples that are guaranteed to have that feature unique
-        if self.strategy == "num_samples":
-            # TODO: allocate samples accoring to estimated probabilities: store probas and take tokens that correspond
-            #  to top `num_samples` probabilities
-            uniq_samples_per_feature = torch.zeros(num_features, dtype=torch.long)
-            uniq_samples_per_feature[perturbable_inds] = torch.floor_divide(num_samples, num_perturbable)
-            rnd_selected = torch.randperm(num_perturbable)[:(num_samples % num_perturbable)]
-            rnd_selected = perturbable_inds[rnd_selected]
-            uniq_samples_per_feature[rnd_selected] += 1
 
         permutation_probas = []
         masked_samples = []
@@ -435,13 +422,6 @@ class BertForMaskedLMGenerator(SampleGenerator):
                 filtered_logits = top_p_filtering(logits, top_p=self.top_p)
                 filtered_probas = torch.softmax(filtered_logits, dim=-1)
                 generated_tokens = torch.nonzero(filtered_probas > 0, as_tuple=False)[:, 1]
-            elif self.strategy == "num_samples":
-                expected_num_gen = uniq_samples_per_feature[idx_feature]
-                if expected_num_gen == 0:
-                    continue
-
-                _, indices = torch.topk(logits, k=expected_num_gen, sorted=False)
-                generated_tokens = indices[0]
             else:
                 raise NotImplementedError(f"Unrecognized strategy: '{self.strategy}'")
 

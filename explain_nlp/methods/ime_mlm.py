@@ -5,7 +5,6 @@ import torch
 from explain_nlp.methods.generation import SampleGenerator, BertForMaskedLMGenerator
 from explain_nlp.methods.ime import IMEExplainer
 from explain_nlp.methods.modeling import InterpretableModel, InterpretableBertForSequenceClassification
-from explain_nlp.methods.utils import sample_permutations
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -27,7 +26,9 @@ class IMEMaskedLMExplainer(IMEExplainer):
         self.num_generated_samples = num_generated_samples
 
     def explain_text(self, text_data: Union[str, Tuple[str, ...]], label: Optional[int] = 0,
-                     min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None):
+                     min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None,
+                     pretokenized_text_data: Optional[Union[List[str], Tuple[List[str], ...]]] = None,
+                     custom_features: Optional[List[List[int]]] = None):
         # Convert to representation of generator
         generator_instance = self.generator.to_internal([text_data], [label])
 
@@ -49,7 +50,8 @@ class IMEMaskedLMExplainer(IMEExplainer):
         sample_data = self.model.to_internal(generated_text)
 
         # Convert instance being interpreted to representation of interpreted model
-        model_instance = self.model.to_internal([text_data])
+        model_instance = self.model.to_internal([text_data],
+                                                pretokenized_text_data=[pretokenized_text_data] if pretokenized_text_data is not None else None)
         input_ids = model_instance["input_ids"]
         perturbable_mask = model_instance["perturbable_mask"]
 
@@ -71,6 +73,7 @@ class IMEMaskedLMExplainer(IMEExplainer):
 
         res = super().explain(input_ids, label, perturbable_mask=perturbable_mask,
                               min_samples_per_feature=min_samples_per_feature, max_samples=max_samples,
+                              custom_features=custom_features,
                               **model_instance["aux_data"])
         res["input"] = self.model.convert_ids_to_tokens(model_instance["input_ids"])[0]
 
@@ -78,14 +81,17 @@ class IMEMaskedLMExplainer(IMEExplainer):
 
 
 if __name__ == "__main__":
-    model = InterpretableBertForSequenceClassification(tokenizer_name="bert-base-uncased",
-                                                       model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/examples/weights/snli_bert_uncased",
+    model = InterpretableBertForSequenceClassification(tokenizer_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased",
+                                                       model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased",
                                                        batch_size=2,
                                                        device="cpu")
-    generator = BertForMaskedLMGenerator(tokenizer_name="bert-base-uncased",
-                                         model_name="bert-base-uncased",
+    LANG_MODEL_HANDLE = "/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/bert-base-uncased-snli-mlm"
+    # LANG_MODEL_HANDLE = "bert-base-uncased"
+    generator = BertForMaskedLMGenerator(tokenizer_name=LANG_MODEL_HANDLE,
+                                         model_name=LANG_MODEL_HANDLE,
                                          batch_size=2,
-                                         strategy="num_samples",
+                                         strategy="top_k",
+                                         top_k=2,
                                          device="cpu")
 
     explainer = IMEMaskedLMExplainer(model=model,
