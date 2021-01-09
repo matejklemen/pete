@@ -498,10 +498,10 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         for idx_batch in range(num_batches):
             s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
             curr_input_ids = extended_input_ids[s_b: e_b]  # view
-            curr_gen_order = shuffled_order[s_b: e_b]
+            curr_gen_order = shuffled_order[s_b: e_b].to(self.device)
 
             curr_batch_size = curr_input_ids.shape[0]
-            batch_indexer = torch.arange(curr_batch_size)
+            batch_indexer = torch.arange(curr_batch_size).to(self.device)
 
             for i in range(curr_gen_order.shape[1]):
                 curr_indices = curr_gen_order[:, i]
