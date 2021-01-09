@@ -508,8 +508,8 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
                 curr_input_ids[batch_indexer, curr_indices] = self.mask_token_id
 
                 res = self.generator(input_ids=curr_input_ids.to(self.device),
-                                     token_type_ids=extended_token_type_ids,
-                                     attention_mask=extended_attention_mask)
+                                     token_type_ids=extended_token_type_ids[:curr_batch_size],
+                                     attention_mask=extended_attention_mask[:curr_batch_size])
 
                 logits = res["logits"]  # [batch_size, max_seq_len, |V|]
                 preds = greedy_decoding(logits[batch_indexer, curr_indices, :])
