@@ -460,10 +460,11 @@ class BertForMaskedLMGenerator(SampleGenerator):
 class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
     def __init__(self, tokenizer_name, model_name, control_labels: List[str], batch_size=8, max_seq_len=64, device="cuda",
                  strategy: Optional[str] = "greedy", top_p: Optional[float] = None, top_k: Optional[int] = 5,
-                 threshold: Optional[float] = 0.1, label_weights: List = None):
+                 threshold: Optional[float] = 0.1, label_weights: List = None, unique_dropout: Optional[float] = 0.0):
         super().__init__(tokenizer_name=tokenizer_name, model_name=model_name,
                          batch_size=batch_size, max_seq_len=max_seq_len, device=device,
                          strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
+        self.unique_dropout = unique_dropout
 
         assert strategy == "greedy"  # TODO: remove once expanded
         assert all(curr_control in self.tokenizer.all_special_tokens for curr_control in control_labels)
@@ -493,6 +494,7 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         weights = torch.zeros_like(extended_input_ids, dtype=torch.float32)
         weights[:, perturbable_inds] = 1
         shuffled_order = torch.multinomial(weights, num_samples=perturbable_inds.shape[0], replacement=False)
+        dropout_mask = torch.rand_like(shuffled_order, dtype=torch.float32) < self.unique_dropout
 
         num_batches = (num_samples + self.batch_size - 1) // self.batch_size
         for idx_batch in range(num_batches):
@@ -505,6 +507,7 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
 
             for i in range(curr_gen_order.shape[1]):
                 curr_indices = curr_gen_order[:, i]
+                orig_tokens = curr_input_ids[batch_indexer, curr_indices]
                 curr_input_ids[batch_indexer, curr_indices] = self.mask_token_id
 
                 res = self.generator(input_ids=curr_input_ids.to(self.device),
@@ -512,7 +515,12 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
                                      attention_mask=extended_attention_mask[:curr_batch_size])
 
                 logits = res["logits"]  # [batch_size, max_seq_len, |V|]
-                preds = greedy_decoding(logits[batch_indexer, curr_indices, :])
+                curr_masked_logits = logits[batch_indexer, curr_indices, :]
+
+                curr_dropout_mask = dropout_mask[s_b: e_b, i]
+                curr_masked_logits[batch_indexer[curr_dropout_mask], orig_tokens[curr_dropout_mask]] = - float("inf")
+
+                preds = greedy_decoding(curr_masked_logits)
                 curr_input_ids[batch_indexer, curr_indices] = preds[:, 0].cpu()
 
         valid_tokens = torch.ones_like(extended_pert_mask)

@@ -3,3 +3,4 @@ transformers
 numpy
 matplotlib
 stanza
+pandas

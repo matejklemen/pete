@@ -17,15 +17,15 @@ parser.add_argument("--return_model_scores", action="store_true")
 parser.add_argument("--train_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_train.txt")
 parser.add_argument("--test_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_test_xs.txt")
 
-parser.add_argument("--model_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased")
+parser.add_argument("--model_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased")
 parser.add_argument("--model_max_seq_len", type=int, default=41)
 parser.add_argument("--model_max_words", type=int, default=39)
 parser.add_argument("--model_batch_size", type=int, default=2)
 
-parser.add_argument("--generator_type", type=str, default="bert_mlm")
+parser.add_argument("--generator_type", type=str, default="bert_cmlm")
 parser.add_argument("--controlled", action="store_true",
                     help="Whether to use controlled LM/MLM for generation")
-parser.add_argument("--generator_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/bert_snli_clm_best",
+parser.add_argument("--generator_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
                     help="Path or handle of model to be used as a language modeling generator")
 parser.add_argument("--generator_batch_size", type=int, default=2)
 parser.add_argument("--generator_max_seq_len", type=int, default=41)
@@ -36,6 +36,7 @@ parser.add_argument("--top_p", type=float, default=None)
 parser.add_argument("--strategy", type=str, choices=["top_k", "top_p", "threshold", "greedy"], default="greedy")
 parser.add_argument("--top_k", type=int, default=5)
 parser.add_argument("--threshold", type=float, default=0.1)
+parser.add_argument("--unique_dropout", type=float, default=0.0)
 
 parser.add_argument("--seed_start_with_ground_truth", action="store_true")
 parser.add_argument("--reset_seed_after_first", action="store_true")

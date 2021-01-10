@@ -37,7 +37,8 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                                        strategy="greedy",
                                                        top_p=args.top_p,
                                                        top_k=args.top_k,
-                                                       threshold=args.threshold)
+                                                       threshold=args.threshold,
+                                                       unique_dropout=args.unique_dropout)
     elif args.generator_type == "gpt_lm":
         generator = GPTLMGenerator(tokenizer_name=args.generator_dir,
                                    model_name=args.generator_dir,
