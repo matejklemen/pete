@@ -26,7 +26,7 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                              top_k=args.top_k,
                                              threshold=args.threshold)
     elif args.generator_type == "bert_cmlm":
-        print("Warning: using hardcoded strategy='greedy' in BERT controlled MLM generator")
+        print(f"Using strategy: {args.strategy}, top_p={args.top_p}, unique_dropout={args.unique_dropout}")
         generator = BertForControlledMaskedLMGenerator(tokenizer_name=args.generator_dir,
                                                        model_name=args.generator_dir,
                                                        control_labels=clm_labels,
@@ -34,7 +34,7 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                                        batch_size=args.generator_batch_size,
                                                        max_seq_len=args.generator_max_seq_len,
                                                        device="cpu" if args.use_cpu else "cuda",
-                                                       strategy="greedy",
+                                                       strategy=args.strategy,
                                                        top_p=args.top_p,
                                                        top_k=args.top_k,
                                                        threshold=args.threshold,

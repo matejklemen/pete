@@ -466,7 +466,6 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
                          strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
         self.unique_dropout = unique_dropout
 
-        assert strategy == "greedy"  # TODO: remove once expanded
         assert all(curr_control in self.tokenizer.all_special_tokens for curr_control in control_labels)
         self.control_labels = torch.tensor(self.tokenizer.encode(control_labels, add_special_tokens=False))
 
@@ -474,6 +473,15 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         if self.label_weights is None:
             self.label_weights = [1.0] * len(self.control_labels)
         self.label_weights = torch.tensor(self.label_weights)
+
+        self.strategy_type = "token_level"  # TODO: beam search -> "global"/"sequence_level"?
+        if strategy == "greedy":
+            self.decoding_strategy = lambda logits: greedy_decoding(logits)
+        elif strategy == "top_p":
+            assert self.top_p is not None
+            self.decoding_strategy = lambda logits: top_p_decoding(logits, top_p=self.top_p)
+        else:
+            raise NotImplementedError(f"Unsupported decoding strategy: '{strategy}'")
 
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
                  num_samples: Optional[int], **aux_data):
@@ -520,7 +528,7 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
                 curr_dropout_mask = dropout_mask[s_b: e_b, i]
                 curr_masked_logits[batch_indexer[curr_dropout_mask], orig_tokens[curr_dropout_mask]] = - float("inf")
 
-                preds = greedy_decoding(curr_masked_logits)
+                preds = self.decoding_strategy(curr_masked_logits)
                 curr_input_ids[batch_indexer, curr_indices] = preds[:, 0].cpu()
 
         valid_tokens = torch.ones_like(extended_pert_mask)
