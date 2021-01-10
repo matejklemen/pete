@@ -460,7 +460,8 @@ class BertForMaskedLMGenerator(SampleGenerator):
 class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
     def __init__(self, tokenizer_name, model_name, control_labels: List[str], batch_size=8, max_seq_len=64, device="cuda",
                  strategy: Optional[str] = "greedy", top_p: Optional[float] = None, top_k: Optional[int] = 5,
-                 threshold: Optional[float] = 0.1, label_weights: List = None, unique_dropout: Optional[float] = 0.0):
+                 threshold: Optional[float] = 0.1, label_weights: List = None, unique_dropout: Optional[float] = 0.0,
+                 generate_expected_examples: Optional[bool] = False):
         super().__init__(tokenizer_name=tokenizer_name, model_name=model_name,
                          batch_size=batch_size, max_seq_len=max_seq_len, device=device,
                          strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
@@ -474,7 +475,8 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
             self.label_weights = [1.0] * len(self.control_labels)
         self.label_weights = torch.tensor(self.label_weights)
 
-        self.strategy_type = "token_level"  # TODO: beam search -> "global"/"sequence_level"?
+        # TODO: beam search = "global"/"sequence_level"?
+        self.strategy_type = "token_level"
         if strategy == "greedy":
             self.decoding_strategy = lambda logits: greedy_decoding(logits)
         elif strategy == "top_p":
@@ -482,6 +484,9 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
             self.decoding_strategy = lambda logits: top_p_decoding(logits, top_p=self.top_p)
         else:
             raise NotImplementedError(f"Unsupported decoding strategy: '{strategy}'")
+
+        #  Denotes whether to change control label at every step in order to try generating "expected example"
+        self.generate_expected = generate_expected_examples
 
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
                  num_samples: Optional[int], **aux_data):
@@ -502,7 +507,15 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         weights = torch.zeros_like(extended_input_ids, dtype=torch.float32)
         weights[:, perturbable_inds] = 1
         shuffled_order = torch.multinomial(weights, num_samples=perturbable_inds.shape[0], replacement=False)
+
         dropout_mask = torch.rand_like(shuffled_order, dtype=torch.float32) < self.unique_dropout
+        if self.generate_expected:
+            # Try approximating the expected example by switching control labels according to weights
+            expanded_weights = self.label_weights.unsqueeze(0).repeat((num_samples, 1))
+            control_labels = torch.multinomial(expanded_weights, num_samples=perturbable_inds.shape[0], replacement=True)
+            control_labels = self.control_labels[control_labels]
+        else:
+            control_labels = selected_control_labels.unsqueeze(1).repeat((1, perturbable_inds.shape[0]))
 
         num_batches = (num_samples + self.batch_size - 1) // self.batch_size
         for idx_batch in range(num_batches):
@@ -516,7 +529,10 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
             for i in range(curr_gen_order.shape[1]):
                 curr_indices = curr_gen_order[:, i]
                 orig_tokens = curr_input_ids[batch_indexer, curr_indices]
+                curr_control_labels = control_labels[s_b: e_b, i]
+
                 curr_input_ids[batch_indexer, curr_indices] = self.mask_token_id
+                curr_input_ids[batch_indexer, 1] = curr_control_labels
 
                 res = self.generator(input_ids=curr_input_ids.to(self.device),
                                      token_type_ids=extended_token_type_ids[:curr_batch_size],

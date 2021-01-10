@@ -41,9 +41,18 @@ class IMEMaskedLMExplainer(IMEExplainer):
         # Convert from representation of generator to text
         generated_text = self.generator.from_internal(generated_samples)
 
+        # for i in range(len(generated_text)):
+        #     print(generated_text[i])
+
         # Convert from text to representation of interpreted model
         sample_data = self.model.to_internal(generated_text)
         self.update_sample_data(sample_data["input_ids"])
+
+        # Find expectation of generated text
+        generated_scores = self.model.score(sample_data["input_ids"], **sample_data["aux_data"])
+        expected_scores = torch.mean(generated_scores, dim=0)
+        print(f"Expected scores of generated sample:")
+        print(expected_scores)
 
         # Convert instance being interpreted to representation of interpreted model
         model_instance = self.model.to_internal([text_data],

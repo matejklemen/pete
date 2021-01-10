@@ -30,10 +30,13 @@ parser.add_argument("--generator_dir", type=str, default="/home/matej/Documents/
 parser.add_argument("--generator_batch_size", type=int, default=2)
 parser.add_argument("--generator_max_seq_len", type=int, default=41)
 parser.add_argument("--num_generated_samples", type=int, default=10)
-parser.add_argument("--top_p", type=float, default=None)
+parser.add_argument("--generate_expected_examples", action="store_true",
+                    help="Flag that indicates whether to change control label at every generation step in order to "
+                         "try and produce the 'expected example' (example for which the model outputs the expected value)")
 
 # Experimental (only in Bert MLM generator) for now
 parser.add_argument("--strategy", type=str, choices=["top_k", "top_p", "threshold", "greedy"], default="greedy")
+parser.add_argument("--top_p", type=float, default=None)
 parser.add_argument("--top_k", type=int, default=5)
 parser.add_argument("--threshold", type=float, default=0.1)
 parser.add_argument("--unique_dropout", type=float, default=0.0)
