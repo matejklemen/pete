@@ -1,11 +1,9 @@
 from typing import Tuple, Union, Dict, List, Optional
-from warnings import warn
 
 import torch
 from transformers import BertTokenizer, BertForMaskedLM, OpenAIGPTLMHeadModel, OpenAIGPTTokenizer
 
-from explain_nlp.methods.decoding import greedy_decoding, top_p_decoding, top_p_filtering
-
+from explain_nlp.methods.decoding import greedy_decoding, top_p_decoding, top_p_filtering, top_k_decoding
 
 # TODO: mask, mask_token_id properties
 # TODO: mask token in generator is not necessarily same as mask token in model (e.g. <MASK> vs [MASK])
@@ -482,6 +480,9 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         elif strategy == "top_p":
             assert self.top_p is not None
             self.decoding_strategy = lambda logits: top_p_decoding(logits, top_p=self.top_p)
+        elif strategy == "top_k":
+            assert self.top_k is not None
+            self.decoding_strategy = lambda logits: top_k_decoding(logits, top_k=self.top_k)
         else:
             raise NotImplementedError(f"Unsupported decoding strategy: '{strategy}'")
 
