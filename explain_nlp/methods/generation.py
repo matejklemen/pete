@@ -503,13 +503,16 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         extended_input_ids[:, 1] = selected_control_labels
         extended_attention_mask[:, 1] = 1
 
-        # Shuffled greedy text generation
         perturbable_inds = torch.arange(extended_input_ids.shape[1])[extended_pert_mask[0]]
-        weights = torch.zeros_like(extended_input_ids, dtype=torch.float32)
-        weights[:, perturbable_inds] = 1
-        shuffled_order = torch.multinomial(weights, num_samples=perturbable_inds.shape[0], replacement=False)
+        if self.strategy == "greedy":
+            # If generation order was not shuffled, greedy decoding would likely produce identical samples
+            weights = torch.zeros_like(extended_input_ids, dtype=torch.float32)
+            weights[:, perturbable_inds] = 1
+            generation_order = torch.multinomial(weights, num_samples=perturbable_inds.shape[0], replacement=False)
+        else:
+            generation_order = perturbable_inds.repeat((num_samples, 1))
 
-        dropout_mask = torch.rand_like(shuffled_order, dtype=torch.float32) < self.unique_dropout
+        dropout_mask = torch.rand_like(generation_order, dtype=torch.float32) < self.unique_dropout
         if self.generate_expected:
             # Try approximating the expected example by switching control labels according to weights
             expanded_weights = self.label_weights.unsqueeze(0).repeat((num_samples, 1))
@@ -522,7 +525,7 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         for idx_batch in range(num_batches):
             s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
             curr_input_ids = extended_input_ids[s_b: e_b]  # view
-            curr_gen_order = shuffled_order[s_b: e_b]
+            curr_gen_order = generation_order[s_b: e_b]
 
             curr_batch_size = curr_input_ids.shape[0]
             batch_indexer = torch.arange(curr_batch_size)
