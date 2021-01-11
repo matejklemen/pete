@@ -15,7 +15,7 @@ class IMEExplainer:
                  confidence_interval: Optional[float] = None, max_abs_error: Optional[float] = None,
                  return_variance: Optional[bool] = False, return_num_samples: Optional[bool] = False,
                  return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 criterion: Optional[str] = "absolute_error"):
+                 criterion: Optional[str] = "squared_error"):
         """ Explain instances using IME.
 
         Args:
