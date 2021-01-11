@@ -15,7 +15,7 @@ def top_p_decoding(logits: torch.Tensor, top_p: float):
 def top_k_decoding(logits: torch.Tensor, top_k: int):
     top_logits, top_i = torch.topk(logits, k=top_k)
     selected = torch.multinomial(F.softmax(top_logits, dim=-1), num_samples=1)
-    return top_i[torch.arange(logits.shape[0]).unsqueeze(1), selected]
+    return top_i[torch.arange(logits.shape[0]), selected.flatten()].unsqueeze(1)
 
 
 def top_p_filtering(logits, top_p):
@@ -56,7 +56,7 @@ if __name__ == "__main__":
     ])  # B, |V|
     logprobas = torch.log(probas)  # B, |V|
 
-    filtered_logprobas = top_k_filtering(logprobas, top_k=2)
+    filtered_logprobas = top_k_decoding(logprobas, top_k=2)
     print("Original:")
     print(logprobas)
     print("Filtered:")

@@ -1,6 +1,8 @@
+import warnings
 from typing import Tuple, Union, Dict, List, Optional
 
 import torch
+import torch.nn.functional as F
 from transformers import BertTokenizer, BertForMaskedLM, OpenAIGPTLMHeadModel, OpenAIGPTTokenizer
 
 from explain_nlp.methods.decoding import greedy_decoding, top_p_decoding, top_p_filtering, top_k_decoding
@@ -467,6 +469,7 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
 
         assert all(curr_control in self.tokenizer.all_special_tokens for curr_control in control_labels)
         self.control_labels = torch.tensor(self.tokenizer.encode(control_labels, add_special_tokens=False))
+        self.control_labels_str = control_labels
 
         self.label_weights = label_weights
         if self.label_weights is None:
@@ -498,8 +501,8 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         extended_attention_mask = extend_tensor(aux_data["attention_mask"]).repeat((self.batch_size, 1)).to(self.device)
 
         # Randomly select control labels for examples to be generated and set as attendable
-        selected_control_labels = torch.multinomial(self.label_weights, num_samples=num_samples, replacement=True)
-        selected_control_labels = self.control_labels[selected_control_labels]
+        idx_selected_control_labels = torch.multinomial(self.label_weights, num_samples=num_samples, replacement=True)
+        selected_control_labels = self.control_labels[idx_selected_control_labels]
         extended_input_ids[:, 1] = selected_control_labels
         extended_attention_mask[:, 1] = 1
 
@@ -512,7 +515,6 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         else:
             generation_order = perturbable_inds.repeat((num_samples, 1))
 
-        dropout_mask = torch.rand_like(generation_order, dtype=torch.float32) < self.unique_dropout
         if self.generate_expected:
             # Try approximating the expected example by switching control labels according to weights
             expanded_weights = self.label_weights.unsqueeze(0).repeat((num_samples, 1))
@@ -521,11 +523,14 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         else:
             control_labels = selected_control_labels.unsqueeze(1).repeat((1, perturbable_inds.shape[0]))
 
+        estimated_logprobas = torch.zeros_like(extended_input_ids, dtype=torch.float32)
+
         num_batches = (num_samples + self.batch_size - 1) // self.batch_size
         for idx_batch in range(num_batches):
             s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
             curr_input_ids = extended_input_ids[s_b: e_b]  # view
             curr_gen_order = generation_order[s_b: e_b]
+            dropout_mask = torch.rand_like(curr_gen_order, dtype=torch.float32) < self.unique_dropout
 
             curr_batch_size = curr_input_ids.shape[0]
             batch_indexer = torch.arange(curr_batch_size)
@@ -544,24 +549,44 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
 
                 logits = res["logits"]  # [batch_size, max_seq_len, |V|]
                 curr_masked_logits = logits[batch_indexer, curr_indices, :]
+                curr_masked_logprobas = F.log_softmax(curr_masked_logits, dim=-1)
 
-                curr_dropout_mask = dropout_mask[s_b: e_b, i]
+                curr_dropout_mask = dropout_mask[:, i]
                 curr_masked_logits[batch_indexer[curr_dropout_mask], orig_tokens[curr_dropout_mask]] = - float("inf")
 
                 preds = self.decoding_strategy(curr_masked_logits)
                 curr_input_ids[batch_indexer, curr_indices] = preds[:, 0].cpu()
+                estimated_logprobas[torch.arange(s_b, s_b + curr_batch_size), curr_indices] = curr_masked_logprobas[batch_indexer, preds[:, 0]].cpu()
+
+        # logproba(seq) ~~ sum(logproba(token_i))
+        estimated_logprobas = torch.sum(estimated_logprobas, dim=1)
+        estimated_probas = torch.exp(estimated_logprobas)
+
+        normalized_control_weights = self.label_weights / torch.sum(self.label_weights)
+        # Normalize estimated probabilities in 2 steps: first, among its own label and second, among all labels
+        # NOTE: this assumes the control label is only chosen once (at start)
+        for idx_curr_label in range(self.control_labels.shape[0]):
+            mask_curr_label = idx_selected_control_labels == idx_curr_label
+            if not torch.any(mask_curr_label):
+                warnings.warn(f"No examples generated with control signal {self.control_labels_str[idx_curr_label]}")
+
+            estimated_probas[mask_curr_label] = F.softmax(estimated_probas[mask_curr_label], dim=-1)
+            estimated_probas[mask_curr_label] *= normalized_control_weights[idx_curr_label]
+
+        estimated_probas /= torch.sum(estimated_probas)
 
         valid_tokens = torch.ones_like(extended_pert_mask)
         valid_tokens[0, 1] = False
 
         return {
-            "input_ids": extended_input_ids[:, valid_tokens[0]]
+            "input_ids": extended_input_ids[:, valid_tokens[0]],
+            "weights": estimated_probas
         }
 
 
 if __name__ == "__main__":
-    generator = BertForControlledMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/bert_snli_clm_best",
-                                                   model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/bert_snli_clm_best",
+    generator = BertForControlledMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
+                                                   model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
                                                    control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
                                                    batch_size=2,
                                                    device="cpu")

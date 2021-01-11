@@ -26,7 +26,8 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                              top_k=args.top_k,
                                              threshold=args.threshold)
     elif args.generator_type == "bert_cmlm":
-        print(f"Using strategy: {args.strategy}, top_p={args.top_p}, unique_dropout={args.unique_dropout}")
+        print(f"Using strategy: {args.strategy}, top_p={args.top_p}, top_k={args.top_k}, "
+              f"unique_dropout={args.unique_dropout}")
         generator = BertForControlledMaskedLMGenerator(tokenizer_name=args.generator_dir,
                                                        model_name=args.generator_dir,
                                                        control_labels=clm_labels,

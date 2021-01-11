@@ -103,11 +103,8 @@ class IMEExplainer:
         feature_pos = torch.nonzero(indices == idx_superfeature, as_tuple=False)
 
         # If weights are not provided, sample uniformly
-        data_weights = torch.ones(self.sample_data.shape[0], dtype=torch.float32)
-        if self.weights is not None:
-            data_weights = self.weights[:, idx_feature]
-            if data_weights.dim() > 1:
-                data_weights = torch.mean(data_weights, dim=1)
+        data_weights = torch.ones(self.sample_data.shape[0], dtype=torch.float32) \
+            if self.weights is None else self.weights
         randomly_selected = torch.multinomial(data_weights, num_samples=num_samples, replacement=True)
 
         samples = instance.repeat((2 * num_samples, 1))

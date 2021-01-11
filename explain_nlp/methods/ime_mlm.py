@@ -41,16 +41,21 @@ class IMEMaskedLMExplainer(IMEExplainer):
         # Convert from representation of generator to text
         generated_text = self.generator.from_internal(generated_samples)
 
-        # for i in range(len(generated_text)):
-        #     print(generated_text[i])
+        for i in range(len(generated_text)):
+            print(generated_text[i])
 
         # Convert from text to representation of interpreted model
         sample_data = self.model.to_internal(generated_text)
-        self.update_sample_data(sample_data["input_ids"])
+        self.update_sample_data(sample_data["input_ids"],
+                                data_weights=None if "weights" not in generator_res else generator_res["weights"])
 
         # Find expectation of generated text
         generated_scores = self.model.score(sample_data["input_ids"], **sample_data["aux_data"])
-        expected_scores = torch.mean(generated_scores, dim=0)
+        if "weights" in generator_res:
+            expected_scores = torch.sum(generator_res["weights"].unsqueeze(1) * generated_scores, dim=0)
+        else:
+            expected_scores = torch.mean(generated_scores, dim=0)
+
         print(f"Expected scores of generated sample:")
         print(expected_scores)
 
@@ -72,11 +77,11 @@ class IMEMaskedLMExplainer(IMEExplainer):
 if __name__ == "__main__":
     from explain_nlp.methods.generation import BertForControlledMaskedLMGenerator
     from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
-    model = InterpretableBertForSequenceClassification(tokenizer_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased",
-                                                       model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased",
+    model = InterpretableBertForSequenceClassification(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
+                                                       model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
                                                        batch_size=2,
                                                        device="cpu")
-    LANG_MODEL_HANDLE = "/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/bert_snli_clm_best"
+    LANG_MODEL_HANDLE = "/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best"
     # LANG_MODEL_HANDLE = "bert-base-uncased"
     generator = BertForControlledMaskedLMGenerator(tokenizer_name=LANG_MODEL_HANDLE,
                                                    model_name=LANG_MODEL_HANDLE,
