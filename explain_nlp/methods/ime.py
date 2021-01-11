@@ -14,7 +14,8 @@ class IMEExplainer:
                  data_weights: Optional[torch.FloatTensor] = None,
                  confidence_interval: Optional[float] = None, max_abs_error: Optional[float] = None,
                  return_variance: Optional[bool] = False, return_num_samples: Optional[bool] = False,
-                 return_samples: Optional[bool] = False, return_scores: Optional[bool] = False):
+                 return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
+                 criterion: Optional[str] = "absolute_error"):
         """ Explain instances using IME.
 
         Args:
@@ -54,6 +55,15 @@ class IMEExplainer:
 
         self.error_constraint_given = self.confidence_interval is not None and self.max_abs_error is not None
         self.indexer = tensor_indexer
+
+        if criterion == "absolute_error":
+            self.criterion = \
+                lambda importance_vars, taken_samples: torch.sqrt(importance_vars / taken_samples) - torch.sqrt(importance_vars / (taken_samples + 1))
+        elif criterion == "squared_error":
+            self.criterion = \
+                lambda importance_vars, taken_samples: (importance_vars / taken_samples) - (importance_vars / (taken_samples + 1))
+        else:
+            raise ValueError(f"Unsupported criterion: '{criterion}'")
 
     def update_sample_data(self, new_data: torch.Tensor, data_weights: Optional[torch.FloatTensor] = None):
         self.sample_data = new_data
@@ -242,7 +252,7 @@ class IMEExplainer:
             eff_max_samples = int(taken_samples + torch.sum(required_samples_per_feature[required_samples_per_feature > 0]))
 
         while taken_samples < eff_max_samples:
-            var_diffs = (importance_vars / samples_per_feature) - (importance_vars / (samples_per_feature + 1))
+            var_diffs = self.criterion(importance_vars, samples_per_feature)
             idx_feature = int(torch.argmax(var_diffs))
 
             res = self.estimate_feature_importance(superfeatures[idx_feature],
@@ -571,8 +581,8 @@ if __name__ == "__main__":
     from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
 
     model = InterpretableBertForSequenceClassification(
-        model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased",
-        tokenizer_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased",
+        model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
+        tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
         batch_size=2,
         max_seq_len=41,
         device="cpu"
