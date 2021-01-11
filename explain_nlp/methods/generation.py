@@ -492,6 +492,7 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         #  Denotes whether to change control label at every step in order to try generating "expected example"
         self.generate_expected = generate_expected_examples
 
+    @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
                  num_samples: Optional[int], **aux_data):
         # Make room for control label at start of sequence (at pos. 1)
@@ -523,7 +524,8 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         else:
             control_labels = selected_control_labels.unsqueeze(1).repeat((1, perturbable_inds.shape[0]))
 
-        estimated_logprobas = torch.zeros_like(extended_input_ids, dtype=torch.float32)
+        # logproba(seq) ~= sum(logproba(token_i))
+        estimated_logprobas = torch.zeros(extended_input_ids.shape[0], dtype=torch.float32)
 
         num_batches = (num_samples + self.batch_size - 1) // self.batch_size
         for idx_batch in range(num_batches):
@@ -556,10 +558,8 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
 
                 preds = self.decoding_strategy(curr_masked_logits)
                 curr_input_ids[batch_indexer, curr_indices] = preds[:, 0].cpu()
-                estimated_logprobas[torch.arange(s_b, s_b + curr_batch_size), curr_indices] = curr_masked_logprobas[batch_indexer, preds[:, 0]].cpu()
+                estimated_logprobas[s_b: e_b] += curr_masked_logprobas[batch_indexer, preds[:, 0]].cpu()
 
-        # logproba(seq) ~~ sum(logproba(token_i))
-        estimated_logprobas = torch.sum(estimated_logprobas, dim=1)
         estimated_probas = torch.exp(estimated_logprobas)
 
         normalized_control_weights = self.label_weights / torch.sum(self.label_weights)
