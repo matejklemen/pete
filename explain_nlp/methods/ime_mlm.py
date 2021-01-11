@@ -41,8 +41,8 @@ class IMEMaskedLMExplainer(IMEExplainer):
         # Convert from representation of generator to text
         generated_text = self.generator.from_internal(generated_samples)
 
-        for i in range(len(generated_text)):
-            print(generated_text[i])
+        # for i in range(len(generated_text)):
+        #     print(generated_text[i])
 
         # Convert from text to representation of interpreted model
         sample_data = self.model.to_internal(generated_text)
