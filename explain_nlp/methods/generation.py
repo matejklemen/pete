@@ -104,6 +104,34 @@ class GPTLMGenerator(SampleGenerator):
         return formatted_res
 
     @torch.no_grad()
+    def score_sequences(self, input_ids: torch.Tensor, **aux_data):
+        num_examples = input_ids.shape[0]
+        num_batches = (num_examples + self.batch_size - 1) // self.batch_size
+        attention_mask = aux_data["attention_mask"]
+
+        estimated_logprobas = torch.zeros(num_examples)
+        for i in range(num_batches):
+            s_b, e_b = i * self.batch_size, (i + 1) * self.batch_size
+            curr_input_ids = input_ids[s_b: e_b]
+            curr_attn_masks = attention_mask[s_b: e_b]
+            curr_batch_size = curr_input_ids.shape[0]
+
+            is_not_eos = torch.ones(curr_batch_size, dtype=torch.bool)
+            for idx_step in range(1, self.max_seq_len):
+                if not torch.any(is_not_eos):
+                    break
+
+                ground_truth = curr_input_ids[is_not_eos, idx_step]
+                res = self.generator(input_ids=curr_input_ids[is_not_eos, :idx_step].to(self.device),
+                                     attention_mask=curr_attn_masks[is_not_eos, :idx_step].to(self.device))
+                logprobas = F.log_softmax(res["logits"][:, -1, :], dim=-1)
+                estimated_logprobas[is_not_eos] += logprobas[torch.arange(logprobas.shape[0]), ground_truth]
+
+                is_not_eos = torch.logical_or(is_not_eos, ground_truth != self.tokenizer.eos_token_id)
+
+        return estimated_logprobas
+
+    @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor, num_samples: int, label=None,
                  **aux_data) -> Dict:
         num_features = int(input_ids.shape[1])
@@ -586,17 +614,28 @@ if __name__ == "__main__":
     #                                                batch_size=2,
     #                                                device="cpu")
 
-    generator = GPTControlledLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
-                                         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
-                                         control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
-                                         batch_size=2,
-                                         device="cpu",
-                                         strategy="top_p",
-                                         top_p=0.9)
+    # generator = GPTControlledLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
+    #                                      model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
+    #                                      control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
+    #                                      batch_size=2,
+    #                                      device="cpu",
+    #                                      strategy="top_p",
+    #                                      top_p=0.9)
+
+    generator = GPTLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_lm_maxseqlen42",
+                               model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_lm_maxseqlen42",
+                               batch_size=2,
+                               max_seq_len=42,
+                               device="cpu")
 
     seq = ("A patient is being worked on by doctors and nurses", "A man is sleeping.")
     label = 0  # "entailment"
     encoded = generator.to_internal([seq])
-    generated = generator.generate(encoded["input_ids"], label=label, perturbable_mask=encoded["perturbable_mask"],
-                                   num_samples=3, **encoded["aux_data"])["input_ids"]
+    print(encoded)
+    print(generator.from_internal(encoded["input_ids"]))
+
+    scores = generator.score_sequences(encoded["input_ids"], **encoded["aux_data"])
+    print(scores)
+    # generated = generator.generate(encoded["input_ids"], label=label, perturbable_mask=encoded["perturbable_mask"],
+    #                                num_samples=3, **encoded["aux_data"])["input_ids"]
 
