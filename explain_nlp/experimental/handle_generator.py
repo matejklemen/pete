@@ -48,14 +48,19 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                    max_seq_len=args.generator_max_seq_len,
                                    device="cpu" if args.use_cpu else "cuda",
                                    top_p=args.top_p)
-    elif args.generator_type == "gpt_controlled_lm":
+    elif args.generator_type == "gpt_cmlm":
+        print(f"Using strategy: {args.strategy}, top_p={args.top_p}, top_k={args.top_k}")
         generator = GPTControlledLMGenerator(tokenizer_name=args.generator_dir,
                                              model_name=args.generator_dir,
-                                             possible_labels=clm_labels,
+                                             control_labels=clm_labels,
+                                             label_weights=kwargs.get("label_weights", None),
                                              batch_size=args.generator_batch_size,
                                              max_seq_len=args.generator_max_seq_len,
                                              device="cpu" if args.use_cpu else "cuda",
-                                             top_p=args.top_p)
+                                             strategy=args.strategy,
+                                             top_p=args.top_p,
+                                             top_k=args.top_k,
+                                             threshold=args.threshold)
     else:
         raise NotImplementedError(f"'{args.generator_type}' is not a supported generator type")
 

@@ -27,143 +27,17 @@ class SampleGenerator:
         raise NotImplementedError
 
 
-class GPTControlledLMGenerator(SampleGenerator):
-    def __init__(self, tokenizer_name, model_name, possible_labels, batch_size=2, max_seq_len=42, device="cuda",
-                 top_p: Optional[float] = None):
-        self.tokenizer_name = tokenizer_name
-        self.model_name = model_name
-        self.batch_size = batch_size
-        self.max_seq_len = max_seq_len
-
-        self.top_p = top_p
-
-        assert device in ["cpu", "cuda"]
-        if device == "cuda" and not torch.cuda.is_available():
-            raise ValueError("Device is set to 'cuda', but no CUDA device could be found. If you want to run the model "
-                             "on CPU, set device to 'cpu'")
-        self.device = torch.device(device)
-
-        self.tokenizer = OpenAIGPTTokenizer.from_pretrained(self.tokenizer_name)
-        self.generator = OpenAIGPTLMHeadModel.from_pretrained(self.model_name).to(self.device)
-        self.generator.eval()
-
-        self.possible_labels = possible_labels
-        self.labels_map = {}
-        for curr_lbl in possible_labels:
-            encoded_lbl = self.tokenizer.encode(f"<{curr_lbl.upper()}>")
-            assert len(encoded_lbl) == 1  # make sure the label is actually a special token and doesn't get broken up
-            self.labels_map[curr_lbl] = encoded_lbl[0]
-
-        # Required to build sequence: <LABEL> <seq1> [<SEP> <seq2>] <EOS>
-        assert self.tokenizer.sep_token_id is not None
-        assert self.tokenizer.eos_token_id is not None
-
-    def from_internal(self, encoded_data: torch.Tensor) -> List[Union[str, Tuple[str, ...]]]:
-        # NOTE: similar to regular GPT, but remove the <LABEL> at the beginning of sequences (used for controlled LM)
-        decoded_data = []
-        for idx_example in range(encoded_data.shape[0]):
-            sep_tokens = torch.nonzero(encoded_data[idx_example] == self.tokenizer.sep_token_id, as_tuple=False)
-
-            # Multiple sequences present: <BOS> <seq1> <SEP> <seq2> <EOS> -> (<seq1>, <seq2>)
-            if sep_tokens.shape[0] == 1:
-                bnd = int(sep_tokens[0])
-                seq1 = self.tokenizer.decode(encoded_data[idx_example, 1: bnd], skip_special_tokens=True)
-                seq2 = self.tokenizer.decode(encoded_data[idx_example, bnd + 1:], skip_special_tokens=True)
-                decoded_data.append((seq1, seq2))
-            else:
-                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example, 1:], skip_special_tokens=True))
-
-        return decoded_data
-
-    def to_internal(self, text_data: List[Union[str, Tuple[str, ...]]]) -> Dict:
-        res = self.tokenizer.batch_encode_plus(text_data, return_special_tokens_mask=True, return_tensors="pt",
-                                               padding="max_length", max_length=self.max_seq_len,
-                                               truncation="longest_first")
-
-        fixed_perturbable_mask = []
-        for idx_example in range(len(text_data)):
-            sequence = res["input_ids"][idx_example].tolist()
-            mask = res["special_tokens_mask"][idx_example].tolist()
-            fixed_perturbable = [not (is_special | (enc_token in self.tokenizer.all_special_ids))
-                                 for is_special, enc_token in zip(mask, sequence)]
-            fixed_perturbable_mask.append(fixed_perturbable)
-
-        formatted_res = {
-            "input_ids": res["input_ids"],
-            "perturbable_mask": torch.tensor(fixed_perturbable_mask),
-            "aux_data": {
-                "attention_mask": res["attention_mask"]
-            }
-        }
-
-        return formatted_res
-
-    @torch.no_grad()
-    def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor, num_samples: int, label: int,
-                 **aux_data) -> Dict:
-        num_features = int(input_ids.shape[1])
-
-        perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
-        masked_samples = input_ids.repeat((num_samples, 1))
-
-        if self.top_p is None:
-            def decoding_strategy(logits, ensure_diff_from):
-                return greedy_decoding(logits, ensure_diff_from)
-        else:
-            def decoding_strategy(logits, ensure_diff_from):
-                return top_p_decoding(logits, self.top_p, ensure_diff_from)
-
-        # Inject some randomness by generating first token based on randomly selected label
-        rnd_labels = torch.randint(len(self.possible_labels), (num_samples,))
-        masked_samples[:, 0] = torch.tensor(list(self.labels_map.values()))[rnd_labels]
-
-        attention_mask = aux_data["attention_mask"]
-        generation_data = {
-            "attention_mask": attention_mask.repeat((self.batch_size, 1)).to(self.device)
-        }
-
-        for idx_step, idx_feature in enumerate(perturbable_inds.tolist()):
-            num_batches = (num_samples + self.batch_size - 1) // self.batch_size
-
-            for idx_batch in range(num_batches):
-                s_batch, e_batch = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
-                curr_input_ids = masked_samples[s_batch: e_batch]
-                curr_batch_size = curr_input_ids.shape[0]
-
-                res = self.generator(curr_input_ids.to(self.device),
-                                     attention_mask=generation_data["attention_mask"][: curr_batch_size],
-                                     return_dict=True)
-
-                # ... - 1 due to LM: tokens < `i` generate `i`, so the 0th token is not getting generated
-                curr_token_logits = res["logits"][:, idx_feature - 1]
-
-                curr_preds = decoding_strategy(curr_token_logits,
-                                               ensure_diff_from=None)
-
-                masked_samples[torch.arange(s_batch, s_batch + curr_batch_size), idx_feature] = curr_preds[:, 0].cpu()
-
-            # After selecting the first token, change label for controlled generation back to the predicted one
-            if idx_step == 0:
-                masked_samples[:, 0] = self.labels_map[self.possible_labels[label]]
-
-        # TODO: once reworked, return weights corresponding to probabilities here
-        sample_token_weights = torch.ones_like(masked_samples, dtype=torch.float32)
-
-        return {
-            "input_ids": masked_samples,
-            "weights": sample_token_weights
-        }
-
-
 class GPTLMGenerator(SampleGenerator):
     def __init__(self, tokenizer_name, model_name, batch_size=2, max_seq_len=42, device="cuda",
-                 top_p: Optional[float] = None):
+                 top_p: Optional[float] = None, top_k: Optional[int] = 5, threshold: Optional[float] = 0.1):
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
         self.batch_size = batch_size
         self.max_seq_len = max_seq_len
 
         self.top_p = top_p
+        self.top_k = top_k
+        self.threshold = threshold
 
         assert device in ["cpu", "cuda"]
         if device == "cuda" and not torch.cuda.is_available():
@@ -172,7 +46,7 @@ class GPTLMGenerator(SampleGenerator):
         self.device = torch.device(device)
 
         self.tokenizer = OpenAIGPTTokenizer.from_pretrained(self.tokenizer_name)
-        self.generator = OpenAIGPTLMHeadModel.from_pretrained(self.model_name).to(self.device)
+        self.generator = OpenAIGPTLMHeadModel.from_pretrained(self.model_name, return_dict=True).to(self.device)
         self.generator.eval()
 
         # Required to build sequence: <BOS> <seq1> [<SEP> <seq2>] <EOS>
@@ -180,24 +54,34 @@ class GPTLMGenerator(SampleGenerator):
         assert self.tokenizer.sep_token_id is not None
         assert self.tokenizer.eos_token_id is not None
 
-    def from_internal(self, encoded_data: torch.Tensor) -> List[Union[str, Tuple[str, ...]]]:
+    def from_internal(self, encoded_data: Union[torch.Tensor, List[torch.Tensor]]) -> List[Union[str, Tuple[str, ...]]]:
         decoded_data = []
-        for idx_example in range(encoded_data.shape[0]):
-            sep_tokens = torch.nonzero(encoded_data[idx_example] == self.tokenizer.sep_token_id, as_tuple=False)
+        for idx_example in range(len(encoded_data)):
+            curr_example = encoded_data[idx_example]
+            sep_tokens = torch.nonzero(curr_example == self.tokenizer.sep_token_id, as_tuple=False)
 
             # Multiple sequences present: <BOS> <seq1> <SEP> <seq2> <EOS> -> (<seq1>, <seq2>)
             if sep_tokens.shape[0] == 1:
                 bnd = int(sep_tokens[0])
-                seq1 = self.tokenizer.decode(encoded_data[idx_example, :bnd], skip_special_tokens=True)
-                seq2 = self.tokenizer.decode(encoded_data[idx_example, bnd + 1:], skip_special_tokens=True)
+                seq1 = self.tokenizer.decode(curr_example[1: bnd], skip_special_tokens=True)
+                seq2 = self.tokenizer.decode(curr_example[bnd + 1:], skip_special_tokens=True)
                 decoded_data.append((seq1, seq2))
             else:
-                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example], skip_special_tokens=True))
+                decoded_data.append(self.tokenizer.decode(curr_example, skip_special_tokens=True))
 
         return decoded_data
 
     def to_internal(self, text_data: List[Union[str, Tuple[str, ...]]]) -> Dict:
-        res = self.tokenizer.batch_encode_plus(text_data, return_special_tokens_mask=True, return_tensors="pt",
+        _text_data = []
+        for curr_text in text_data:
+            if isinstance(curr_text, str):
+                _text_data.append(
+                    f"{self.tokenizer.bos_token} {curr_text[0]} {self.tokenizer.sep_token}")
+            else:  # tuple/list
+                _text_data.append(
+                    f"{self.tokenizer.bos_token} {curr_text[0]} {self.tokenizer.sep_token} {curr_text[1]} {self.tokenizer.eos_token}")
+
+        res = self.tokenizer.batch_encode_plus(_text_data, return_special_tokens_mask=True, return_tensors="pt",
                                                padding="max_length", max_length=self.max_seq_len,
                                                truncation="longest_first")
 
@@ -275,6 +159,114 @@ class GPTLMGenerator(SampleGenerator):
         return {
             "input_ids": masked_samples,
             "weights": sample_token_weights
+        }
+
+
+class GPTControlledLMGenerator(GPTLMGenerator):
+    def __init__(self, tokenizer_name, model_name, control_labels: List[str], batch_size=2, max_seq_len=42, device="cuda",
+                 strategy: Optional[str] = "greedy", top_p: Optional[float] = None, top_k: Optional[int] = 5,
+                 threshold: Optional[float] = 0.1, label_weights: List = None,
+                 generate_expected_examples: Optional[bool] = False):
+        super().__init__(tokenizer_name=tokenizer_name, model_name=model_name, batch_size=batch_size,
+                         max_seq_len=max_seq_len, device=device, top_p=top_p, top_k=top_k, threshold=threshold)
+
+        assert all(curr_control in self.tokenizer.all_special_tokens for curr_control in control_labels)
+        self.control_labels = torch.tensor(self.tokenizer.encode(control_labels, add_special_tokens=False))
+        self.control_labels_str = control_labels
+
+        self.label_weights = label_weights
+        if self.label_weights is None:
+            self.label_weights = [1.0] * len(self.control_labels)
+        self.label_weights = torch.tensor(self.label_weights)
+
+        # TODO: beam search = "global"/"sequence_level"?
+        self.strategy_type = "token_level"
+        if strategy == "greedy":
+            self.decoding_strategy = lambda logits: greedy_decoding(logits)
+        elif strategy == "top_p":
+            assert self.top_p is not None
+            self.decoding_strategy = lambda logits: top_p_decoding(logits, top_p=self.top_p)
+        elif strategy == "top_k":
+            assert self.top_k is not None
+            self.decoding_strategy = lambda logits: top_k_decoding(logits, top_k=self.top_k)
+        else:
+            raise NotImplementedError(f"Unsupported decoding strategy: '{strategy}'")
+
+        #  Denotes whether to change control label at every step in order to try generating "expected example"
+        self.generate_expected = generate_expected_examples
+        if self.generate_expected:  # TODO
+            raise NotImplementedError("'generate_expected_examples' is currently unimplemented for GPT "
+                                      "controlled language modeling")
+
+    @torch.no_grad()
+    def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor, num_samples: int, label: int,
+                 **aux_data) -> Dict:
+        # Placeholder data which will be overwritten by generated examples
+        generated_input_ids = input_ids.repeat((num_samples, 1))
+
+        # Randomly select control labels for examples to be generated and set as attendable
+        idx_selected_control_labels = torch.multinomial(self.label_weights, num_samples=num_samples, replacement=True)
+        selected_control_labels = self.control_labels[idx_selected_control_labels]
+        # Replace BOS token with control label
+        generated_input_ids[:, 0] = selected_control_labels
+
+        # logproba(seq) = sum(logproba(token_i))
+        estimated_logprobas = torch.zeros(num_samples, dtype=torch.float32)
+
+        num_batches = (num_samples + self.batch_size - 1) // self.batch_size
+        for idx_batch in range(num_batches):
+            s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
+            curr_input_ids = generated_input_ids[s_b: e_b]  # view
+            curr_logprobas = estimated_logprobas[s_b: e_b]
+            curr_batch_size = curr_input_ids.shape[0]
+
+            curr_generated_ids = torch.zeros((curr_batch_size, self.max_seq_len), dtype=generated_input_ids.dtype)
+            curr_generated_ids[:, :1] = curr_input_ids[:, :1]
+            dummy_attention_masks = torch.ones_like(curr_generated_ids)
+
+            is_eos = torch.zeros(curr_batch_size, dtype=torch.bool)
+            for idx_step in range(1, self.max_seq_len):
+                if torch.all(is_eos):
+                    break
+
+                generation_mask = torch.logical_not(is_eos)
+                if torch.any(generation_mask):
+                    res = self.generator(input_ids=curr_generated_ids[generation_mask, :idx_step].to(self.device),
+                                         attention_mask=dummy_attention_masks[generation_mask, :idx_step].to(self.device))
+                    original_logits = res["logits"][:, -1, :]
+                    original_logprobas = F.log_softmax(original_logits, dim=-1)
+
+                    # Copy logits because some decoding filters tokens in-place, which would invalidate our seq. probas
+                    copy_logits = original_logits.clone()
+
+                    preds = self.decoding_strategy(copy_logits)
+                    curr_generated_ids[generation_mask, idx_step] = preds[:, 0].cpu()
+                    curr_logprobas[generation_mask] += original_logprobas[torch.arange(original_logprobas.shape[0]),
+                                                                          preds[:, 0]].cpu()
+
+                is_eos = torch.logical_or(is_eos, curr_generated_ids[:, idx_step] == self.tokenizer.eos_token_id)
+
+            generated_input_ids[s_b: e_b] = curr_generated_ids
+
+        generated_input_ids[:, 0] = self.tokenizer.bos_token_id
+        generated_input_ids[:, -1] = self.tokenizer.eos_token_id
+
+        estimated_probas = torch.exp(estimated_logprobas)
+        normalized_control_weights = self.label_weights / torch.sum(self.label_weights)
+        # Normalize estimated probabilities in 2 steps: first, among its own label and second, among all labels
+        for idx_curr_label in range(self.control_labels.shape[0]):
+            mask_curr_label = idx_selected_control_labels == idx_curr_label
+            if not torch.any(mask_curr_label):
+                warnings.warn(f"No examples generated with control signal {self.control_labels_str[idx_curr_label]}")
+
+            estimated_probas[mask_curr_label] = F.softmax(estimated_probas[mask_curr_label], dim=-1)
+            estimated_probas[mask_curr_label] *= normalized_control_weights[idx_curr_label]
+
+        estimated_probas /= torch.sum(estimated_probas)
+
+        return {
+            "input_ids": generated_input_ids,
+            "weights": estimated_probas
         }
 
 
@@ -554,10 +546,13 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
                 curr_masked_logprobas = F.log_softmax(curr_masked_logits, dim=-1)
 
                 curr_dropout_mask = dropout_mask[:, i]
+                # TODO: this should be done on some copy.. (same reason as below)
                 curr_masked_logits[batch_indexer[curr_dropout_mask], orig_tokens[curr_dropout_mask]] = - float("inf")
 
                 preds = self.decoding_strategy(curr_masked_logits)
                 curr_input_ids[batch_indexer, curr_indices] = preds[:, 0].cpu()
+                # FIXME: in top_p, renormalized probabilities are used due to filtering out outside-of-top-p logits
+                #  (which is wrong, the original ones should be used, normalized among all tokens)
                 estimated_logprobas[s_b: e_b] += curr_masked_logprobas[batch_indexer, preds[:, 0]].cpu()
 
         estimated_probas = torch.exp(estimated_logprobas)
@@ -585,16 +580,23 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
 
 
 if __name__ == "__main__":
-    generator = BertForControlledMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
-                                                   model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
-                                                   control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
-                                                   batch_size=2,
-                                                   device="cpu")
+    # generator = BertForControlledMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
+    #                                                model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
+    #                                                control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
+    #                                                batch_size=2,
+    #                                                device="cpu")
+
+    generator = GPTControlledLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
+                                         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
+                                         control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
+                                         batch_size=2,
+                                         device="cpu",
+                                         strategy="top_p",
+                                         top_p=0.9)
 
     seq = ("A patient is being worked on by doctors and nurses", "A man is sleeping.")
     label = 0  # "entailment"
     encoded = generator.to_internal([seq])
-
     generated = generator.generate(encoded["input_ids"], label=label, perturbable_mask=encoded["perturbable_mask"],
-                                   num_samples=5, **encoded["aux_data"])["input_ids"]
+                                   num_samples=3, **encoded["aux_data"])["input_ids"]
 
