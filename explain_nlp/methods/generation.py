@@ -3,6 +3,7 @@ from typing import Tuple, Union, Dict, List, Optional
 
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 from transformers import BertTokenizer, BertForMaskedLM, OpenAIGPTLMHeadModel, OpenAIGPTTokenizer
 
 from explain_nlp.methods.decoding import greedy_decoding, top_p_decoding, top_p_filtering, top_k_decoding
@@ -110,24 +111,31 @@ class GPTLMGenerator(SampleGenerator):
         attention_mask = aux_data["attention_mask"]
 
         estimated_logprobas = torch.zeros(num_examples)
-        for i in range(num_batches):
+        for i in tqdm(range(num_batches)):
             s_b, e_b = i * self.batch_size, (i + 1) * self.batch_size
             curr_input_ids = input_ids[s_b: e_b]
             curr_attn_masks = attention_mask[s_b: e_b]
             curr_batch_size = curr_input_ids.shape[0]
 
-            is_not_eos = torch.ones(curr_batch_size, dtype=torch.bool)
-            for idx_step in range(1, self.max_seq_len):
-                if not torch.any(is_not_eos):
-                    break
+            res = self.generator(input_ids=curr_input_ids.to(self.device),
+                                 attention_mask=curr_attn_masks.to(self.device))
+            logprobas = F.log_softmax(res["logits"], dim=-1).cpu()
+            for idx_ex_in_batch in range(curr_batch_size):
+                ground_truth_tokens = curr_input_ids[idx_ex_in_batch]
+                eos_position = torch.nonzero(ground_truth_tokens == self.tokenizer.eos_token_id,
+                                             as_tuple=False)
+                if len(eos_position) > 0:
+                    eos_position = eos_position.flatten().item()
+                else:
+                    # EOS could have been truncated as it is not an "original" special token (base GPT doesn't use any)
+                    eos_position = self.max_seq_len
 
-                ground_truth = curr_input_ids[is_not_eos, idx_step]
-                res = self.generator(input_ids=curr_input_ids[is_not_eos, :idx_step].to(self.device),
-                                     attention_mask=curr_attn_masks[is_not_eos, :idx_step].to(self.device))
-                logprobas = F.log_softmax(res["logits"][:, -1, :], dim=-1)
-                estimated_logprobas[is_not_eos] += logprobas[torch.arange(logprobas.shape[0]), ground_truth]
-
-                is_not_eos = torch.logical_or(is_not_eos, ground_truth != self.tokenizer.eos_token_id)
+                valid_token_logprobas = logprobas[idx_ex_in_batch, :eos_position]
+                # 0th token does not get predicted as model cannot condition on previous token
+                ground_truth_tokens = ground_truth_tokens[1: eos_position + 1]
+                ground_truth_logprobas = valid_token_logprobas[torch.arange(ground_truth_tokens.shape[0]),
+                                                               ground_truth_tokens]
+                estimated_logprobas[s_b + idx_ex_in_batch] = torch.sum(ground_truth_logprobas)
 
         return estimated_logprobas
 
