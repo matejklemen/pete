@@ -3,11 +3,11 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument("--experiment_type", type=str, choices=["accurate_importances", "required_samples"],
                     default="required_samples")
-parser.add_argument("--method", type=str, default="ime",
+parser.add_argument("--method", type=str, default="ime_mlm",
                     choices=["ime", "sequential_ime", "whole_word_ime", "ime_mlm", "ime_dependent_mlm"])
 parser.add_argument("--custom_features", type=str, default=None,
                     choices=[None, "words", "sentences", "depparse_simple", "depparse_depth"])
-parser.add_argument("--min_samples_per_feature", type=int, default=10,
+parser.add_argument("--min_samples_per_feature", type=int, default=100,
                     help="Minimum number of samples that get created for each feature for initial variance estimation")
 parser.add_argument("--confidence_interval", type=float, default=0.99)
 parser.add_argument("--max_abs_error", type=float, default=0.01)
@@ -27,19 +27,19 @@ parser.add_argument("--controlled", action="store_true",
                     help="Whether to use controlled LM/MLM for generation")
 parser.add_argument("--generator_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
                     help="Path or handle of model to be used as a language modeling generator")
-parser.add_argument("--generator_batch_size", type=int, default=2)
+parser.add_argument("--generator_batch_size", type=int, default=8)
 parser.add_argument("--generator_max_seq_len", type=int, default=41)
-parser.add_argument("--num_generated_samples", type=int, default=10)
+parser.add_argument("--num_generated_samples", type=int, default=100)
 parser.add_argument("--generate_expected_examples", action="store_true",
                     help="Flag that indicates whether to change control label at every generation step in order to "
                          "try and produce the 'expected example' (example for which the model outputs the expected value)")
 
 # Experimental (only in Bert MLM generator) for now
-parser.add_argument("--strategy", type=str, choices=["top_k", "top_p", "threshold", "greedy"], default="greedy")
-parser.add_argument("--top_p", type=float, default=None)
+parser.add_argument("--strategy", type=str, choices=["top_k", "top_p", "threshold", "greedy"], default="top_p")
+parser.add_argument("--top_p", type=float, default=0.9)
 parser.add_argument("--top_k", type=int, default=5)
 parser.add_argument("--threshold", type=float, default=0.1)
-parser.add_argument("--unique_dropout", type=float, default=0.0)
+parser.add_argument("--unique_dropout", type=float, default=0.5)
 
 parser.add_argument("--seed_start_with_ground_truth", action="store_true")
 parser.add_argument("--reset_seed_after_first", action="store_true")
