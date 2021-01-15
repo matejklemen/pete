@@ -1,6 +1,8 @@
 from typing import Optional, Union, Tuple, List
 
 import torch
+import numpy as np
+from scipy.optimize import nnls
 
 from explain_nlp.methods.generation import SampleGenerator
 from explain_nlp.methods.ime import IMEExplainer
@@ -41,13 +43,11 @@ class IMEMaskedLMExplainer(IMEExplainer):
         # Convert from representation of generator to text
         generated_text = self.generator.from_internal(generated_samples)
 
-        # for i in range(len(generated_text)):
-        #     print(generated_text[i])
+        for i in range(len(generated_text)):
+            print(generated_text[i])
 
         # Convert from text to representation of interpreted model
         sample_data = self.model.to_internal(generated_text)
-        self.update_sample_data(sample_data["input_ids"],
-                                data_weights=None if "weights" not in generator_res else generator_res["weights"])
 
         # Find expectation of generated text
         generated_scores = self.model.score(sample_data["input_ids"], **sample_data["aux_data"])
@@ -58,6 +58,39 @@ class IMEMaskedLMExplainer(IMEExplainer):
 
         print(f"Expected scores of generated sample:")
         print(expected_scores)
+
+        EXPECTED_LABEL_PROBA = torch.tensor([1/3, 1/3, 1/3])[label]
+        # TODO: expected score should be explanation method argument
+        # TODO: do bootstraps like this, then construct count vectors, i.e. [num_bootstrap, num_gen_samples] and then do LS
+        #  The bootstrap method seems better to me as LS implicitly makes assumption about solution, if underdetermined
+        # NUM_BOOTSTRAP_SAMPLES = 1000  # TODO
+        # assert NUM_BOOTSTRAP_SAMPLES >= min_samples_per_feature
+        # bootstrap_samples = torch.randint(self.num_generated_samples, (NUM_BOOTSTRAP_SAMPLES, min_samples_per_feature))
+        # bootstrap_scores = generated_scores[:, label][bootstrap_samples]
+
+        # solve AX = B or min(AX - B) where X sums to one
+        B = torch.tensor([[EXPECTED_LABEL_PROBA], [1.0]])
+        A = torch.stack((generated_scores[:, label].cpu(),
+                         torch.ones(self.num_generated_samples, dtype=torch.float32)))
+        least_sq = torch.lstsq(B, A)
+        estimated_weights = least_sq.solution[: self.num_generated_samples]
+
+        # TODO: do I need the sum to one?
+        # A = generated_scores[:, label].unsqueeze(0).cpu().numpy()
+        # B = np.array([EXPECTED_LABEL_PROBA])
+
+        # B = np.array([EXPECTED_LABEL_PROBA, 1.0])
+        # A = np.stack((generated_scores[:, label].cpu().numpy(),
+        #               np.ones(self.num_generated_samples, dtype=np.float32)))
+        # estimated_weights = nnls(A, B)[0]
+        # estimated_weights = torch.from_numpy(estimated_weights).unsqueeze(1)
+
+        print("Estimated weights:")
+        print(estimated_weights)
+        print("Corrected expected value:")
+        print(torch.sum(estimated_weights * generated_scores, dim=0))
+
+        self.update_sample_data(sample_data["input_ids"], estimated_weights.flatten())
 
         # Convert instance being interpreted to representation of interpreted model
         model_instance = self.model.to_internal([text_data],
@@ -96,7 +129,7 @@ if __name__ == "__main__":
                                      return_scores=True,
                                      return_variance=True,
                                      return_num_samples=True,
-                                     num_generated_samples=4)
+                                     num_generated_samples=5)
 
     seq = ("A patient is being worked on by doctors and nurses", "A man is sleeping.")
     res = explainer.explain_text(seq, label=2, min_samples_per_feature=10)
