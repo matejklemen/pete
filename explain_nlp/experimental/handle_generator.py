@@ -40,7 +40,7 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                                        top_k=args.top_k,
                                                        threshold=args.threshold,
                                                        unique_dropout=args.unique_dropout,
-                                                       generate_expected_examples=args.generate_expected_examples)
+                                                       generate_cover=args.generate_cover)
     elif args.generator_type == "gpt_lm":
         generator = GPTLMGenerator(tokenizer_name=args.generator_dir,
                                    model_name=args.generator_dir,
