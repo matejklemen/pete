@@ -12,13 +12,13 @@ class IMEMaskedLMExplainer(IMEExplainer):
                  confidence_interval: Optional[float] = None,  max_abs_error: Optional[float] = None,
                  num_generated_samples: Optional[int] = 10, return_variance: Optional[bool] = False,
                  return_num_samples: Optional[bool] = False, return_samples: Optional[bool] = False,
-                 return_scores: Optional[bool] = False):
+                 return_scores: Optional[bool] = False, criterion: Optional[str] = "squared_error"):
         # IME requires sampling data so we give it dummy data and later override it with generated data
         dummy_sample_data = torch.randint(5, (1, 1), dtype=torch.long)
         super().__init__(sample_data=dummy_sample_data, model=model, confidence_interval=confidence_interval,
                          max_abs_error=max_abs_error, return_variance=return_variance,
                          return_num_samples=return_num_samples, return_samples=return_samples,
-                         return_scores=return_scores)
+                         return_scores=return_scores, criterion=criterion)
 
         self.generator = generator
         self.num_generated_samples = num_generated_samples
