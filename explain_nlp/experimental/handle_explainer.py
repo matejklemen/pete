@@ -35,11 +35,7 @@ def load_explainer(method: str, model, confidence_interval, max_abs_error,
         method = DependentIMEMaskedLMExplainer(model=model, generator=kwargs["generator"],
                                                confidence_interval=confidence_interval, max_abs_error=max_abs_error,
                                                return_scores=return_model_scores, return_num_samples=True,
-                                               return_samples=return_generated_samples, return_variance=True,
-                                               controlled=kwargs["controlled"],
-                                               seed_start_with_ground_truth=kwargs["seed_start_with_ground_truth"],
-                                               reset_seed_after_first=kwargs["reset_seed_after_first"],
-                                               verbose=kwargs.get("verbose", False))
+                                               return_samples=return_generated_samples, return_variance=True)
     else:
         raise NotImplementedError(f"Unsupported method: '{method}'")
 

@@ -5,7 +5,6 @@ from typing import Optional, Union, Tuple, List
 import torch
 import logging
 
-from explain_nlp.methods.decoding import greedy_decoding, top_p_decoding, top_k_decoding
 from explain_nlp.methods.generation import BertForMaskedLMGenerator, BertForControlledMaskedLMGenerator
 from explain_nlp.methods.ime import IMEExplainer
 from explain_nlp.methods.modeling import InterpretableModel, InterpretableBertForSequenceClassification
@@ -28,8 +27,7 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
                  confidence_interval: Optional[float] = None,  max_abs_error: Optional[float] = None,
                  return_variance: Optional[bool] = False, return_num_samples: Optional[bool] = False,
                  return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 criterion: Optional[str] = "squared_error",
-                 control_labels: List[str] = None, label_weights: List = None):
+                 criterion: Optional[str] = "squared_error"):
         dummy_sample_data = torch.randint(5, (1, 1), dtype=torch.long)
         super().__init__(sample_data=dummy_sample_data, model=model, confidence_interval=confidence_interval,
                          max_abs_error=max_abs_error, return_variance=return_variance,
@@ -37,17 +35,6 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
                          return_scores=return_scores, criterion=criterion)
 
         self.generator = generator
-
-        # TODO: just take this from generator, if it exists
-        self.control_labels_str = control_labels
-        self.label_weights = label_weights
-        if control_labels is not None:
-            assert all(curr_control in self.generator.tokenizer.all_special_tokens for curr_control in control_labels)
-
-            if self.label_weights is None:
-                self.label_weights = [1.0] * len(self.control_labels_str)
-            self.label_weights = torch.tensor(self.label_weights)
-            self.label_weights /= torch.sum(self.label_weights)
 
     @torch.no_grad()
     def estimate_feature_importance(self, idx_feature: Union[int, List[int]], instance: torch.Tensor, num_samples: int,
@@ -57,10 +44,10 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         num_features = int(len(instance[0]))
 
         # TODO: this is temporary
-        if isinstance(idx_feature, int):
-            print(f"Estimating importance of '{self.model.tokenizer.decode([instance[0, idx_feature]])}'")
-        else:
-            print(f"Estimating importance of '{self.model.tokenizer.decode(instance[0, idx_feature])}'")
+        # if isinstance(idx_feature, int):
+        #     print(f"Estimating importance of '{self.model.tokenizer.decode([instance[0, idx_feature]])}'")
+        # else:
+        #     print(f"Estimating importance of '{self.model.tokenizer.decode(instance[0, idx_feature])}'")
 
         # Custom features present
         if feature_groups is not None:
@@ -78,9 +65,9 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
                                       num_permutations=num_samples)
         feature_pos = torch.nonzero(indices == idx_superfeature, as_tuple=False)
 
-        if self.label_weights is not None:
-            randomly_selected_label = torch.multinomial(self.label_weights, num_samples=num_samples, replacement=True)
-            randomly_selected_label = [self.control_labels_str[i] for i in randomly_selected_label]
+        if hasattr(self.generator, "label_weights"):
+            randomly_selected_label = torch.multinomial(self.generator.label_weights, num_samples=num_samples, replacement=True)
+            randomly_selected_label = [self.generator.control_labels_str[i] for i in randomly_selected_label]
         else:
             randomly_selected_label = [None] * num_samples
 
@@ -203,10 +190,11 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         # Without
         all_examples[1::2] = eff_input_ids
 
-        # Control signals are not necessary valid tokens inside model
         valid_tokens = torch.ones(all_examples.shape[1], dtype=torch.bool)
-        valid_tokens[1] = False
-        all_examples = all_examples[:, valid_tokens]
+        # Control signals are not necessary valid tokens inside model
+        if is_controlled:
+            valid_tokens[1] = False
+            all_examples = all_examples[:, valid_tokens]
 
         modeling_kwargs = {
             "token_type_ids": eff_token_type_ids[0: 1, valid_tokens].cpu(),
@@ -219,10 +207,10 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         assert scores_with.shape[0] == scores_without.shape[0]
         diff = scores_with - scores_without
 
-        print("\n\nFinal: ")
-        for i in range(2 * num_samples):
-            print(f"{scores[i][label]: .3f} {randomly_selected_label[i // 2]} {self.generator.from_internal(all_examples[[i]])}")
-        print("-----")
+        # print("\n\nFinal: ")
+        # for i in range(2 * num_samples):
+        #     print(f"{scores[i][label]: .3f} {randomly_selected_label[i // 2]} {self.generator.from_internal(all_examples[[i]])}")
+        # print("-----")
 
         results = {
             "diff_mean": torch.mean(diff, dim=0),
@@ -257,8 +245,7 @@ if __name__ == "__main__":
                                               return_samples=True,
                                               return_scores=True,
                                               return_variance=True,
-                                              return_num_samples=True,
-                                              control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"])
+                                              return_num_samples=True)
 
     seq = ("A shirtless man skateboards on a ledge.", "A man without a shirt")
     res = explainer.explain_text(seq, label=0, min_samples_per_feature=10)
