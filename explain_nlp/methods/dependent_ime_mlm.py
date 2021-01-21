@@ -44,10 +44,10 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         num_features = int(len(instance[0]))
 
         # TODO: this is temporary
-        if isinstance(idx_feature, int):
-            print(f"Estimating importance of '{self.model.tokenizer.decode([instance[0, idx_feature]])}'")
-        else:
-            print(f"Estimating importance of '{self.model.tokenizer.decode(instance[0, idx_feature])}'")
+        # if isinstance(idx_feature, int):
+        #     print(f"Estimating importance of '{self.model.tokenizer.decode([instance[0, idx_feature]])}'")
+        # else:
+        #     print(f"Estimating importance of '{self.model.tokenizer.decode(instance[0, idx_feature])}'")
 
         # Custom features present
         if feature_groups is not None:
@@ -137,6 +137,7 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
                 original_values = curr_inputs[_batch_indexer.unsqueeze(1), feats_to_predict]
                 curr_inputs[_batch_indexer.unsqueeze(1), feats_to_predict] = self.generator.mask_token_id
 
+                # TODO: can this predict special tokens? If yes, we should probably mask them
                 res = self.generator.generator(input_ids=curr_inputs.to(self.generator.device),
                                                token_type_ids=eff_token_type_ids[:curr_batch_size],
                                                attention_mask=eff_attention_mask[:curr_batch_size])
@@ -206,12 +207,12 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
             "attention_mask": eff_attention_mask[0: 1, valid_tokens]
         }
 
-        print("Final: ")
-        for i in range(2 * num_samples):
-            print(f"({randomly_selected_label[i // 2]})")
-            print({self.generator.tokenizer.decode(all_examples[i], skip_special_tokens=False)})
-            print("")
-        print("-----")
+        # print("Final: ")
+        # for i in range(2 * num_samples):
+        #     print(f"({randomly_selected_label[i // 2]})")
+        #     print({self.generator.from_internal(all_examples[[i]])})
+        #     print("")
+        # print("-----")
 
         scores = self.model.score(all_examples, **modeling_kwargs)
         scores_with = scores[::2]
