@@ -202,8 +202,8 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
             all_examples = all_examples[:, valid_tokens]
 
         modeling_kwargs = {
-            "token_type_ids": eff_token_type_ids[0: 1, valid_tokens].cpu(),
-            "attention_mask": eff_attention_mask[0: 1, valid_tokens].cpu()
+            "token_type_ids": eff_token_type_ids[0: 1, valid_tokens],
+            "attention_mask": eff_attention_mask[0: 1, valid_tokens]
         }
 
         scores = self.model.score(all_examples, **modeling_kwargs)
