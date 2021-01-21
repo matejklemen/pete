@@ -208,7 +208,8 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
 
         print("Final: ")
         for i in range(2 * num_samples):
-            print(f"({randomly_selected_label[i // 2]}) {self.generator.from_internal(all_examples[[i]])}")
+            print(f"({randomly_selected_label[i // 2]})")
+            print({self.generator.tokenizer.decode(all_examples[i], skip_special_tokens=False)})
             print("")
         print("-----")
 
