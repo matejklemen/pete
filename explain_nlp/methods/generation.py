@@ -218,16 +218,14 @@ class GPTControlledLMGenerator(GPTLMGenerator):
 
         # TODO: beam search = "global"/"sequence_level"?
         self.strategy_type = "token_level"
-        if strategy == "greedy":
-            self.decoding_strategy = lambda logits: greedy_decoding(logits)
-        elif strategy == "top_p":
+        if strategy == "top_p":
             assert self.top_p is not None
-            self.decoding_strategy = lambda logits: top_p_decoding(logits, top_p=self.top_p)
+            self.filtering_strategy = lambda logits: top_p_filtering(logits, top_p=self.top_p)
         elif strategy == "top_k":
             assert self.top_k is not None
-            self.decoding_strategy = lambda logits: top_k_decoding(logits, top_k=self.top_k)
+            self.filtering_strategy = lambda logits: top_k_filtering(logits, top_k=self.top_k)
         else:
-            raise NotImplementedError(f"Unsupported decoding strategy: '{strategy}'")
+            raise NotImplementedError(f"Unsupported filtering strategy: '{strategy}'")
 
         #  Denotes whether to change control label at every step in order to try generating "expected example"
         self.generate_expected = generate_expected_examples
@@ -247,14 +245,10 @@ class GPTControlledLMGenerator(GPTLMGenerator):
         # Replace BOS token with control label
         generated_input_ids[:, 0] = selected_control_labels
 
-        # logproba(seq) = sum(logproba(token_i))
-        estimated_logprobas = torch.zeros(num_samples, dtype=torch.float32)
-
         num_batches = (num_samples + self.batch_size - 1) // self.batch_size
         for idx_batch in range(num_batches):
             s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
             curr_input_ids = generated_input_ids[s_b: e_b]  # view
-            curr_logprobas = estimated_logprobas[s_b: e_b]
             curr_batch_size = curr_input_ids.shape[0]
 
             curr_generated_ids = torch.zeros((curr_batch_size, self.max_seq_len), dtype=generated_input_ids.dtype)
@@ -270,16 +264,12 @@ class GPTControlledLMGenerator(GPTLMGenerator):
                 if torch.any(generation_mask):
                     res = self.generator(input_ids=curr_generated_ids[generation_mask, :idx_step].to(self.device),
                                          attention_mask=dummy_attention_masks[generation_mask, :idx_step].to(self.device))
-                    original_logits = res["logits"][:, -1, :]
-                    original_logprobas = F.log_softmax(original_logits, dim=-1)
+                    logits = res["logits"][:, -1, :]
+                    logits = self.filtering_strategy(logits)
+                    probas = F.softmax(logits, dim=-1)
 
-                    # Copy logits because some decoding filters tokens in-place, which would invalidate our seq. probas
-                    copy_logits = original_logits.clone()
-
-                    preds = self.decoding_strategy(copy_logits)
+                    preds = torch.multinomial(probas, num_samples=1)
                     curr_generated_ids[generation_mask, idx_step] = preds[:, 0].cpu()
-                    curr_logprobas[generation_mask] += original_logprobas[torch.arange(original_logprobas.shape[0]),
-                                                                          preds[:, 0]].cpu()
 
                 is_eos = torch.logical_or(is_eos, curr_generated_ids[:, idx_step] == self.tokenizer.eos_token_id)
 
@@ -288,22 +278,8 @@ class GPTControlledLMGenerator(GPTLMGenerator):
         generated_input_ids[:, 0] = self.tokenizer.bos_token_id
         generated_input_ids[:, -1] = self.tokenizer.eos_token_id
 
-        estimated_probas = torch.exp(estimated_logprobas)
-        normalized_control_weights = self.label_weights / torch.sum(self.label_weights)
-        # Normalize estimated probabilities in 2 steps: first, among its own label and second, among all labels
-        for idx_curr_label in range(self.control_labels.shape[0]):
-            mask_curr_label = idx_selected_control_labels == idx_curr_label
-            if not torch.any(mask_curr_label):
-                warnings.warn(f"No examples generated with control signal {self.control_labels_str[idx_curr_label]}")
-
-            estimated_probas[mask_curr_label] = F.softmax(estimated_probas[mask_curr_label], dim=-1)
-            estimated_probas[mask_curr_label] *= normalized_control_weights[idx_curr_label]
-
-        estimated_probas /= torch.sum(estimated_probas)
-
         return {
-            "input_ids": generated_input_ids,
-            "weights": estimated_probas
+            "input_ids": generated_input_ids
         }
 
 
@@ -379,113 +355,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
     @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
                  num_samples, label=None, **aux_data) -> Dict:
-        num_features = int(input_ids.shape[1])
-
-        perturbable_inds = torch.arange(num_features)[perturbable_mask[0]]
-        num_perturbable = perturbable_inds.shape[0]
-
-        _sequence_indexer = torch.arange(num_features).unsqueeze(0)  # used for selecting all tokens
-
-        permutation_probas = []
-        masked_samples = []
-
-        token_type_ids = aux_data["token_type_ids"]
-        attention_mask = aux_data["attention_mask"]
-
-        generation_data = {
-            "token_type_ids": token_type_ids.repeat((self.batch_size, 1)).to(self.device),
-            "attention_mask": attention_mask.repeat((self.batch_size, 1)).to(self.device)
-        }
-
-        # Obtain guaranteed unique feature values by taking the topk predictions that are different from curr value
-        for idx_feature in perturbable_inds:
-            curr_masked = input_ids.clone()
-            original_token = int(curr_masked[0, idx_feature])
-            curr_masked[:, idx_feature] = self.tokenizer.mask_token_id
-
-            curr_input_ids = curr_masked[:1]  # [B=1, num_features]
-            res = self.generator(curr_input_ids.to(self.device),
-                                 token_type_ids=generation_data["token_type_ids"][:1],
-                                 attention_mask=generation_data["attention_mask"][:1],
-                                 return_dict=True)
-            logits = res["logits"][:, idx_feature]  # [1, |V|]
-            logits[:, original_token] = -float("inf")
-
-            if self.strategy == "threshold":
-                probas = torch.softmax(logits, dim=-1)
-                generated_tokens = torch.nonzero(probas > self.threshold, as_tuple=False)[:, 1]
-            elif self.strategy == "top_k":
-                _, indices = torch.topk(logits, k=self.top_k, sorted=False)
-                generated_tokens = indices[0]
-            elif self.strategy == "top_p":
-                filtered_logits = top_p_filtering(logits, top_p=self.top_p)
-                filtered_probas = torch.softmax(filtered_logits, dim=-1)
-                generated_tokens = torch.nonzero(filtered_probas > 0, as_tuple=False)[:, 1]
-            else:
-                raise NotImplementedError(f"Unrecognized strategy: '{self.strategy}'")
-
-            num_curr_generated = generated_tokens.shape[0]
-            input_copy = input_ids.repeat((num_curr_generated, 1))
-            input_copy[:, idx_feature] = generated_tokens
-            masked_samples.append(input_copy)
-
-            valid_inds_probas = torch.zeros((num_curr_generated, num_features), dtype=torch.float32)
-            valid_inds_probas[:, perturbable_inds] = 1 / (num_perturbable - 1)
-            valid_inds_probas[:, idx_feature] = 0.0
-            permutation_probas.append(valid_inds_probas)
-
-        masked_samples = torch.cat(masked_samples)  # [num_total_generated, max_seq_len]
-        permutation_probas = torch.cat(permutation_probas, dim=0)
-        permuted_indices = torch.multinomial(permutation_probas,
-                                             num_samples=(num_perturbable - 1))  # [num_total_generated, num_perturbable]
-        num_total_generated = masked_samples.shape[0]
-
-        # Mask and predict all tokens, one token at a time, in different order - slightly diverse greedy decoding
-        for idx_chunk in range(num_perturbable - 1):
-            curr_masked = permuted_indices[:, idx_chunk: (idx_chunk + 1)]
-            curr_mask_size = curr_masked.shape[1]
-            masked_samples[torch.arange(num_total_generated).unsqueeze(1), curr_masked] = self.tokenizer.mask_token_id
-
-            num_batches = (num_total_generated + self.batch_size - 1) // self.batch_size
-            for idx_batch in range(num_batches):
-                s_batch, e_batch = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
-                curr_input_ids = masked_samples[s_batch: e_batch]
-                curr_batch_size = curr_input_ids.shape[0]
-
-                res = self.generator(curr_input_ids.to(self.device),
-                                     token_type_ids=generation_data["token_type_ids"][: curr_batch_size],
-                                     attention_mask=generation_data["attention_mask"][: curr_batch_size],
-                                     return_dict=True)
-                logits = res["logits"][torch.arange(curr_batch_size).unsqueeze(1), curr_masked[s_batch: e_batch]]
-                for idx_token in range(curr_mask_size):
-                    curr_token_logits = logits[:, idx_token]
-                    curr_preds = greedy_decoding(curr_token_logits,
-                                                 ensure_diff_from=None)
-
-                    masked_samples[torch.arange(s_batch, s_batch + curr_batch_size),
-                                   curr_masked[s_batch: e_batch, idx_token]] = curr_preds[:, 0].cpu()
-
-        # Calculate the probabilities of tokens given their context (as given by BERT)
-        num_batches = (num_total_generated + self.batch_size - 1) // self.batch_size
-        mlm_token_probas = []
-        for idx_batch in range(num_batches):
-            s_batch, e_batch = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
-            curr_input_ids = masked_samples[s_batch: e_batch]
-            curr_batch_size = curr_input_ids.shape[0]
-            _batch_indexer = torch.arange(curr_batch_size).reshape([-1, 1])
-
-            res = self.generator(curr_input_ids.to(self.device),
-                                 token_type_ids=generation_data["token_type_ids"][: curr_batch_size],
-                                 attention_mask=generation_data["attention_mask"][: curr_batch_size],
-                                 return_dict=True)
-            probas = torch.softmax(res["logits"], dim=-1)
-            mlm_token_probas.append(probas[_batch_indexer, _sequence_indexer, curr_input_ids])
-
-        mlm_token_probas = torch.cat(mlm_token_probas)
-        return {
-            "input_ids": masked_samples,
-            "weights": mlm_token_probas
-        }
+        raise NotImplementedError("Needs to be reimplemented the new way (as does GPTLM)")
 
 
 class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
@@ -512,18 +382,14 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         # TODO: beam search = "global"/"sequence_level"?
         self.strategy_type = "token_level"
         self.filtering_strategy = None
-        if strategy == "greedy":
-            self.decoding_strategy = lambda logits: greedy_decoding(logits)
-        elif strategy == "top_p":
+        if strategy == "top_p":
             assert self.top_p is not None
             self.filtering_strategy = lambda logits: top_p_filtering(logits, top_p=self.top_p)
-            self.decoding_strategy = lambda logits: top_p_decoding(logits, top_p=self.top_p)
         elif strategy == "top_k":
             assert self.top_k is not None
             self.filtering_strategy = lambda logits: top_k_filtering(logits, top_k=self.top_k)
-            self.decoding_strategy = lambda logits: top_k_decoding(logits, top_k=self.top_k)
         else:
-            raise NotImplementedError(f"Unsupported decoding strategy: '{strategy}'")
+            raise NotImplementedError(f"Unsupported filtering strategy: '{strategy}'")
 
         if generate_expected_examples:
             warnings.warn("'generate_expected_examples' is deprecated for BERT controlled MLM")
@@ -559,60 +425,25 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         extended_attention_mask[:, 1] = 1
         perturbable_inds = torch.arange(extended_input_ids.shape[1])[extended_pert_mask[0]]
 
-        if self.generate_cover:
-            # Instead of sampling among renormalized token probabilities according to decoding strategy, create a new
-            #  example for each unfiltered token and then later generate the rest using chosen decoding strategy
-            created_examples, generation_order = [], []
-
-            for curr_control_label in self.control_labels:
-                curr_input = extended_input_ids[[0]].clone()
-                curr_input[:, 1] = curr_control_label
-                mask = torch.ones_like(perturbable_inds, dtype=torch.bool)
-
-                for position, idx_feature in enumerate(perturbable_inds):
-                    original_token = curr_input[:, idx_feature].item()
-                    curr_input[:, idx_feature] = self.tokenizer.mask_token_id
-                    res = self.generator(input_ids=curr_input.to(self.device),
-                                         token_type_ids=extended_token_type_ids[[0]],
-                                         attention_mask=extended_attention_mask[[0]])
-                    logits = res["logits"][:, idx_feature, :]
-                    logits = self.filtering_strategy(logits)[0]
-                    topi = torch.nonzero(logits > 0).flatten()
-
-                    mask[position] = False
-                    for pred_token in topi:
-                        curr_input[:, idx_feature] = pred_token
-                        created_examples.append(curr_input.clone())
-                        generation_order.append(perturbable_inds[mask])
-
-                    mask[position] = True
-                    curr_input[:, idx_feature] = original_token
-
-            extended_input_ids = torch.cat(created_examples)
-            generation_order = torch.stack(generation_order)
-            num_samples = extended_input_ids.shape[0]
+        if self.strategy == "greedy":
+            # If generation order was not shuffled, greedy decoding would produce identical samples
+            weights = torch.zeros_like(extended_input_ids, dtype=torch.float32)
+            weights[:, perturbable_inds] = 1
+            generation_order = torch.multinomial(weights, num_samples=perturbable_inds.shape[0], replacement=False)
         else:
-            if self.strategy == "greedy":
-                # If generation order was not shuffled, greedy decoding would produce identical samples
-                weights = torch.zeros_like(extended_input_ids, dtype=torch.float32)
-                weights[:, perturbable_inds] = 1
-                generation_order = torch.multinomial(weights, num_samples=perturbable_inds.shape[0], replacement=False)
-            else:
-                generation_order = perturbable_inds.repeat((num_samples, 1))
+            generation_order = perturbable_inds.repeat((num_samples, 1))
 
         num_batches = (num_samples + self.batch_size - 1) // self.batch_size
         for idx_batch in range(num_batches):
             s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
             curr_input_ids = extended_input_ids[s_b: e_b]  # view
             curr_gen_order = generation_order[s_b: e_b]
-            dropout_mask = torch.rand_like(curr_gen_order, dtype=torch.float32) < self.unique_dropout
 
             curr_batch_size = curr_input_ids.shape[0]
             batch_indexer = torch.arange(curr_batch_size)
 
             for i in range(curr_gen_order.shape[1]):
                 curr_indices = curr_gen_order[:, i]
-                orig_tokens = curr_input_ids[batch_indexer, curr_indices]
                 curr_input_ids[batch_indexer, curr_indices] = self.mask_token_id
 
                 res = self.generator(input_ids=curr_input_ids.to(self.device),
@@ -620,12 +451,12 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
                                      attention_mask=extended_attention_mask[:curr_batch_size])
 
                 logits = res["logits"]  # [batch_size, max_seq_len, |V|]
+
                 curr_masked_logits = logits[batch_indexer, curr_indices, :]
+                curr_masked_logits = self.filtering_strategy(curr_masked_logits)
 
-                curr_dropout_mask = dropout_mask[:, i]
-                curr_masked_logits[batch_indexer[curr_dropout_mask], orig_tokens[curr_dropout_mask]] = - float("inf")
-
-                preds = self.decoding_strategy(curr_masked_logits)
+                curr_probas = torch.softmax(curr_masked_logits, dim=-1)
+                preds = torch.multinomial(curr_probas, num_samples=1)
                 curr_input_ids[batch_indexer, curr_indices] = preds[:, 0].cpu()
 
         valid_tokens = torch.ones_like(extended_pert_mask)
@@ -637,22 +468,22 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
 
 
 if __name__ == "__main__":
-    generator = BertForControlledMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
-                                                   model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
-                                                   control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
-                                                   batch_size=2,
-                                                   device="cpu",
-                                                   strategy="top_k",
-                                                   top_k=3,
-                                                   generate_cover=True)
+    # generator = BertForControlledMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
+    #                                                model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
+    #                                                control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
+    #                                                batch_size=2,
+    #                                                device="cpu",
+    #                                                strategy="top_k",
+    #                                                top_k=3,
+    #                                                generate_cover=True)
 
-    # generator = GPTControlledLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
-    #                                      model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
-    #                                      control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
-    #                                      batch_size=2,
-    #                                      device="cpu",
-    #                                      strategy="top_p",
-    #                                      top_p=0.9)
+    generator = GPTControlledLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
+                                         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
+                                         control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
+                                         batch_size=2,
+                                         device="cpu",
+                                         strategy="top_p",
+                                         top_p=0.9)
 
     # generator = GPTLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_lm_maxseqlen42",
     #                            model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_lm_maxseqlen42",
@@ -665,7 +496,7 @@ if __name__ == "__main__":
     encoded = generator.to_internal([seq])
 
     generated = generator.generate(encoded["input_ids"], label=label, perturbable_mask=encoded["perturbable_mask"],
-                                   num_samples=3, **encoded["aux_data"])["input_ids"]
+                                   num_samples=10, **encoded["aux_data"])["input_ids"]
 
     for curr_ids in generated:
         print(generator.tokenizer.decode(curr_ids, skip_special_tokens=False))
