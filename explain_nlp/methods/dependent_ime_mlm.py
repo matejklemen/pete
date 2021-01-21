@@ -71,13 +71,14 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         else:
             randomly_selected_label = [None] * num_samples
 
-        # is_masked[i] = perturbed features (EXCLUDING observed feature, which is perturbed to a different value)
+        # is_masked[i] = perturbed features (EXCLUDING observed feature)
         is_masked = torch.zeros((num_samples, num_features), dtype=torch.bool)
         observed_feature = torch.tensor([idx_feature] if isinstance(idx_feature, int) else idx_feature).repeat((num_samples, 1))
         for idx_sample in range(num_samples):
             curr_feature_pos = int(feature_pos[idx_sample, 1])
             # Get indices of perturbed primary units (e.g. subwords)
             changed_features = self.indexer(eff_feature_groups, indices[idx_sample, curr_feature_pos + 1:])
+            # print(f"Sample#{idx_sample}: {changed_features}")
 
             is_masked[idx_sample, changed_features] = True
 
@@ -142,13 +143,15 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
                 # Only operate on logits of masked features
                 logits = res["logits"][_batch_indexer.unsqueeze(1), feats_to_predict]
                 # Make original values unsamplable
-                logits[_batch_indexer.unsqueeze(1),
-                       torch.arange(curr_mask_size).repeat((curr_batch_size, 1)),
-                       original_values] = -float("inf")
+                # logits[_batch_indexer.unsqueeze(1),
+                #        torch.arange(curr_mask_size).repeat((curr_batch_size, 1)),
+                #        original_values] = -float("inf")
 
                 preds = []
                 for pos in range(curr_mask_size):
-                    preds.append(self.generator.decoding_strategy(logits[:, pos, :]))
+                    # preds.append(self.generator.decoding_strategy(logits[:, pos, :]))
+                    probas = torch.softmax(logits[:, pos, :], dim=-1)
+                    preds.append(torch.multinomial(probas, num_samples=1))
                 preds = torch.cat(preds, dim=1).cpu()
 
                 curr_inputs[_batch_indexer.unsqueeze(1), feats_to_predict] = preds
@@ -172,7 +175,9 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
                                                attention_mask=eff_attention_mask[:curr_batch_size])
                 for pos in range(curr_mask_size):
                     logits = res["logits"][:, s_c + pos, :]
-                    preds = self.generator.decoding_strategy(logits)[:, 0].cpu()
+                    # preds = self.generator.decoding_strategy(logits)[:, 0].cpu()
+                    probas = torch.softmax(logits, dim=-1)
+                    preds = torch.multinomial(probas, num_samples=1)[:, 0].cpu()
 
                     curr_inputs[:, s_c + pos][is_feature_masked[:, pos]] = preds[is_feature_masked[:, pos]]
 
@@ -207,9 +212,10 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         assert scores_with.shape[0] == scores_without.shape[0]
         diff = scores_with - scores_without
 
-        # print("\n\nFinal: ")
+        # print("Final: ")
         # for i in range(2 * num_samples):
-        #     print(f"{scores[i][label]: .3f} {randomly_selected_label[i // 2]} {self.generator.from_internal(all_examples[[i]])}")
+        #     print(f"({scores[i][label]: .3f} {randomly_selected_label[i // 2]}) {self.generator.from_internal(all_examples[[i]])}")
+        #     print("")
         # print("-----")
 
         results = {
@@ -231,14 +237,24 @@ if __name__ == "__main__":
                                                        model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
                                                        batch_size=2,
                                                        device="cpu")
-    generator = BertForControlledMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
-                                                   model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
-                                                   control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
-                                                   batch_size=8,
-                                                   device="cpu",
-                                                   strategy="greedy",
-                                                   top_k=5,
-                                                   generate_cover=False)
+    # generator = BertForControlledMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
+    #                                                model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
+    #                                                control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
+    #                                                batch_size=2,
+    #                                                device="cpu",
+    #                                                strategy="greedy",
+    #                                                top_k=5,
+    #                                                generate_cover=False)
+    generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
+                                         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
+                                         batch_size=2,
+                                         device="cpu",
+                                         strategy="greedy")
+    # generator = BertForMaskedLMGenerator(tokenizer_name="bert-base-uncased",
+    #                                      model_name="bert-base-uncased",
+    #                                      batch_size=2,
+    #                                      device="cpu",
+    #                                      strategy="greedy")
 
     explainer = DependentIMEMaskedLMExplainer(model=model,
                                               generator=generator,
@@ -249,5 +265,6 @@ if __name__ == "__main__":
 
     seq = ("A shirtless man skateboards on a ledge.", "A man without a shirt")
     res = explainer.explain_text(seq, label=0, min_samples_per_feature=10)
+    print(f"Sum of importances: {sum(res['importance'])}")
     for curr_token, curr_imp, curr_var in zip(res["input"], res["importance"], res["var"]):
         print(f"{curr_token} = {curr_imp: .4f} (var: {curr_var: .4f})")
