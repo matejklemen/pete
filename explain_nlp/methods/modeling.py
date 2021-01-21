@@ -312,7 +312,7 @@ class InterpretableBertForSequenceClassification(InterpretableBertBase, BertAlig
         self.device = torch.device(device)
 
         self.tokenizer = BertTokenizer.from_pretrained(tokenizer_name)
-        self.model = BertForSequenceClassification.from_pretrained(model_name).to(self.device)
+        self.model = BertForSequenceClassification.from_pretrained(model_name, return_dict=True).to(self.device)
         self.model.eval()
 
     @torch.no_grad()
@@ -330,8 +330,7 @@ class InterpretableBertForSequenceClassification(InterpretableBertBase, BertAlig
         for idx_batch in range(num_total_batches):
             s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
             curr_input_ids = input_ids[s_b: e_b].to(self.device)
-            res = self.model(curr_input_ids, **{k: v[s_b: e_b].to(self.device) for k, v in aux_data.items()},
-                             return_dict=True)
+            res = self.model(curr_input_ids, **{k: v[s_b: e_b].to(self.device) for k, v in aux_data.items()})
 
             probas[s_b: e_b] = F.softmax(res["logits"], dim=-1)
 

@@ -199,24 +199,24 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         # Control signals are not necessary valid tokens inside model
         if is_controlled:
             valid_tokens[1] = False
-            all_examples = all_examples[:, valid_tokens]
 
+        all_examples = all_examples[:, valid_tokens]
         modeling_kwargs = {
             "token_type_ids": eff_token_type_ids[0: 1, valid_tokens],
             "attention_mask": eff_attention_mask[0: 1, valid_tokens]
         }
+
+        print("Final: ")
+        for i in range(2 * num_samples):
+            print(f"({randomly_selected_label[i // 2]}) {self.generator.from_internal(all_examples[[i]])}")
+            print("")
+        print("-----")
 
         scores = self.model.score(all_examples, **modeling_kwargs)
         scores_with = scores[::2]
         scores_without = scores[1::2]
         assert scores_with.shape[0] == scores_without.shape[0]
         diff = scores_with - scores_without
-
-        # print("Final: ")
-        # for i in range(2 * num_samples):
-        #     print(f"({scores[i][label]: .3f} {randomly_selected_label[i // 2]}) {self.generator.from_internal(all_examples[[i]])}")
-        #     print("")
-        # print("-----")
 
         results = {
             "diff_mean": torch.mean(diff, dim=0),
@@ -237,19 +237,19 @@ if __name__ == "__main__":
                                                        model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
                                                        batch_size=2,
                                                        device="cpu")
-    # generator = BertForControlledMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
-    #                                                model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
-    #                                                control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
-    #                                                batch_size=2,
-    #                                                device="cpu",
-    #                                                strategy="greedy",
-    #                                                top_k=5,
-    #                                                generate_cover=False)
-    generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
-                                         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
-                                         batch_size=2,
-                                         device="cpu",
-                                         strategy="greedy")
+    generator = BertForControlledMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
+                                                   model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
+                                                   control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
+                                                   batch_size=2,
+                                                   device="cpu",
+                                                   strategy="greedy",
+                                                   top_k=5,
+                                                   generate_cover=False)
+    # generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
+    #                                      model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
+    #                                      batch_size=2,
+    #                                      device="cpu",
+    #                                      strategy="greedy")
     # generator = BertForMaskedLMGenerator(tokenizer_name="bert-base-uncased",
     #                                      model_name="bert-base-uncased",
     #                                      batch_size=2,
