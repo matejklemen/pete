@@ -44,10 +44,10 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         num_features = int(len(instance[0]))
 
         # TODO: this is temporary
-        # if isinstance(idx_feature, int):
-        #     print(f"Estimating importance of '{self.model.tokenizer.decode([instance[0, idx_feature]])}'")
-        # else:
-        #     print(f"Estimating importance of '{self.model.tokenizer.decode(instance[0, idx_feature])}'")
+        if isinstance(idx_feature, int):
+            print(f"Estimating importance of '{self.model.tokenizer.decode([instance[0, idx_feature]])}'")
+        else:
+            print(f"Estimating importance of '{self.model.tokenizer.decode(instance[0, idx_feature])}'")
 
         # Custom features present
         if feature_groups is not None:
