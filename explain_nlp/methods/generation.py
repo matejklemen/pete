@@ -41,7 +41,8 @@ class SampleGenerator:
 
 class GPTLMGenerator(SampleGenerator):
     def __init__(self, tokenizer_name, model_name, batch_size=2, max_seq_len=42, device="cuda",
-                 top_p: Optional[float] = None, top_k: Optional[int] = 5, threshold: Optional[float] = 0.1):
+                 strategy: Optional[str] = "top_p", top_p: Optional[float] = None, top_k: Optional[int] = 5,
+                 threshold: Optional[float] = 0.1):
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
         self.batch_size = batch_size
@@ -56,6 +57,17 @@ class GPTLMGenerator(SampleGenerator):
             raise ValueError("Device is set to 'cuda', but no CUDA device could be found. If you want to run the model "
                              "on CPU, set device to 'cpu'")
         self.device = torch.device(device)
+
+        # TODO: beam search = "global"/"sequence_level"?
+        self.strategy_type = "token_level"
+        if strategy == "top_p":
+            assert self.top_p is not None
+            self.filtering_strategy = lambda logits: top_p_filtering(logits, top_p=self.top_p)
+        elif strategy == "top_k":
+            assert self.top_k is not None
+            self.filtering_strategy = lambda logits: top_k_filtering(logits, top_k=self.top_k)
+        else:
+            raise NotImplementedError(f"Unsupported filtering strategy: '{strategy}'")
 
         self.tokenizer = OpenAIGPTTokenizer.from_pretrained(self.tokenizer_name)
         self.generator = OpenAIGPTLMHeadModel.from_pretrained(self.model_name, return_dict=True)
@@ -199,7 +211,8 @@ class GPTControlledLMGenerator(GPTLMGenerator):
                  threshold: Optional[float] = 0.1, label_weights: List = None,
                  generate_expected_examples: Optional[bool] = False):
         super().__init__(tokenizer_name=tokenizer_name, model_name=model_name, batch_size=batch_size,
-                         max_seq_len=max_seq_len, device=device, top_p=top_p, top_k=top_k, threshold=threshold)
+                         max_seq_len=max_seq_len, device=device, top_p=top_p, top_k=top_k, threshold=threshold,
+                         strategy=strategy)
 
         assert all(curr_control in self.tokenizer.all_special_tokens for curr_control in control_labels)
         self.control_labels = torch.tensor(self.tokenizer.encode(control_labels, add_special_tokens=False))
@@ -209,17 +222,6 @@ class GPTControlledLMGenerator(GPTLMGenerator):
         if self.label_weights is None:
             self.label_weights = [1.0] * len(self.control_labels)
         self.label_weights = torch.tensor(self.label_weights)
-
-        # TODO: beam search = "global"/"sequence_level"?
-        self.strategy_type = "token_level"
-        if strategy == "top_p":
-            assert self.top_p is not None
-            self.filtering_strategy = lambda logits: top_p_filtering(logits, top_p=self.top_p)
-        elif strategy == "top_k":
-            assert self.top_k is not None
-            self.filtering_strategy = lambda logits: top_k_filtering(logits, top_k=self.top_k)
-        else:
-            raise NotImplementedError(f"Unsupported filtering strategy: '{strategy}'")
 
         #  Denotes whether to change control label at every step in order to try generating "expected example"
         self.generate_expected = generate_expected_examples
@@ -316,6 +318,8 @@ class BertForMaskedLMGenerator(SampleGenerator):
         self.generator = BertForMaskedLM.from_pretrained(self.model_name, return_dict=True).to(self.device)
         self.generator.eval()
 
+        self.special_tokens_set = set(self.tokenizer.all_special_ids)
+
     @property
     def mask_token(self) -> str:
         return self.tokenizer.mask_token
@@ -347,6 +351,44 @@ class BertForMaskedLMGenerator(SampleGenerator):
                                                           skip_special_tokens=skip_special_tokens))
 
         return decoded_data
+
+    def from_internal_precise(self, encoded_data, skip_special_tokens=True):
+        converted = {
+            "decoded_data": [],
+            "is_continuation": []
+        }
+        for idx_example in range(encoded_data.shape[0]):
+            curr_example = encoded_data[idx_example]
+            sep_tokens = torch.nonzero(curr_example == self.tokenizer.sep_token_id, as_tuple=False)
+            end = int(sep_tokens[-1])
+
+            processed_example, is_continuation = [], []
+            for el in curr_example:
+                if skip_special_tokens and el.item() in self.special_tokens_set:
+                    processed_example.append("")
+                    is_continuation.append(False)
+                    continue
+
+                str_tok = self.tokenizer.convert_ids_to_tokens(el.item())
+                if str_tok.startswith("##"):
+                    processed_example.append(str_tok[2:])
+                    is_continuation.append(True)
+                else:
+                    processed_example.append(str_tok)
+                    is_continuation.append(False)
+
+            # Multiple sequences present: [CLS] <seq1> [SEP] <seq2> [SEP] -> (<seq1>, <seq2>)
+            if sep_tokens.shape[0] == 2:
+                bnd = int(sep_tokens[0])
+                converted["decoded_data"].append((processed_example[1: bnd],
+                                                    processed_example[bnd + 1: end]))
+                converted["is_continuation"].append((is_continuation[1: bnd],
+                                                     is_continuation[bnd + 1: end]))
+            else:
+                converted["decoded_data"].append(processed_example[1: end])
+                converted["is_continuation"].append(is_continuation[1: end])
+
+        return converted
 
     def to_internal(self, text_data):
         res = self.tokenizer.batch_encode_plus(text_data, return_special_tokens_mask=True, return_tensors="pt",
