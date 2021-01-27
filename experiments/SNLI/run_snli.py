@@ -89,7 +89,8 @@ if __name__ == "__main__":
                                          return_generated_samples=args.return_generated_samples,
                                          # Method-specific options below:
                                          used_sample_data=used_sample_data, generator=generator,
-                                         num_generated_samples=args.num_generated_samples)
+                                         num_generated_samples=args.num_generated_samples,
+                                         is_aligned_vocabulary=args.is_aligned_vocabulary)
 
     # Container that wraps debugging data and a lot of repetitive appends
     method_data = MethodData(method_type=method_type, model_description=model_desc,

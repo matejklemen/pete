@@ -157,7 +157,6 @@ class InterpretableBertBase(InterpretableModel, BertAlignedTokenizationMixin):
         return decoded_data
 
     def from_internal_precise(self, encoded_data, skip_special_tokens=True):
-        # TODO: return dict, include `is_inside` for each token? (indicate which tokens are subwords)
         converted = {
             "decoded_data": [],
             "is_continuation": []

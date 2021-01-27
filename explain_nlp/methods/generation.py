@@ -15,6 +15,10 @@ from explain_nlp.methods.utils import extend_tensor
 
 
 class SampleGenerator:
+    @property
+    def offset(self):
+        return 0
+
     def mask_token(self):
         raise NotImplementedError
 
@@ -83,6 +87,11 @@ class GPTLMGenerator(SampleGenerator):
         assert self.tokenizer.bos_token_id is not None
         assert self.tokenizer.sep_token_id is not None
         assert self.tokenizer.eos_token_id is not None
+
+    @property
+    def offset(self):
+        # prediction for token at position i is stored at position (i - 1)
+        return -1
 
     @property
     def mask_token(self):
