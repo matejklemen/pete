@@ -62,8 +62,6 @@ class GPTLMGenerator(SampleGenerator):
                              "on CPU, set device to 'cpu'")
         self.device = torch.device(device)
 
-        # TODO: beam search = "global"/"sequence_level"?
-        self.strategy_type = "token_level"
         if strategy == "top_p":
             assert self.top_p is not None
             self.filtering_strategy = lambda logits: top_p_filtering(logits, top_p=self.top_p)
@@ -217,8 +215,7 @@ class GPTLMGenerator(SampleGenerator):
 class GPTControlledLMGenerator(GPTLMGenerator):
     def __init__(self, tokenizer_name, model_name, control_labels: List[str], batch_size=2, max_seq_len=42, device="cuda",
                  strategy: Optional[str] = "greedy", top_p: Optional[float] = None, top_k: Optional[int] = 5,
-                 threshold: Optional[float] = 0.1, label_weights: List = None,
-                 generate_expected_examples: Optional[bool] = False):
+                 threshold: Optional[float] = 0.1, label_weights: List = None):
         super().__init__(tokenizer_name=tokenizer_name, model_name=model_name, batch_size=batch_size,
                          max_seq_len=max_seq_len, device=device, top_p=top_p, top_k=top_k, threshold=threshold,
                          strategy=strategy)
@@ -231,12 +228,6 @@ class GPTControlledLMGenerator(GPTLMGenerator):
         if self.label_weights is None:
             self.label_weights = [1.0] * len(self.control_labels)
         self.label_weights = torch.tensor(self.label_weights)
-
-        #  Denotes whether to change control label at every step in order to try generating "expected example"
-        self.generate_expected = generate_expected_examples
-        if self.generate_expected:  # TODO
-            raise NotImplementedError("'generate_expected_examples' is currently unimplemented for GPT "
-                                      "controlled language modeling")
 
     @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor, num_samples: int, label: int,
@@ -299,9 +290,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
         self.batch_size = batch_size
         self.max_seq_len = max_seq_len
 
-        self.generate_cover = generate_cover
         self.strategy = strategy
-        assert not (self.generate_cover and self.strategy == "greedy")
         self.top_p = top_p
         self.top_k = top_k
         self.threshold = threshold
@@ -315,6 +304,8 @@ class BertForMaskedLMGenerator(SampleGenerator):
             self.filtering_strategy = lambda logits: top_k_filtering(logits, top_k=self.top_k)
         else:
             raise NotImplementedError(f"Unsupported filtering strategy: '{strategy}'")
+
+        self.generate_cover = generate_cover
 
         assert self.batch_size > 1 and self.batch_size % 2 == 0
         assert device in ["cpu", "cuda"]
@@ -424,7 +415,7 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
     def __init__(self, tokenizer_name, model_name, control_labels: List[str], batch_size=8, max_seq_len=64, device="cuda",
                  strategy: Optional[str] = "greedy", top_p: Optional[float] = None, top_k: Optional[int] = 5,
                  threshold: Optional[float] = 0.1, label_weights: List = None, unique_dropout: Optional[float] = 0.0,
-                 generate_expected_examples: Optional[bool] = False, generate_cover: Optional[bool] = False):
+                 generate_cover: Optional[bool] = False):
         super().__init__(tokenizer_name=tokenizer_name, model_name=model_name,
                          batch_size=batch_size, max_seq_len=max_seq_len, device=device,
                          strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold,
@@ -440,12 +431,6 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
             self.label_weights = [1.0] * len(self.control_labels)
         self.label_weights = torch.tensor(self.label_weights)
         self.label_weights /= torch.sum(self.label_weights)
-
-        # TODO: beam search = "global"/"sequence_level"?
-        self.strategy_type = "token_level"
-
-        if generate_expected_examples:
-            warnings.warn("'generate_expected_examples' is deprecated for BERT controlled MLM")
 
     @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
