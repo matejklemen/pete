@@ -1,22 +1,13 @@
-import os
-import sys
-from typing import Optional, Union, Tuple, List
+from typing import Optional, Union, List
 
 import torch
-import logging
 
-from explain_nlp.methods.generation import BertForMaskedLMGenerator, BertForControlledMaskedLMGenerator, \
-    TrigramForMaskedLMGenerator, GPTLMGenerator
+from explain_nlp.methods.generation import BertForMaskedLMGenerator, GPTLMGenerator
 from explain_nlp.methods.ime import IMEExplainer
 from explain_nlp.methods.modeling import InterpretableModel, InterpretableBertForSequenceClassification
 from explain_nlp.methods.utils import sample_permutations, extend_tensor
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[logging.StreamHandler(sys.stdout)]
-)
 
 
 class DependentIMEMaskedLMExplainer(IMEExplainer):
