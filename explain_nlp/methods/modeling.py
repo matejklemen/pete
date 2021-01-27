@@ -5,8 +5,6 @@ import torch.nn.functional as F
 from transformers import BertTokenizer, BertForSequenceClassification, BertForMaskedLM
 
 
-# TODO: mask, mask_token_id properties
-# TODO: mask token in generator is not necessarily same as mask token in model (e.g. <MASK> vs [MASK])
 class InterpretableModel:
     def from_internal(self, encoded_data: torch.Tensor,
                       skip_special_tokens: bool = True,
@@ -517,10 +515,3 @@ if __name__ == "__main__":
 
     print(encoded)
     print(model.convert_ids_to_tokens(encoded["input_ids"]))
-    model.set_token_scorer(0)
-    probas = model.score(encoded["input_ids"], **encoded["aux_data"])
-    print(probas)
-
-    model.set_token_scorer(3)
-    probas = model.score(encoded["input_ids"], **encoded["aux_data"])
-    print(probas)
