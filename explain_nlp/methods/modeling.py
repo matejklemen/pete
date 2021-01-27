@@ -35,6 +35,14 @@ class InterpretableModel:
         """
         raise NotImplementedError
 
+    def mask_token(self) -> str:
+        """ String form of token that is used to indicate that a certain unit is to be perturbed. """
+        return "[MASK]"
+
+    def mask_token_id(self) -> int:
+        """ Integer form of token that is used to indicate that a certain unit is to be perturbed"""
+        return -1
+
     @property
     def special_token_ids(self):
         raise NotImplementedError
@@ -135,6 +143,14 @@ class BertAlignedTokenizationMixin:
 
 class InterpretableBertBase(InterpretableModel, BertAlignedTokenizationMixin):
     tokenizer: BertTokenizer
+
+    @property
+    def mask_token(self):
+        return self.tokenizer.mask_token
+
+    @property
+    def mask_token_id(self):
+        return self.tokenizer.mask_token_id
 
     @property
     def special_token_ids(self):
