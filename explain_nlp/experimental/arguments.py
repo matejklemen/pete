@@ -1,8 +1,8 @@
 import argparse
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--experiment_type", type=str, choices=["accurate_importances", "required_samples"],
-                    default="required_samples")
+parser.add_argument("--experiment_type", type=str, default="required_samples",
+                    choices=["accurate_importances", "required_samples"])
 parser.add_argument("--method", type=str, default="ime_dependent_mlm",
                     choices=["ime", "sequential_ime", "whole_word_ime", "ime_mlm", "ime_dependent_mlm"])
 parser.add_argument("--custom_features", type=str, default=None,
@@ -22,8 +22,9 @@ parser.add_argument("--model_max_seq_len", type=int, default=41)
 parser.add_argument("--model_max_words", type=int, default=39)
 parser.add_argument("--model_batch_size", type=int, default=2)
 
-parser.add_argument("--generator_type", type=str, default="gpt_lm")
-parser.add_argument("--generator_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_lm_maxseqlen42",
+parser.add_argument("--generator_type", type=str, default="gpt_clm",
+                    choices=["bert_mlm", "bert_cmlm", "gpt_lm", "gpt_clm"])
+parser.add_argument("--generator_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
                     help="Path or handle of model to be used as a language modeling generator")
 parser.add_argument("--generator_batch_size", type=int, default=8)
 parser.add_argument("--generator_max_seq_len", type=int, default=42)
@@ -32,19 +33,18 @@ parser.add_argument("--generate_cover", action="store_true", default=False,
                     help="Take all relevant tokens instead of sampling one token from renormalized distributions")
 parser.add_argument("--is_aligned_vocabulary", action="store_true")
 
-# Experimental (only in Bert MLM generator) for now
-parser.add_argument("--strategy", type=str, choices=["top_k", "top_p", "threshold", "greedy"], default="top_p")
+parser.add_argument("--strategy", type=str, default="top_p",
+                    choices=["top_k", "top_p", "threshold", "greedy"])
 parser.add_argument("--top_p", type=float, default=0.999)
 parser.add_argument("--top_k", type=int, default=3)
 parser.add_argument("--threshold", type=float, default=0.1)
 parser.add_argument("--unique_dropout", type=float, default=0.0)
 
-parser.add_argument("--experiment_dir", type=str, default="debug")
-parser.add_argument("--save_every_n_examples", type=int, default=1,
-                    help="Save experiment data every N examples in order to avoid losing data on longer computations")
-
 parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU")
 parser.add_argument("--verbose", action="store_true")
 
+parser.add_argument("--experiment_dir", type=str, default="debug")
+parser.add_argument("--save_every_n_examples", type=int, default=1,
+                    help="Save experiment data every N examples in order to avoid losing data on longer computations")
 parser.add_argument("--start_from", type=int, default=None, help="From which example onwards to do computation")
 parser.add_argument("--until", type=int, default=None, help="Until which example to do computation")
