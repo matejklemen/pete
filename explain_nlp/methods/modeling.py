@@ -35,11 +35,11 @@ class InterpretableModel:
 
     def mask_token(self) -> str:
         """ String form of token that is used to indicate that a certain unit is to be perturbed. """
-        return "[MASK]"
+        raise NotImplementedError
 
     def mask_token_id(self) -> int:
         """ Integer form of token that is used to indicate that a certain unit is to be perturbed"""
-        return -1
+        raise NotImplementedError
 
     @property
     def special_token_ids(self):
@@ -152,21 +152,24 @@ class InterpretableBertBase(InterpretableModel, BertAlignedTokenizationMixin):
 
     @property
     def special_token_ids(self):
-        return self.tokenizer.all_special_ids
+        return set(self.tokenizer.all_special_ids)
 
     def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False):
         decoded_data = []
         for idx_example in range(encoded_data.shape[0]):
             sep_tokens = torch.nonzero(encoded_data[idx_example] == self.tokenizer.sep_token_id, as_tuple=False)
+            end = int(sep_tokens[-1])
 
+            if take_as_single_sequence:
+                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example], skip_special_tokens=skip_special_tokens))
             # Multiple sequences present: [CLS] <seq1> [SEP] <seq2> [SEP] -> (<seq1>, <seq2>)
-            if sep_tokens.shape[0] > 1 and not take_as_single_sequence:
+            elif sep_tokens.shape[0] > 1:
                 bnd = int(sep_tokens[0])
-                seq1 = self.tokenizer.decode(encoded_data[idx_example, :bnd], skip_special_tokens=skip_special_tokens)
-                seq2 = self.tokenizer.decode(encoded_data[idx_example, bnd + 1:], skip_special_tokens=skip_special_tokens)
+                seq1 = self.tokenizer.decode(encoded_data[idx_example, 1: bnd], skip_special_tokens=skip_special_tokens)
+                seq2 = self.tokenizer.decode(encoded_data[idx_example, bnd + 1: end], skip_special_tokens=skip_special_tokens)
                 decoded_data.append((seq1, seq2))
             else:
-                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example], skip_special_tokens=skip_special_tokens))
+                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example, :end], skip_special_tokens=skip_special_tokens))
 
         return decoded_data
 
@@ -182,7 +185,7 @@ class InterpretableBertBase(InterpretableModel, BertAlignedTokenizationMixin):
 
             processed_example, is_continuation = [], []
             for el in curr_example:
-                if skip_special_tokens and el.item() in self.special_tokens_set:
+                if skip_special_tokens and el.item() in self.special_token_ids:
                     processed_example.append("")
                     is_continuation.append(False)
                     continue
@@ -196,7 +199,7 @@ class InterpretableBertBase(InterpretableModel, BertAlignedTokenizationMixin):
                     is_continuation.append(False)
 
             # Multiple sequences present: [CLS] <seq1> [SEP] <seq2> [SEP] -> (<seq1>, <seq2>)
-            if sep_tokens.shape[0] == 2:
+            if sep_tokens.shape[0] >= 2:
                 bnd = int(sep_tokens[0])
                 converted["decoded_data"].append((processed_example[1: bnd],
                                                     processed_example[bnd + 1: end]))

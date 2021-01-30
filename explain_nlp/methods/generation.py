@@ -284,7 +284,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
 
     def __init__(self, tokenizer_name, model_name, batch_size=8, max_seq_len=64, device="cuda",
                  strategy: Optional[str] = "top_k", top_p: Optional[float] = None, top_k: Optional[int] = 5,
-                 threshold: Optional[float] = 0.1, generate_cover: Optional[bool] = False):
+                 threshold: Optional[float] = 0.1, generate_cover: Optional[bool] = False, monte_carlo_dropout=False):
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
         self.batch_size = batch_size
@@ -316,7 +316,10 @@ class BertForMaskedLMGenerator(SampleGenerator):
 
         self.tokenizer = BertTokenizer.from_pretrained(self.tokenizer_name)
         self.generator = BertForMaskedLM.from_pretrained(self.model_name, return_dict=True).to(self.device)
-        self.generator.eval()
+        if monte_carlo_dropout:
+            self.generator.train()
+        else:
+            self.generator.eval()
 
         self.special_tokens_set = set(self.tokenizer.all_special_ids)
 
@@ -335,11 +338,11 @@ class BertForMaskedLMGenerator(SampleGenerator):
         decoded_data = []
         for idx_example in range(encoded_data.shape[0]):
             curr_example = encoded_data[idx_example]
-            sep_tokens = torch.nonzero(curr_example == self.tokenizer.sep_token_id, as_tuple=False)
+            sep_tokens = torch.nonzero(curr_example == self.tokenizer.sep_token_id, as_tuple=False)  # maybe flatten?
             end = int(sep_tokens[-1])
 
             # Multiple sequences present: [CLS] <seq1> [SEP] <seq2> [SEP] -> (<seq1>, <seq2>)
-            if sep_tokens.shape[0] == 2:
+            if sep_tokens.shape[0] >= 2:
                 bnd = int(sep_tokens[0])
                 seq1 = self.tokenizer.decode(encoded_data[idx_example, 1: bnd],
                                              skip_special_tokens=skip_special_tokens)
@@ -378,7 +381,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
                     is_continuation.append(False)
 
             # Multiple sequences present: [CLS] <seq1> [SEP] <seq2> [SEP] -> (<seq1>, <seq2>)
-            if sep_tokens.shape[0] == 2:
+            if sep_tokens.shape[0] >= 2:
                 bnd = int(sep_tokens[0])
                 converted["decoded_data"].append((processed_example[1: bnd],
                                                     processed_example[bnd + 1: end]))
@@ -751,13 +754,13 @@ if __name__ == "__main__":
     #                                                top_k=3,
     #                                                generate_cover=True)
 
-    generator = GPTControlledLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
-                                         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
-                                         control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
-                                         batch_size=2,
-                                         device="cpu",
-                                         strategy="top_p",
-                                         top_p=0.9)
+    # generator = GPTControlledLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
+    #                                      model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
+    #                                      control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
+    #                                      batch_size=2,
+    #                                      device="cpu",
+    #                                      strategy="top_p",
+    #                                      top_p=0.9)
 
     # generator = GPTLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_lm_maxseqlen42",
     #                            model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_lm_maxseqlen42",
@@ -765,10 +768,17 @@ if __name__ == "__main__":
     #                            max_seq_len=42,
     #                            device="cpu")
 
-    seq = ("A patient is being worked on by doctors and nurses", "A man is sleeping.")
-    label = 0  # "entailment"
-    encoded = generator.to_internal([seq])
+    generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
+                                         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
+                                         batch_size=10,
+                                         device="cpu",
+                                         strategy="top_p",
+                                         top_p=0.999,
+                                         monte_carlo_dropout=False)
 
+    ex = ("A shirtless man skateboards on a ledge.", "A man without a shirt")
+    label = 0  # "entailment"
+    encoded = generator.to_internal([ex])
     generated = generator.generate(encoded["input_ids"], label=label, perturbable_mask=encoded["perturbable_mask"],
                                    num_samples=10, **encoded["aux_data"])["input_ids"]
 
