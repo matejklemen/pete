@@ -2,10 +2,11 @@ from typing import Optional, Union, List
 
 import torch
 
-from explain_nlp.methods.generation import BertForMaskedLMGenerator, GPTLMGenerator
+from explain_nlp.methods.generation import BertForMaskedLMGenerator, BertForControlledMaskedLMGenerator, \
+    GPTLMGenerator, GPTControlledLMGenerator
 from explain_nlp.methods.ime import IMEExplainer
 from explain_nlp.methods.modeling import InterpretableModel, InterpretableBertForSequenceClassification
-from explain_nlp.methods.utils import sample_permutations, extend_tensor
+from explain_nlp.methods.utils import sample_permutations
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -108,6 +109,10 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         if self.is_aligned_vocabulary:
             instance_str = self.model.from_internal(instance)
             instance_generator = self.generator.to_internal(instance_str)
+
+            # If generator has a longer max seq. len than model, mark the diff as "unmasked" (not to be generated)
+            length_diff = self.generator.max_seq_len - self.model.max_seq_len
+            is_masked = torch.hstack((is_masked, torch.zeros((num_samples, length_diff), dtype=torch.bool)))
         else:
             # Find out which tokens are masked after converting to generator representation
             gen_is_masked = []
@@ -125,102 +130,11 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
                 if isinstance(instance_tokens, tuple) else " ".join(instance_tokens)
             instance_generator = self.generator.to_internal([instance_str])
 
-        # ---------------------------------------------
-        # -- GENERATOR-SPECIFIC LOGIC (TO BE MOVED) ---
-        # ---------------------------------------------
-        num_batches = (num_samples + self.generator.batch_size - 1) // self.generator.batch_size
-
-        eff_input_ids = instance_generator["input_ids"].repeat((num_samples, 1))
-        eff_aux_data = instance_generator["aux_data"]
-        eff_is_masked = is_masked  # done this way just so I remember the expected inputs
-
-        is_controlled = all(curr_selected is not None for curr_selected in randomly_selected_label)
-        if is_controlled:
-            # Make room for control label at start of sequence (at pos. 1)
-            eff_input_ids = extend_tensor(eff_input_ids)
-            eff_aux_data = {k: extend_tensor(v) for k, v in eff_aux_data.items()}
-
-            eff_is_masked = extend_tensor(eff_is_masked)
-            eff_is_masked[:, 1] = False
-
-            encoded_control_labels = self.generator.tokenizer.encode(randomly_selected_label, add_special_tokens=False)
-            eff_input_ids[:, 1] = torch.tensor(encoded_control_labels)
-            if "attention_mask" in eff_aux_data:
-                eff_aux_data["attention_mask"][:, 1] = 1
-
-            gen_idx_feature += 1
-
-        original_input_ids = eff_input_ids[0].clone()
-        eff_aux_data = {k: v.repeat((self.generator.batch_size, 1)).to(self.generator.device)
-                        for k, v in eff_aux_data.items()}
-
-        mask_size = 1
-        num_total_chunks = (num_features + mask_size - 1) // mask_size
-
-        for idx_batch in range(num_batches):
-            s_b, e_b = idx_batch * self.generator.batch_size, (idx_batch + 1) * self.generator.batch_size
-            curr_inputs = eff_input_ids[s_b: e_b]
-            curr_batch_size = curr_inputs.shape[0]
-            _batch_indexer = torch.arange(curr_batch_size)
-
-            # Second stage
-            curr_masked = eff_is_masked[s_b: e_b]
-            for idx_masked_chunk in range(num_total_chunks):
-                s_c, e_c = idx_masked_chunk * mask_size, (idx_masked_chunk + 1) * mask_size
-                is_feature_masked = curr_masked[:, s_c: e_c]  # [curr_batch_size, mask_size]
-                curr_mask_size = is_feature_masked.shape[1]
-
-                if not torch.any(is_feature_masked):
-                    continue
-
-                curr_inputs[:, s_c: e_c][is_feature_masked] = self.generator.tokenizer.mask_token_id
-                # print("Before: ")
-                # for i in range(curr_batch_size):
-                #     print(self.generator.tokenizer.decode(curr_inputs[i]))
-
-                curr_aux_data = {k: v[: curr_batch_size] for k, v in eff_aux_data.items()}
-
-                # token_type_ids=eff_token_type_ids[:curr_batch_size],
-                # attention_mask=eff_attention_mask[:curr_batch_size])
-                res = self.generator.generator(input_ids=curr_inputs.to(self.generator.device),
-                                               **curr_aux_data)
-                for pos in range(curr_mask_size):
-                    logits = res["logits"][:, s_c + pos + self.generator.offset, :]
-                    logits = self.generator.filtering_strategy(logits)
-                    probas = torch.softmax(logits, dim=-1)
-
-                    # print(f"Position #{s_c + pos}:")
-                    # topv, topi = torch.topk(probas, k=5)
-                    # for p, tok in zip(topv, topi):
-                    #     for _i in range(p.shape[0]):
-                    #         print(f"{self.generator.tokenizer.decode(tok[[_i]])} = {p[_i]: .8f}")
-                    #
-                    #     print("")
-
-                    preds = torch.multinomial(probas, num_samples=1)[:, 0].cpu()
-
-                    curr_inputs[:, s_c + pos][is_feature_masked[:, pos]] = preds[is_feature_masked[:, pos]]
-
-                # print("After:")
-                # for i in range(curr_batch_size):
-                #     print(self.generator.tokenizer.decode(curr_inputs[i]))
-                # print("")
-
-        all_examples = eff_input_ids.repeat((2, 1))
-        # With original feature
-        all_examples[::2] = eff_input_ids
-        all_examples[::2, gen_idx_feature] = original_input_ids[gen_idx_feature]
-
-        # Without
-        all_examples[1::2] = eff_input_ids
-
-        valid_tokens = torch.ones(all_examples.shape[1], dtype=torch.bool)
-        # Control signals are not necessary valid tokens inside model
-        if is_controlled:
-            valid_tokens[1] = False
-
-        all_examples = all_examples[:, valid_tokens]
-        # ---------------------------------------------
+        all_examples = self.generator.generate_masked_samples(instance_generator["input_ids"],
+                                                              generation_mask=is_masked,
+                                                              idx_observed_feature=gen_idx_feature,
+                                                              control_labels=randomly_selected_label,
+                                                              **instance_generator["aux_data"])
 
         text_examples = self.generator.from_internal(all_examples)
         model_examples = self.model.to_internal(text_examples)
@@ -277,19 +191,26 @@ if __name__ == "__main__":
     #                            max_seq_len=42,
     #                            device="cpu",
     #                            strategy="top_p",
-    #                            top_p=0.999)
+    #                            top_p=0.99)
+    generator = GPTControlledLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
+                                         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
+                                         control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
+                                         batch_size=2,
+                                         device="cpu",
+                                         strategy="top_p",
+                                         top_p=0.99)
     # generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm-ls01",
     #                                      model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm-ls01",
     #                                      batch_size=2,
     #                                      device="cpu",
     #                                      strategy="top_p",
     #                                      top_p=0.99)
-    generator = BertForMaskedLMGenerator(tokenizer_name="bert-base-uncased",
-                                         model_name="bert-base-uncased",
-                                         batch_size=2,
-                                         device="cpu",
-                                         strategy="top_p",
-                                         top_p=0.999)
+    # generator = BertForMaskedLMGenerator(tokenizer_name="bert-base-uncased",
+    #                                      model_name="bert-base-uncased",
+    #                                      batch_size=2,
+    #                                      device="cpu",
+    #                                      strategy="top_p",
+    #                                      top_p=0.999)
 
     # generator = TrigramForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/3gramlm-snli-base-uncased",
     #                                         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/3gramlm-snli-base-uncased",
