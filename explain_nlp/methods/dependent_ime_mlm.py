@@ -107,7 +107,7 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
                                         as_tuple=False).flatten()
 
         if self.is_aligned_vocabulary:
-            instance_str = self.model.from_internal(instance)
+            instance_str = self.model.from_internal(instance, **modeling_kwargs)
             instance_generator = self.generator.to_internal(instance_str)
 
             # If generator has a longer max seq. len than model, mark the diff as "unmasked" (not to be generated)
@@ -138,11 +138,6 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
 
         text_examples = self.generator.from_internal(all_examples)
         model_examples = self.model.to_internal(text_examples)
-
-        # print("Final: ")
-        # for i in range(2 * num_samples):
-        #     print(f"({randomly_selected_label[i // 2]}) {self.generator.from_internal(all_examples[[i]])}")
-        # print("-----")
 
         scores = self.model.score(model_examples["input_ids"], **model_examples["aux_data"])
         scores_with = scores[::2]
