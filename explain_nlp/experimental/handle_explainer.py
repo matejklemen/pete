@@ -1,5 +1,6 @@
 from explain_nlp.experimental.core import MethodType
 from explain_nlp.methods.dependent_ime_mlm import DependentIMEMaskedLMExplainer
+from explain_nlp.methods.hybrid import HybridIMEExplainer
 from explain_nlp.methods.ime import IMEExplainer, SequentialIMEExplainer, WholeWordIMEExplainer
 from explain_nlp.methods.ime_mlm import IMEMaskedLMExplainer
 
@@ -37,6 +38,14 @@ def load_explainer(method: str, model, confidence_interval, max_abs_error,
                                                return_scores=return_model_scores, return_num_samples=True,
                                                return_samples=return_generated_samples, return_variance=True,
                                                is_aligned_vocabulary=kwargs["is_aligned_vocabulary"])
+    elif method == "ime_hybrid":
+        method_type = MethodType.DEPENDENT_IME_MLM
+        method = HybridIMEExplainer(model=model, generator=kwargs["generator"],
+                                    sample_data=kwargs["used_sample_data"], data_weights=kwargs["data_weights"],
+                                    confidence_interval=confidence_interval, max_abs_error=max_abs_error,
+                                    return_scores=return_model_scores, return_num_samples=True,
+                                    return_samples=return_generated_samples, return_variance=True,
+                                    is_aligned_vocabulary=kwargs["is_aligned_vocabulary"])
     else:
         raise NotImplementedError(f"Unsupported method: '{method}'")
 

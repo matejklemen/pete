@@ -10,6 +10,7 @@ from explain_nlp.experimental.data import load_nli, TransformerSeqPairDataset, L
 from explain_nlp.experimental.handle_explainer import load_explainer
 from explain_nlp.experimental.handle_features import handle_features
 from explain_nlp.experimental.handle_generator import load_generator
+from explain_nlp.methods.hybrid import create_uniform_weights
 from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
 from explain_nlp.methods.utils import estimate_feature_samples
 from explain_nlp.visualizations.highlight import highlight_plot
@@ -60,13 +61,15 @@ if __name__ == "__main__":
 
     used_data = {"test_path": args.test_path}
     used_sample_data = None
-    if args.method in {"ime", "sequential_ime", "whole_word_ime"}:
+    data_weights = None
+    if args.method in {"ime", "sequential_ime", "whole_word_ime", "ime_hybrid"}:
         used_data["train_path"] = args.train_path
         df_train = load_nli(args.train_path).sample(frac=1.0).reset_index(drop=True)
         train_set = TransformerSeqPairDataset.build(df_train["sentence1"].values, df_train["sentence2"].values,
                                                     labels=df_train["gold_label"].apply(
                                                         lambda label_str: LABEL_TO_IDX["snli"][label_str]).values,
                                                     tokenizer=model.tokenizer, max_seq_len=args.model_max_seq_len)
+        data_weights = create_uniform_weights(train_set.input_ids, train_set.special_tokens_masks)
 
         used_sample_data = train_set.input_ids
         if args.method == "whole_word_ime":
@@ -90,7 +93,8 @@ if __name__ == "__main__":
                                          # Method-specific options below:
                                          used_sample_data=used_sample_data, generator=generator,
                                          num_generated_samples=args.num_generated_samples,
-                                         is_aligned_vocabulary=args.is_aligned_vocabulary)
+                                         is_aligned_vocabulary=args.is_aligned_vocabulary,
+                                         data_weights=data_weights)
 
     # Container that wraps debugging data and a lot of repetitive appends
     method_data = MethodData(method_type=method_type, model_description=model_desc,
