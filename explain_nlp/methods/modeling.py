@@ -8,7 +8,8 @@ from transformers import BertTokenizer, BertForSequenceClassification, BertForMa
 class InterpretableModel:
     def from_internal(self, encoded_data: torch.Tensor,
                       skip_special_tokens: bool = True,
-                      take_as_single_sequence: bool = False) -> List[Union[str, Tuple[str, ...]]]:
+                      take_as_single_sequence: bool = False,
+                      **kwargs) -> List[Union[str, Tuple[str, ...]]]:
         """ Convert from internal model representation to text."""
         raise NotImplementedError
 
@@ -154,22 +155,47 @@ class InterpretableBertBase(InterpretableModel, BertAlignedTokenizationMixin):
     def special_token_ids(self):
         return set(self.tokenizer.all_special_ids)
 
-    def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False):
-        decoded_data = []
-        for idx_example in range(encoded_data.shape[0]):
-            sep_tokens = torch.nonzero(encoded_data[idx_example] == self.tokenizer.sep_token_id, as_tuple=False)
-            end = int(sep_tokens[-1])
+    def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False,
+                      **kwargs):
+        num_ex = encoded_data.shape[0]
+        token_type_fn, attention_fn = None, None
+        if not take_as_single_sequence:
+            token_type_ids = kwargs["token_type_ids"]
+            attention_mask = kwargs["attention_mask"]
+            num_aux = token_type_ids.shape[0]
 
+            if num_aux == 1:
+                # Assume every sequence has the same attention_mask and token_type_ids
+                token_type_fn = lambda idx_example: token_type_ids[0]
+                attention_fn = lambda idx_example: attention_mask[0]
+            elif num_aux == num_ex:
+                token_type_fn = lambda idx_example: token_type_ids[idx_example]
+                attention_fn = lambda idx_example: attention_mask[idx_example]
+            else:
+                raise ValueError(f"Auxiliary data ({num_aux} ex.) can't be broadcasted to input shape ({num_ex} ex.). "
+                                 f"Either provide a single tensor or one tensor per instance")
+
+        decoded_data = []
+        for idx_example in range(num_ex):
             if take_as_single_sequence:
                 decoded_data.append(self.tokenizer.decode(encoded_data[idx_example], skip_special_tokens=skip_special_tokens))
-            # Multiple sequences present: [CLS] <seq1> [SEP] <seq2> [SEP] -> (<seq1>, <seq2>)
-            elif sep_tokens.shape[0] > 1:
-                bnd = int(sep_tokens[0])
-                seq1 = self.tokenizer.decode(encoded_data[idx_example, 1: bnd], skip_special_tokens=skip_special_tokens)
-                seq2 = self.tokenizer.decode(encoded_data[idx_example, bnd + 1: end], skip_special_tokens=skip_special_tokens)
-                decoded_data.append((seq1, seq2))
             else:
-                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example, :end], skip_special_tokens=skip_special_tokens))
+                curr_attendable = attention_fn(idx_example).bool()
+                curr_token_types = token_type_fn(idx_example)[curr_attendable]
+                curr_input_ids = encoded_data[idx_example][curr_attendable]
+
+                seq_ids, tokens_in_seq = torch.unique(curr_token_types, return_counts=True)
+                bins = torch.cumsum(tokens_in_seq, dim=0)
+                if seq_ids.shape[0] == 1:
+                    decoded_data.append(self.tokenizer.decode(curr_input_ids[0: tokens_in_seq[0]],
+                                                              skip_special_tokens=skip_special_tokens))
+                else:
+                    bins = [0] + bins.tolist()
+                    multiple_sequences = []
+                    for s, e in zip(bins, bins[1:]):
+                        multiple_sequences.append(self.tokenizer.decode(curr_input_ids[s: e],
+                                                                        skip_special_tokens=skip_special_tokens))
+                    decoded_data.append(tuple(multiple_sequences))
 
         return decoded_data
 
@@ -465,7 +491,7 @@ class DummySentiment(InterpretableModel):
         return [self.tok2id["<PAD>"], self.tok2id["<UNK>"]]
 
     def from_internal(self, encoded_data: torch.Tensor, skip_special_tokens: bool = True,
-                      take_as_single_sequence: bool = False) -> List[str]:
+                      take_as_single_sequence: bool = False, **kwargs) -> List[str]:
         return [" ".join([self.id2tok[i] for i in sequence]) for sequence in encoded_data.tolist()]
 
     def to_internal(self, text_data: List[str], pretokenized_text_data=None) -> Dict:
@@ -497,10 +523,10 @@ class DummySentiment(InterpretableModel):
 
 if __name__ == "__main__":
     model = InterpretableBertForSequenceClassification(
-        tokenizer_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased",
-        model_name="/home/matej/Documents/embeddia/interpretability/ime-lm/resources/weights/snli_bert_uncased",
+        tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
+        model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
         batch_size=4,
-        max_seq_len=10,
+        max_seq_len=32,
         device="cpu"
     )
 
@@ -516,5 +542,6 @@ if __name__ == "__main__":
             (["Unbelieveable", ",", "Jeff"], ["I", "do", "n't", "know", ",", "Sammy"])
         ])
 
-    print(encoded)
-    print(model.convert_ids_to_tokens(encoded["input_ids"]))
+    print(model.from_internal(encoded["input_ids"],
+                              token_type_ids=encoded["aux_data"]["token_type_ids"],
+                              attention_mask=encoded["aux_data"]["attention_mask"]))
