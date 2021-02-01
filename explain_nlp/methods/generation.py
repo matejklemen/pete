@@ -519,9 +519,13 @@ class BertForMaskedLMGenerator(SampleGenerator):
         num_samples = generation_mask.shape[0]
         num_features = input_ids.shape[1]
 
+        if input_ids.shape[0] != 1 and input_ids.shape[0] != num_samples:
+            raise ValueError(f"input_ids ({input_ids.shape[0]} examples) can't be broadcasted to shape of "
+                             f"generation mask ({generation_mask.shape[0]} examples)")
+
         original_input_values = input_ids[0].clone()
         eff_input_ids = input_ids
-        if input_ids.shape[0] != num_samples:
+        if input_ids.shape[0] == 1:
             eff_input_ids = input_ids.repeat((num_samples, 1))
 
         # Note: currently assuming generation additional data is same for all samples
@@ -559,7 +563,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
                     probas = F.softmax(curr_logits, dim=-1)
                     preds = torch.multinomial(probas, num_samples=1)[:, 0].cpu()
 
-                    curr_inputs[:, s_c + pos][is_feature_masked[:, pos]] = preds[is_feature_masked[:, pos]]
+                    curr_inputs[is_feature_masked[:, pos], s_c + pos] = preds[is_feature_masked[:, pos]]
 
         # Examples intertwined: one instance with fixed original feature and one with randomized original feature
         all_examples = eff_input_ids.repeat((2, 1))
