@@ -175,11 +175,14 @@ class HybridIMEExplainer(IMEExplainer):
         instance_str = self.generator.from_internal(all_examples)
         instance_model = self.model.to_internal(instance_str)
 
-        scores = self.model.score(instance_model["input_ids"], **modeling_kwargs)  #model_examples["input_ids"], **model_examples["aux_data"])
+        scores = self.model.score(instance_model["input_ids"], **modeling_kwargs)
         scores_with = scores[::2]
         scores_without = scores[1::2]
         assert scores_with.shape[0] == scores_without.shape[0]
         diff = scores_with - scores_without
+
+        # for i in range(scores.shape[0]):
+        #     print(f"({scores[i, label]: .4f}) {self.model.tokenizer.convert_ids_to_tokens(instance_model['input_ids'][i])}")
 
         results = {
             "diff_mean": torch.mean(diff, dim=0),
@@ -187,10 +190,10 @@ class HybridIMEExplainer(IMEExplainer):
         }
 
         if self.return_samples:
-            results["samples"] = all_examples
+            results["samples"] = all_examples.tolist()
 
         if self.return_scores:
-            results["scores"] = scores
+            results["scores"] = scores.tolist()
 
         return results
 
@@ -211,7 +214,7 @@ if __name__ == "__main__":
                                          max_seq_len=41,
                                          device="cpu",
                                          strategy="top_p",
-                                         top_p=0.999,
+                                         top_p=0.05,
                                          monte_carlo_dropout=False)
 
     df_data = load_nli("/home/matej/Documents/data/snli/snli_1.0_dev.txt")

@@ -151,10 +151,10 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         }
 
         if self.return_samples:
-            results["samples"] = all_examples
+            results["samples"] = all_examples.tolist()
 
         if self.return_scores:
-            results["scores"] = scores
+            results["scores"] = scores.tolist()
 
         return results
 
@@ -187,19 +187,25 @@ if __name__ == "__main__":
     #                            device="cpu",
     #                            strategy="top_p",
     #                            top_p=0.99)
-    generator = GPTControlledLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
-                                         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
-                                         control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
-                                         batch_size=2,
-                                         device="cpu",
-                                         strategy="top_p",
-                                         top_p=0.99)
+    # generator = GPTControlledLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
+    #                                      model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
+    #                                      control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
+    #                                      batch_size=2,
+    #                                      device="cpu",
+    #                                      strategy="top_p",
+    #                                      top_p=0.99)
     # generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm-ls01",
     #                                      model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm-ls01",
     #                                      batch_size=2,
     #                                      device="cpu",
     #                                      strategy="top_p",
     #                                      top_p=0.99)
+    generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm-ls01-longer-training",
+                                         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm-ls01-longer-training",
+                                         batch_size=10,
+                                         device="cpu",
+                                         strategy="top_p",
+                                         top_p=0.05)
     # generator = BertForMaskedLMGenerator(tokenizer_name="bert-base-uncased",
     #                                      model_name="bert-base-uncased",
     #                                      batch_size=2,

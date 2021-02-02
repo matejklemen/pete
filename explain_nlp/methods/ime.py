@@ -422,10 +422,10 @@ class SequentialIMEExplainer(IMEExplainer):
         }
 
         if self.return_samples:
-            results["samples"] = samples
+            results["samples"] = samples.tolist()
 
         if self.return_scores:
-            results["scores"] = scores
+            results["scores"] = scores.tolist()
 
         return results
 
@@ -523,53 +523,6 @@ class WholeWordIMEExplainer(IMEExplainer):
                            min_samples_per_feature=min_samples_per_feature, max_samples=max_samples,
                            **model_instance["aux_data"])
         res["input"] = model_instance["words"][0]
-
-        return res
-
-
-class GreedyBaselineIMEExplainer:
-    def __init__(self, model: InterpretableModel, return_samples: Optional[bool] = False,
-                 return_scores: Optional[bool] = False):
-        self.model = model
-        self.return_samples = return_samples
-        self.return_scores = return_scores
-
-    def explain_text(self, text_data: Union[str, Tuple[str, ...]], label: Optional[int] = 0):
-        # Convert instance being interpreted to representation of interpreted model
-        model_instance = self.model.to_internal([text_data])
-        num_features = model_instance["input_ids"].shape[1]
-        perturbable_mask = model_instance["perturbable_mask"][0]
-        perturbable_inds = torch.arange(num_features)[perturbable_mask]
-
-        input_ids = model_instance["input_ids"]
-        ret_samples = [[] for _ in range(num_features)]
-        ret_scores = [[] for _ in range(num_features)]
-
-        importances = torch.zeros(num_features, dtype=torch.float32)
-        for idx_feature in perturbable_inds:
-            curr_samples = input_ids.repeat((2, 1))  # with/without
-            curr_samples[1, idx_feature] = self.model.tokenizer.unk_token_id
-
-            scores = self.model.score(curr_samples, **model_instance["aux_data"])
-            diff = scores[0, label] - scores[1, label]
-            importances[idx_feature] = diff
-
-            if self.return_samples:
-                ret_samples[idx_feature].extend(self.model.from_internal(curr_samples, skip_special_tokens=False, take_as_single_sequence=True))
-
-            if self.return_scores:
-                ret_scores[idx_feature].extend(scores.tolist())
-
-        res = {
-            "importance": importances,
-            "taken_samples": int(perturbable_inds.shape[0])
-        }
-
-        if self.return_samples:
-            res["samples"] = ret_samples
-
-        if self.return_scores:
-            res["scores"] = ret_scores
 
         return res
 

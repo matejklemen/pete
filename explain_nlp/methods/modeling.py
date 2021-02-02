@@ -157,7 +157,7 @@ class InterpretableBertBase(InterpretableModel, BertAlignedTokenizationMixin):
 
     def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False,
                       **kwargs):
-        num_ex = encoded_data.shape[0]
+        num_ex = len(encoded_data)
         token_type_fn, attention_fn = None, None
         if not take_as_single_sequence:
             token_type_ids = kwargs["token_type_ids"]

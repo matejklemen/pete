@@ -175,7 +175,7 @@ if __name__ == "__main__":
                                 importances=res["importance"].tolist(),
                                 variances=res["var"].tolist(), num_samples=res["num_samples"].tolist(),
                                 samples=gen_samples, num_estimated_samples=res["taken_samples"], time_taken=(t2 - t1),
-                                model_scores=[[] if scores is None else scores.tolist()
+                                model_scores=[[] if scores is None else scores
                                               for scores in res["scores"]] if args.return_model_scores else [])
 
         if (1 + idx_example) % args.save_every_n_examples == 0:
