@@ -5,7 +5,7 @@ import torch
 from explain_nlp.experimental.data import load_nli
 from explain_nlp.methods.generation import BertForMaskedLMGenerator, SampleGenerator
 from explain_nlp.methods.ime import IMEExplainer
-from explain_nlp.methods.modeling import InterpretableModel
+from explain_nlp.modeling.modeling_base import InterpretableModel
 from explain_nlp.methods.utils import sample_permutations
 
 
