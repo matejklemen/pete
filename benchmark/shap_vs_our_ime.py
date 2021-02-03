@@ -6,8 +6,8 @@ import pandas as pd
 import torch
 import numpy as np
 import shap
-from explain_nlp.methods.ime import IMEExplainer, estimate_max_samples
-from explain_nlp.methods.modeling import InterpretableModel
+from explain_nlp.methods.ime import IMEExplainer
+from explain_nlp.modeling.modeling_base import InterpretableModel
 from explain_nlp.methods.utils import estimate_feature_samples
 
 

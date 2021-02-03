@@ -1,6 +1,6 @@
 import unittest
 
-from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
+from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
 
 
 class TestModeling(unittest.TestCase):

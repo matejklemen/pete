@@ -1,12 +1,12 @@
 import unittest
 import torch
 from explain_nlp.methods.ime import IMEExplainer
-from explain_nlp.methods.modeling import InterpretableDummy
+from explain_nlp.modeling.modeling_base import DummySentiment
 
 
 class TestIMEExplainer(unittest.TestCase):
     def setUp(self):
-        self.model = InterpretableDummy()
+        self.model = DummySentiment()
         self.sample_data = torch.tensor([self.model.to_internal("doctor john disco")["input_ids"][0].tolist(),
                                          self.model.to_internal("banana broccoli banana")["input_ids"][0].tolist(),
                                          self.model.to_internal("broccoli coffee paper")["input_ids"][0].tolist(),

@@ -11,7 +11,7 @@ from explain_nlp.experimental.handle_explainer import load_explainer
 from explain_nlp.experimental.handle_features import handle_features
 from explain_nlp.experimental.handle_generator import load_generator
 from explain_nlp.methods.hybrid import create_uniform_weights
-from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
+from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
 from explain_nlp.methods.utils import estimate_feature_samples
 from explain_nlp.visualizations.highlight import highlight_plot
 

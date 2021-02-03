@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import torch
 
-from explain_nlp.methods.modeling import DummySentiment
+from explain_nlp.modeling.modeling_base import DummySentiment
 from explain_nlp.methods.naive import ExactShapleyExplainer
 
 

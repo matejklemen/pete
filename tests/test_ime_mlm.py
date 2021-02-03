@@ -3,12 +3,12 @@ import unittest
 import torch
 
 from explain_nlp.methods.ime_mlm import IMEMaskedLMExplainer
-from explain_nlp.methods.modeling import InterpretableDummy
+from explain_nlp.modeling.modeling_base import DummySentiment
 
 
 class TestIMEMaskedLMExplainer(unittest.TestCase):
     def setUp(self):
-        self.model = InterpretableDummy()
+        self.model = DummySentiment()
         self.sample_input = self.model.to_internal("broccoli bin coffee")["input_ids"]
 
     def test_return_options(self):

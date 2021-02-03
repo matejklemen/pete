@@ -5,7 +5,7 @@ import stanza
 import torch
 from transformers import BertTokenizer
 
-from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
+from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
 
 
 def extract_groups(feature_ids, ignore_index=-1):

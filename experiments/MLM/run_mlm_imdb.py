@@ -11,7 +11,7 @@ from explain_nlp.experimental.data import load_imdb, TransformerSeqDataset, LABE
 from explain_nlp.experimental.handle_explainer import load_explainer
 from explain_nlp.experimental.handle_features import handle_features
 from explain_nlp.experimental.handle_generator import load_generator
-from explain_nlp.methods.modeling import InterpretableBertForMaskedLM
+from explain_nlp.modeling.modeling_transformers import InterpretableBertForMaskedLM
 from explain_nlp.methods.utils import estimate_feature_samples
 from explain_nlp.visualizations.highlight import highlight_plot
 

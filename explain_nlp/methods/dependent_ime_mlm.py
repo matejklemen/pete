@@ -5,7 +5,8 @@ import torch
 from explain_nlp.methods.generation import BertForMaskedLMGenerator, BertForControlledMaskedLMGenerator, \
     GPTLMGenerator, GPTControlledLMGenerator
 from explain_nlp.methods.ime import IMEExplainer
-from explain_nlp.methods.modeling import InterpretableModel, InterpretableBertForSequenceClassification
+from explain_nlp.modeling.modeling_base import InterpretableModel
+from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
 from explain_nlp.methods.utils import sample_permutations
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")

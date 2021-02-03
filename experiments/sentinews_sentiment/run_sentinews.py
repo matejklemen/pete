@@ -3,7 +3,6 @@ from time import time
 
 import stanza
 import torch
-from torch.utils.data import DataLoader, Subset
 
 from explain_nlp.experimental.arguments import parser
 from explain_nlp.experimental.core import MethodData
@@ -11,7 +10,7 @@ from explain_nlp.experimental.data import load_sentinews, TransformerSeqDataset,
 from explain_nlp.experimental.handle_explainer import load_explainer
 from explain_nlp.experimental.handle_features import handle_features
 from explain_nlp.experimental.handle_generator import load_generator
-from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
+from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
 from explain_nlp.methods.utils import estimate_feature_samples
 from explain_nlp.visualizations.highlight import highlight_plot
 

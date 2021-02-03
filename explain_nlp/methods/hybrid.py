@@ -199,7 +199,7 @@ class HybridIMEExplainer(IMEExplainer):
 
 
 if __name__ == "__main__":
-    from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
+    from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
 
     model = InterpretableBertForSequenceClassification(
         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",

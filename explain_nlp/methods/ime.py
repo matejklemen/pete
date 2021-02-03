@@ -4,7 +4,7 @@ from typing import Optional, Union, Tuple, List
 import torch
 from copy import deepcopy
 
-from explain_nlp.methods.modeling import InterpretableModel
+from explain_nlp.modeling.modeling_base import InterpretableModel
 from explain_nlp.methods.utils import sample_permutations, incremental_mean, incremental_var, \
     tensor_indexer, list_indexer, estimate_feature_samples
 
@@ -528,7 +528,7 @@ class WholeWordIMEExplainer(IMEExplainer):
 
 
 if __name__ == "__main__":
-    from explain_nlp.methods.modeling import InterpretableBertForSequenceClassification
+    from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
 
     model = InterpretableBertForSequenceClassification(
         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
