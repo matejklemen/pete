@@ -516,17 +516,8 @@ class BertForMaskedLMGenerator(SampleGenerator):
                                 generation_mask: torch.Tensor,
                                 idx_observed_feature,
                                 **generation_kwargs):
-        num_samples = generation_mask.shape[0]
-        num_features = input_ids.shape[1]
-
-        if input_ids.shape[0] != 1 and input_ids.shape[0] != num_samples:
-            raise ValueError(f"input_ids ({input_ids.shape[0]} examples) can't be broadcasted to shape of "
-                             f"generation mask ({generation_mask.shape[0]} examples)")
-
-        original_input_values = input_ids[0].clone()
-        eff_input_ids = input_ids
-        if input_ids.shape[0] == 1:
-            eff_input_ids = input_ids.repeat((num_samples, 1))
+        num_samples, num_features = input_ids.shape
+        eff_input_ids = input_ids.clone()
 
         # Note: currently assuming generation additional data is same for all samples
         eff_aux_data = {k: generation_kwargs[k].repeat((self.batch_size, 1)).to(self.device)
@@ -540,7 +531,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
             s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
 
             curr_inputs = eff_input_ids[s_b: e_b]
-            curr_masked = generation_mask[s_b: e_b]
+            curr_masked = curr_inputs == self.mask_token_id
 
             curr_batch_size = curr_inputs.shape[0]
             _batch_indexer = torch.arange(curr_batch_size)
@@ -554,7 +545,6 @@ class BertForMaskedLMGenerator(SampleGenerator):
                 if not torch.any(is_feature_masked):
                     continue
 
-                curr_inputs[:, s_c: e_c][is_feature_masked] = self.tokenizer.mask_token_id
                 curr_aux_data = {k: v[: curr_batch_size] for k, v in eff_aux_data.items()}
 
                 logits = self.generator(input_ids=curr_inputs.to(self.device), **curr_aux_data)["logits"]
@@ -565,14 +555,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
 
                     curr_inputs[is_feature_masked[:, pos], s_c + pos] = preds[is_feature_masked[:, pos]]
 
-        # Examples intertwined: one instance with fixed original feature and one with randomized original feature
-        all_examples = eff_input_ids.repeat((2, 1))
-        all_examples[::2] = eff_input_ids
-        all_examples[::2, idx_observed_feature] = original_input_values[idx_observed_feature]
-
-        all_examples[1::2] = eff_input_ids
-
-        return all_examples
+        return eff_input_ids
 
 
 class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
