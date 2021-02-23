@@ -65,10 +65,10 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         num_features = int(len(instance[0]))
 
         # TODO: this is temporary
-        if isinstance(idx_feature, int):
-            print(f"Estimating importance of '{self.model.tokenizer.decode([instance[0, idx_feature]])}'")
-        else:
-            print(f"Estimating importance of '{self.model.tokenizer.decode(instance[0, idx_feature])}'")
+        # if isinstance(idx_feature, int):
+        #     print(f"Estimating importance of '{self.model.tokenizer.decode([instance[0, idx_feature]])}'")
+        # else:
+        #     print(f"Estimating importance of '{self.model.tokenizer.decode(instance[0, idx_feature])}'")
 
         if feature_groups is not None:
             eff_feature_groups = feature_groups
@@ -118,13 +118,6 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
                                                                     **instances_generator["aux_data"])
 
         text_examples = self.generator.from_internal(generated_examples)
-        for idx_sample in range(num_samples):
-            print(text_masked_samples[2 * idx_sample])
-            print(f"WITH => {text_examples[2 * idx_sample]}")
-            print(text_masked_samples[2 * idx_sample + 1])
-            print(f"WITHOUT => {text_examples[2 * idx_sample + 1]}")
-        print("--------------")
-
         model_examples = self.model.to_internal(text_examples)
 
         scores = self.model.score(model_examples["input_ids"], **model_examples["aux_data"])
