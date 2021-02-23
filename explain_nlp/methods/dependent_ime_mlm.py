@@ -2,8 +2,7 @@ from typing import Optional, Union, List
 
 import torch
 
-from explain_nlp.methods.generation import BertForMaskedLMGenerator, BertForControlledMaskedLMGenerator, \
-    GPTLMGenerator, GPTControlledLMGenerator
+from explain_nlp.generation.generation_base import SampleGenerator
 from explain_nlp.methods.ime import IMEExplainer
 from explain_nlp.modeling.modeling_base import InterpretableModel
 from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
@@ -13,49 +12,18 @@ DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cp
 
 
 class DependentIMEMaskedLMExplainer(IMEExplainer):
-    def __init__(self, model: InterpretableModel, generator: BertForMaskedLMGenerator,
+    def __init__(self, model: InterpretableModel, generator: SampleGenerator,
                  confidence_interval: Optional[float] = None,  max_abs_error: Optional[float] = None,
                  return_variance: Optional[bool] = False, return_num_samples: Optional[bool] = False,
                  return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 criterion: Optional[str] = "squared_error", is_aligned_vocabulary: Optional[bool] = False):
+                 criterion: Optional[str] = "squared_error"):
         dummy_sample_data = torch.randint(5, (1, 1), dtype=torch.long)
         super().__init__(sample_data=dummy_sample_data, model=model, confidence_interval=confidence_interval,
                          max_abs_error=max_abs_error, return_variance=return_variance,
                          return_num_samples=return_num_samples, return_samples=return_samples,
                          return_scores=return_scores, criterion=criterion)
 
-        self.model = self.model  # type: InterpretableBertForSequenceClassification
         self.generator = generator
-
-        self.is_aligned_vocabulary = is_aligned_vocabulary
-
-    def _transform_masks(self, _instance_tokens, _masked_instance_tokens):
-        # Returns mask (True/False)!
-        is_pair = isinstance(_instance_tokens, tuple)
-
-        eff_instance_tokens, eff_masked_tokens = _instance_tokens, _masked_instance_tokens
-        if not is_pair:
-            eff_instance_tokens = (_instance_tokens,)
-            eff_masked_tokens = (_masked_instance_tokens,)
-
-        _generator_instance = [[] for _ in range(len(eff_instance_tokens))]
-        for i, (all_orig_tok, all_mask_tok) in enumerate(zip(eff_instance_tokens, eff_masked_tokens)):
-            for orig, masked in zip(all_orig_tok, all_mask_tok):
-                transformed_tok = self.generator.tokenizer.tokenize(orig)
-
-                # TODO: could probably do this on IDs and only operate on strings when really needed
-                if masked == self.model.mask_token:
-                    _generator_instance[i].extend([self.generator.mask_token] * len(transformed_tok))
-                else:
-                    _generator_instance[i].append(orig)
-
-        if is_pair:
-            _generator_instance = tuple([" ".join(curr_tokens) for curr_tokens in _generator_instance])
-        else:
-            _generator_instance = " ".join(_generator_instance[0])
-
-        _generator_instance = self.generator.to_internal([_generator_instance])
-        return _generator_instance["input_ids"][0] == self.generator.mask_token_id
 
     @torch.no_grad()
     def estimate_feature_importance(self, idx_feature: Union[int, List[int]], instance: torch.Tensor, num_samples: int,
@@ -89,14 +57,11 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         else:
             randomly_selected_label = [None] * num_samples
 
-        # is_masked[i] = perturbed features for i-th sample
         masked_samples = instance.repeat((2 * num_samples, 1))
-        is_masked = torch.zeros((num_samples, num_features), dtype=torch.bool)  # TODO: remove
         for idx_sample in range(num_samples):
             curr_feature_pos = int(feature_pos[idx_sample, 1])
             changed_features = self.indexer(eff_feature_groups, indices[idx_sample, curr_feature_pos + 1:])
 
-            is_masked[idx_sample, changed_features] = True  # TODO: remove
             # 1 sample with, 1 sample without current feature fixed
             masked_samples[2 * idx_sample: 2 * idx_sample + 2, changed_features] = self.model.mask_token_id
             masked_samples[2 * idx_sample + 1, idx_feature] = self.model.mask_token_id
@@ -112,8 +77,6 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
 
         instances_generator = self.generator.to_internal(text_masked_samples)
         generated_examples = self.generator.generate_masked_samples(instances_generator["input_ids"],
-                                                                    generation_mask=-float("inf"),
-                                                                    idx_observed_feature=-1,
                                                                     control_labels=randomly_selected_label,
                                                                     **instances_generator["aux_data"])
 

@@ -2,7 +2,7 @@ from typing import Optional, Union, Tuple, List
 
 import torch
 
-from explain_nlp.methods.generation import SampleGenerator
+from explain_nlp.generation.generation_base import SampleGenerator
 from explain_nlp.methods.ime import IMEExplainer
 from explain_nlp.modeling.modeling_base import InterpretableModel
 
@@ -72,7 +72,7 @@ class IMEMaskedLMExplainer(IMEExplainer):
 
 
 if __name__ == "__main__":
-    from explain_nlp.methods.generation import BertForControlledMaskedLMGenerator
+    from explain_nlp.generation.generation_transformers import BertForControlledMaskedLMGenerator
     from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
     model = InterpretableBertForSequenceClassification(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
                                                        model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",

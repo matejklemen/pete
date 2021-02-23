@@ -1,7 +1,7 @@
 from typing import List, Optional
 
-from explain_nlp.methods.generation import BertForMaskedLMGenerator, GPTLMGenerator, GPTControlledLMGenerator, \
-    BertForControlledMaskedLMGenerator
+from explain_nlp.generation.generation_transformers import BertForMaskedLMGenerator, GPTLMGenerator, \
+    GPTControlledLMGenerator, BertForControlledMaskedLMGenerator
 
 
 def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):

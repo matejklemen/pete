@@ -3,7 +3,7 @@ from typing import Optional, Union, List
 import torch
 
 from explain_nlp.experimental.data import load_nli
-from explain_nlp.methods.generation import BertForMaskedLMGenerator, SampleGenerator
+from explain_nlp.generation.generation_transformers import BertForMaskedLMGenerator
 from explain_nlp.methods.ime import IMEExplainer
 from explain_nlp.modeling.modeling_base import InterpretableModel
 from explain_nlp.methods.utils import sample_permutations
@@ -44,34 +44,6 @@ class HybridIMEExplainer(IMEExplainer):
             self.weights = torch.ones_like(self.sample_data, dtype=torch.float32)
 
         self.feature_varies = torch.gt(torch.sum(self.weights, dim=0), (0.0 + 1e-6))
-
-    def _transform_masks(self, _instance_tokens, _masked_instance_tokens):
-        # Returns mask (True/False)!
-        is_pair = isinstance(_instance_tokens, tuple)
-
-        eff_instance_tokens, eff_masked_tokens = _instance_tokens, _masked_instance_tokens
-        if not is_pair:
-            eff_instance_tokens = (_instance_tokens,)
-            eff_masked_tokens = (_masked_instance_tokens,)
-
-        _generator_instance = [[] for _ in range(len(eff_instance_tokens))]
-        for i, (all_orig_tok, all_mask_tok) in enumerate(zip(eff_instance_tokens, eff_masked_tokens)):
-            for orig, masked in zip(all_orig_tok, all_mask_tok):
-                transformed_tok = self.generator.tokenizer.tokenize(orig)
-
-                # TODO: could probably do this on IDs and only operate on strings when really needed
-                if masked == self.model.mask_token:
-                    _generator_instance[i].extend([self.generator.mask_token] * len(transformed_tok))
-                else:
-                    _generator_instance[i].append(orig)
-
-        if is_pair:
-            _generator_instance = tuple([" ".join(curr_tokens) for curr_tokens in _generator_instance])
-        else:
-            _generator_instance = " ".join(_generator_instance[0])
-
-        _generator_instance = self.generator.to_internal([_generator_instance])
-        return _generator_instance["input_ids"][0] == self.generator.mask_token_id
 
     @torch.no_grad()
     def estimate_feature_importance(self, idx_feature: Union[int, List[int]], instance: torch.Tensor, num_samples: int,
@@ -118,71 +90,38 @@ class HybridIMEExplainer(IMEExplainer):
             randomly_selected_label = [None] * num_samples
 
         # is_masked[i] = perturbed features for i-th sample (without observed feature)
-        is_masked = torch.zeros((num_samples, num_features), dtype=torch.bool)
-        samples = instance.repeat((num_samples, 1))
+        masked_samples = instance.repeat((2 * num_samples, 1))
         for idx_sample in range(num_samples):
             curr_feature_pos = int(feature_pos[idx_sample, 1])
             changed_features = self.indexer(eff_feature_groups, indices[idx_sample, curr_feature_pos + 1:])
 
-            is_masked[idx_sample, changed_features] = True
-            samples[idx_sample, idx_feature] = randomly_selected_val[idx_sample]
+            # 1 sample with, 1 sample "without" current feature fixed:
+            # current feature randomized in second sample, but using sample data instead of a generator
+            masked_samples[2 * idx_sample: 2 * idx_sample + 2, changed_features] = self.model.mask_token_id
+            masked_samples[2 * idx_sample + 1, idx_feature] = randomly_selected_val[idx_sample]
 
-        instance_tokens = self.model.from_internal_precise(instance, skip_special_tokens=False)["decoded_data"][0]
-        instance_copy = instance.clone()
-        instance_copy[0, idx_feature] = self.model.mask_token_id
-        instance_copy_masked_tokens = \
-            self.model.from_internal_precise(instance_copy, skip_special_tokens=False)["decoded_data"][0]
+        text_masked_samples = []
+        for seq_or_seq_pair in self.model.from_internal(masked_samples, skip_special_tokens=False, **modeling_kwargs):
+            if isinstance(seq_or_seq_pair, tuple):
+                s1, s2 = seq_or_seq_pair
+                text_masked_samples.append((s1.replace(self.model.mask_token, self.generator.mask_token),
+                                            s2.replace(self.model.mask_token, self.generator.mask_token)))
+            else:
+                text_masked_samples.append(seq_or_seq_pair.replace(self.model.mask_token, self.generator.mask_token))
 
-        gen_idx_feature = torch.nonzero(self._transform_masks(instance_tokens, instance_copy_masked_tokens),
-                                        as_tuple=False).flatten()
+        instances_generator = self.generator.to_internal(text_masked_samples)
+        generated_examples = self.generator.generate_masked_samples(instances_generator["input_ids"],
+                                                                    control_labels=randomly_selected_label,
+                                                                    **instances_generator["aux_data"])
 
-        # Find out which tokens are masked after converting to generator representation
-        gen_is_masked = []
-        gen_samples = []
+        text_examples = self.generator.from_internal(generated_examples)
+        model_examples = self.model.to_internal(text_examples)
 
-        instance_generator = None
-        for idx_sample in range(num_samples):
-            sample_copy = samples[[idx_sample]].clone()
-            sample_copy[0, is_masked[idx_sample]] = self.model.mask_token_id
-            masked_instance_tokens = self.model.from_internal_precise(sample_copy,
-                                                                      skip_special_tokens=False)["decoded_data"][0]
-
-            instance_tokens = self.model.from_internal_precise(samples[[idx_sample]], skip_special_tokens=False)["decoded_data"][0]
-            instance_str = tuple(" ".join(s_tok) for s_tok in instance_tokens) \
-                if isinstance(instance_tokens, tuple) else " ".join(instance_tokens)
-            instance_generator = self.generator.to_internal([instance_str])
-
-            gen_is_masked.append(self._transform_masks(instance_tokens, masked_instance_tokens))
-            gen_samples.append(instance_generator["input_ids"])
-
-        is_masked = torch.stack(gen_is_masked)
-        gen_samples = torch.cat(gen_samples)
-        # Could take aux data of any sample (assuming it's same for all examples)
-        gen_aux_data = instance_generator["aux_data"]
-
-        instance_tokens = self.model.from_internal_precise(instance, skip_special_tokens=False)["decoded_data"][0]
-        instance_str = tuple(" ".join(s_tok) for s_tok in instance_tokens) \
-            if isinstance(instance_tokens, tuple) else " ".join(instance_tokens)
-        instance_generator = self.generator.to_internal([instance_str])
-
-        all_examples = self.generator.generate_masked_samples(gen_samples,
-                                                              generation_mask=is_masked,
-                                                              idx_observed_feature=0,
-                                                              control_labels=randomly_selected_label,
-                                                              **gen_aux_data)
-
-        all_examples[::2, gen_idx_feature] = instance_generator["input_ids"][0, gen_idx_feature]
-        instance_str = self.generator.from_internal(all_examples)
-        instance_model = self.model.to_internal(instance_str)
-
-        scores = self.model.score(instance_model["input_ids"], **modeling_kwargs)
+        scores = self.model.score(model_examples["input_ids"], **model_examples["aux_data"])
         scores_with = scores[::2]
         scores_without = scores[1::2]
         assert scores_with.shape[0] == scores_without.shape[0]
         diff = scores_with - scores_without
-
-        # for i in range(scores.shape[0]):
-        #     print(f"({scores[i, label]: .4f}) {self.model.tokenizer.convert_ids_to_tokens(instance_model['input_ids'][i])}")
 
         results = {
             "diff_mean": torch.mean(diff, dim=0),
@@ -190,7 +129,7 @@ class HybridIMEExplainer(IMEExplainer):
         }
 
         if self.return_samples:
-            results["samples"] = all_examples.tolist()
+            results["samples"] = model_examples["input_ids"].tolist()
 
         if self.return_scores:
             results["scores"] = scores.tolist()
@@ -221,7 +160,6 @@ if __name__ == "__main__":
     data = model.to_internal([(s1, s2) for s1, s2 in df_data[["sentence1", "sentence2"]].values])
     weights = create_uniform_weights(data["input_ids"], torch.logical_not(data["perturbable_mask"]))
 
-    print("Running IME")
     explainer = HybridIMEExplainer(model=model, generator=generator,
                                    sample_data=data["input_ids"],
                                    data_weights=weights,
