@@ -23,14 +23,13 @@ class HybridIMEExplainer(IMEExplainer):
                  confidence_interval: Optional[float] = None, max_abs_error: Optional[float] = None,
                  return_variance: Optional[bool] = False, return_num_samples: Optional[bool] = False,
                  return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 criterion: Optional[str] = "squared_error", is_aligned_vocabulary: Optional[bool] = False):
+                 criterion: Optional[str] = "squared_error"):
         super().__init__(sample_data=sample_data, model=model, data_weights=data_weights,
                          confidence_interval=confidence_interval, max_abs_error=max_abs_error,
                          return_variance=return_variance, return_num_samples=return_num_samples,
                          return_samples=return_samples, return_scores=return_scores,
                          criterion=criterion)
         self.generator = generator
-        self.is_aligned_vocabulary = is_aligned_vocabulary
         self.feature_varies = None
 
         self.update_sample_data(sample_data, data_weights=data_weights)
