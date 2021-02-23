@@ -54,13 +54,13 @@ class InterpretableBertBase(InterpretableModel, BertAlignedTokenizationMixin):
                 seq_ids, tokens_in_seq = torch.unique(curr_token_types, return_counts=True)
                 bins = torch.cumsum(tokens_in_seq, dim=0)
                 if seq_ids.shape[0] == 1:
-                    decoded_data.append(self.tokenizer.decode(curr_input_ids[0: tokens_in_seq[0]],
+                    decoded_data.append(self.tokenizer.decode(curr_input_ids[1: tokens_in_seq[0]],
                                                               skip_special_tokens=skip_special_tokens))
                 else:
-                    bins = [0] + bins.tolist()
+                    bins = [1] + bins.tolist()
                     multiple_sequences = []
                     for s, e in zip(bins, bins[1:]):
-                        multiple_sequences.append(self.tokenizer.decode(curr_input_ids[s: e],
+                        multiple_sequences.append(self.tokenizer.decode(curr_input_ids[s: e - 1],
                                                                         skip_special_tokens=skip_special_tokens))
                     decoded_data.append(tuple(multiple_sequences))
 
