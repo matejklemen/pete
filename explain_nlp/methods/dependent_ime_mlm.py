@@ -65,10 +65,10 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         num_features = int(len(instance[0]))
 
         # TODO: this is temporary
-        # if isinstance(idx_feature, int):
-        #     print(f"Estimating importance of '{self.model.tokenizer.decode([instance[0, idx_feature]])}'")
-        # else:
-        #     print(f"Estimating importance of '{self.model.tokenizer.decode(instance[0, idx_feature])}'")
+        if isinstance(idx_feature, int):
+            print(f"Estimating importance of '{self.model.tokenizer.decode([instance[0, idx_feature]])}'")
+        else:
+            print(f"Estimating importance of '{self.model.tokenizer.decode(instance[0, idx_feature])}'")
 
         if feature_groups is not None:
             eff_feature_groups = feature_groups
@@ -90,54 +90,41 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
             randomly_selected_label = [None] * num_samples
 
         # is_masked[i] = perturbed features for i-th sample
-        is_masked = torch.zeros((num_samples, num_features), dtype=torch.bool)
+        masked_samples = instance.repeat((2 * num_samples, 1))
+        is_masked = torch.zeros((num_samples, num_features), dtype=torch.bool)  # TODO: remove
         for idx_sample in range(num_samples):
             curr_feature_pos = int(feature_pos[idx_sample, 1])
-            changed_features = self.indexer(eff_feature_groups, indices[idx_sample, curr_feature_pos:])
+            changed_features = self.indexer(eff_feature_groups, indices[idx_sample, curr_feature_pos + 1:])
 
-            is_masked[idx_sample, changed_features] = True
+            is_masked[idx_sample, changed_features] = True  # TODO: remove
+            # 1 sample with, 1 sample without current feature fixed
+            masked_samples[2 * idx_sample: 2 * idx_sample + 2, changed_features] = self.model.mask_token_id
+            masked_samples[2 * idx_sample + 1, idx_feature] = self.model.mask_token_id
 
-        # Obtain index of observed (estimated) feature in generator's representation
-        instance_tokens = self.model.from_internal_precise(instance, skip_special_tokens=False)["decoded_data"][0]
-        instance_copy = instance.clone()
-        instance_copy[0, idx_feature] = self.model.mask_token_id
-        instance_copy_masked_tokens = \
-            self.model.from_internal_precise(instance_copy, skip_special_tokens=False)["decoded_data"][0]
+        text_masked_samples = []
+        for seq_or_seq_pair in self.model.from_internal(masked_samples, skip_special_tokens=False, **modeling_kwargs):
+            if isinstance(seq_or_seq_pair, tuple):
+                s1, s2 = seq_or_seq_pair
+                text_masked_samples.append((s1.replace(self.model.mask_token, self.generator.mask_token),
+                                            s2.replace(self.model.mask_token, self.generator.mask_token)))
+            else:
+                text_masked_samples.append(seq_or_seq_pair.replace(self.model.mask_token, self.generator.mask_token))
 
-        gen_idx_feature = torch.nonzero(self._transform_masks(instance_tokens, instance_copy_masked_tokens),
-                                        as_tuple=False).flatten()
+        instances_generator = self.generator.to_internal(text_masked_samples)
+        generated_examples = self.generator.generate_masked_samples(instances_generator["input_ids"],
+                                                                    generation_mask=-float("inf"),
+                                                                    idx_observed_feature=-1,
+                                                                    control_labels=randomly_selected_label,
+                                                                    **instances_generator["aux_data"])
 
-        if self.is_aligned_vocabulary:
-            instance_str = self.model.from_internal(instance, **modeling_kwargs)
-            instance_generator = self.generator.to_internal(instance_str)
+        text_examples = self.generator.from_internal(generated_examples)
+        for idx_sample in range(num_samples):
+            print(text_masked_samples[2 * idx_sample])
+            print(f"WITH => {text_examples[2 * idx_sample]}")
+            print(text_masked_samples[2 * idx_sample + 1])
+            print(f"WITHOUT => {text_examples[2 * idx_sample + 1]}")
+        print("--------------")
 
-            # If generator has a longer max seq. len than model, mark the diff as "unmasked" (not to be generated)
-            length_diff = self.generator.max_seq_len - self.model.max_seq_len
-            is_masked = torch.hstack((is_masked, torch.zeros((num_samples, length_diff), dtype=torch.bool)))
-        else:
-            # Find out which tokens are masked after converting to generator representation
-            gen_is_masked = []
-            for idx_sample in range(num_samples):
-                masked_instance = instance.clone()
-                masked_instance[0, is_masked[idx_sample]] = self.model.tokenizer.mask_token_id
-                masked_instance_tokens = self.model.from_internal_precise(masked_instance,
-                                                                          skip_special_tokens=False)["decoded_data"][0]
-
-                gen_is_masked.append(self._transform_masks(instance_tokens, masked_instance_tokens))
-
-            is_masked = torch.stack(gen_is_masked)
-            instance_tokens = self.model.from_internal_precise(instance, skip_special_tokens=False)["decoded_data"][0]
-            instance_str = tuple(" ".join(s_tok) for s_tok in instance_tokens) \
-                if isinstance(instance_tokens, tuple) else " ".join(instance_tokens)
-            instance_generator = self.generator.to_internal([instance_str])
-
-        all_examples = self.generator.generate_masked_samples(instance_generator["input_ids"],
-                                                              generation_mask=is_masked,
-                                                              idx_observed_feature=gen_idx_feature,
-                                                              control_labels=randomly_selected_label,
-                                                              **instance_generator["aux_data"])
-
-        text_examples = self.generator.from_internal(all_examples)
         model_examples = self.model.to_internal(text_examples)
 
         scores = self.model.score(model_examples["input_ids"], **model_examples["aux_data"])
@@ -152,7 +139,7 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         }
 
         if self.return_samples:
-            results["samples"] = all_examples.tolist()
+            results["samples"] = model_examples["input_ids"].tolist()
 
         if self.return_scores:
             results["scores"] = scores.tolist()
@@ -174,13 +161,12 @@ if __name__ == "__main__":
     #                                                strategy="top_p",
     #                                                top_p=0.99,
     #                                                generate_cover=False)
-    # generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
-    #                                      model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
-    #                                      batch_size=10,
-    #                                      device="cpu",
-    #                                      strategy="top_p",
-    #                                      top_p=0.999,
-    #                                      monte_carlo_dropout=True)
+    generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
+                                         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
+                                         batch_size=10,
+                                         device="cpu",
+                                         strategy="top_p",
+                                         top_p=0.95)
     # generator = GPTLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_lm_maxseqlen42",
     #                            model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_lm_maxseqlen42",
     #                            batch_size=10,
@@ -201,12 +187,6 @@ if __name__ == "__main__":
     #                                      device="cpu",
     #                                      strategy="top_p",
     #                                      top_p=0.99)
-    generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm-ls01-longer-training",
-                                         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm-ls01-longer-training",
-                                         batch_size=10,
-                                         device="cpu",
-                                         strategy="top_p",
-                                         top_p=0.05)
     # generator = BertForMaskedLMGenerator(tokenizer_name="bert-base-uncased",
     #                                      model_name="bert-base-uncased",
     #                                      batch_size=2,
@@ -231,7 +211,7 @@ if __name__ == "__main__":
                                               is_aligned_vocabulary=False)
 
     seq = ("A shirtless man skateboards on a ledge.", "A man without a shirt")
-    res = explainer.explain_text(seq, label=0, min_samples_per_feature=10)
+    res = explainer.explain_text(seq, label=0, min_samples_per_feature=100)
     print(f"Sum of importances: {sum(res['importance'])}")
     for curr_token, curr_imp, curr_var in zip(res["input"], res["importance"], res["var"]):
         print(f"{curr_token} = {curr_imp: .4f} (var: {curr_var: .4f})")
