@@ -196,6 +196,7 @@ class IMEExplainer:
             for _, idx_feature in torch.nonzero(free_features, as_tuple=False):
                 free_features[0, idx_feature] = False
                 feature_groups.append([idx_feature.item()])
+                num_additional += 1
 
         importance_means = torch.zeros(num_features + num_additional, dtype=torch.float32)
         importance_vars = torch.zeros(num_features + num_additional, dtype=torch.float32)
