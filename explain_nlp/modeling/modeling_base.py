@@ -16,6 +16,14 @@ class InterpretableModel:
         raise NotImplementedError
 
     @property
+    def pad_token(self) -> str:
+        raise NotImplementedError
+
+    @property
+    def pad_token_id(self) -> int:
+        raise NotImplementedError
+
+    @property
     def special_token_ids(self):
         raise NotImplementedError
 

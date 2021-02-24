@@ -19,6 +19,14 @@ class InterpretableBertBase(InterpretableModel, BertAlignedTokenizationMixin):
         return self.tokenizer.mask_token_id
 
     @property
+    def pad_token(self) -> str:
+        return self.tokenizer.pad_token
+
+    @property
+    def pad_token_id(self) -> int:
+        return self.tokenizer.pad_token_id
+
+    @property
     def special_token_ids(self):
         return set(self.tokenizer.all_special_ids)
 
