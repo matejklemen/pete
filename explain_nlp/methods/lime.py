@@ -4,6 +4,8 @@ import numpy as np
 import torch
 from sklearn.linear_model import Ridge
 
+from explain_nlp.generation.generation_base import SampleGenerator
+from explain_nlp.generation.generation_transformers import BertForMaskedLMGenerator
 from explain_nlp.methods.utils import sample_permutations, tensor_indexer, list_indexer
 from explain_nlp.modeling.modeling_base import InterpretableModel
 from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
@@ -27,6 +29,10 @@ class LIMEExplainer:
         self.return_scores = return_scores
 
         self.indexer = tensor_indexer
+
+    def generate_neighbourhood(self, samples: torch.Tensor, removal_mask, **modeling_kwargs):
+        samples[removal_mask] = self.model.pad_token_id
+        return samples
 
     def explain(self, instance: Union[torch.Tensor, List], label: Optional[int] = 0,
                 perturbable_mask: Optional[torch.Tensor] = None, num_samples: Optional[int] = 1000,
@@ -65,6 +71,7 @@ class LIMEExplainer:
 
         perturbable_inds = torch.arange(num_features)[eff_perturbable_mask[0]] \
             if custom_features is None else torch.arange(num_features, num_features + num_additional)
+
         eff_explanation_length = explanation_length if explanation_length is not None else perturbable_inds.shape[0]
         assert eff_explanation_length <= perturbable_inds.shape[0]
 
@@ -73,20 +80,20 @@ class LIMEExplainer:
                                             num_permutations=num_samples - 1)
         num_removed = torch.randint(1, len(perturbable_inds) + 1, size=(num_samples - 1,))
         samples = instance.repeat((num_samples, 1))
-        # 0 = delete feature (= set value to PAD), 1 = take original feature value
-        feature_indicators = torch.zeros((num_samples, num_features + num_additional))
-        feature_indicators[0, perturbable_inds] = 1.0  # explained instance
+
+        feature_indicators = torch.zeros((num_samples, num_features + num_additional), dtype=torch.bool)
+        feature_indicators[0, perturbable_inds] = True  # explained instance
+        removed_mask = torch.zeros_like(samples, dtype=torch.bool)
         for idx_sample in range(num_samples - 1):
             curr_kept = permuted_inds[idx_sample, num_removed[idx_sample]:]
-            feature_indicators[idx_sample + 1, curr_kept] = 1.0
+            feature_indicators[idx_sample + 1, curr_kept] = True
 
-            if num_additional > 0:
-                curr_removed_features = self.indexer(superfeatures, permuted_inds[idx_sample, :num_removed[idx_sample]])
-            else:
-                curr_removed_features = self.indexer(superfeatures, permuted_inds[idx_sample, :num_removed[idx_sample]])
+            curr_removed_features = self.indexer(superfeatures, permuted_inds[idx_sample, :num_removed[idx_sample]])
+            removed_mask[idx_sample + 1, curr_removed_features] = True
 
-            samples[idx_sample + 1, curr_removed_features] = self.model.pad_token_id
+        samples = self.generate_neighbourhood(samples, removal_mask=removed_mask, **modeling_kwargs)
 
+        feature_indicators = feature_indicators.float()
         dists = 1.0 - torch.cosine_similarity(feature_indicators[[0]], feature_indicators)
         weights = exponential_kernel(dists, kernel_width=self.kernel_width)
 
@@ -141,6 +148,35 @@ class LIMEExplainer:
         return res
 
 
+class LIMEMaskedLMExplainer(LIMEExplainer):
+    def __init__(self, model: InterpretableModel, generator: SampleGenerator, kernel_width=25.0,
+                 return_samples: Optional[bool] = False, return_scores: Optional[bool] = False):
+        super().__init__(model=model, kernel_width=kernel_width,
+                         return_samples=return_samples, return_scores=return_scores)
+        self.generator = generator
+
+    def generate_neighbourhood(self, samples: torch.Tensor, removal_mask, **modeling_kwargs):
+        samples[removal_mask] = self.model.mask_token_id
+
+        text_masked_samples = []
+        for seq_or_seq_pair in self.model.from_internal(samples, skip_special_tokens=False, **modeling_kwargs):
+            if isinstance(seq_or_seq_pair, tuple):
+                s1, s2 = seq_or_seq_pair
+                text_masked_samples.append((s1.replace(self.model.mask_token, self.generator.mask_token),
+                                            s2.replace(self.model.mask_token, self.generator.mask_token)))
+            else:
+                text_masked_samples.append(seq_or_seq_pair.replace(self.model.mask_token, self.generator.mask_token))
+
+        instances_generator = self.generator.to_internal(text_masked_samples)
+        # TODO: control labels
+        generated_examples = self.generator.generate_masked_samples(instances_generator["input_ids"],
+                                                                    **instances_generator["aux_data"])
+        text_examples = self.generator.from_internal(generated_examples)
+        model_examples = self.model.to_internal(text_examples)
+
+        return model_examples["input_ids"]
+
+
 if __name__ == "__main__":
     model = InterpretableBertForSequenceClassification(
         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
@@ -149,13 +185,20 @@ if __name__ == "__main__":
         max_seq_len=41,
         device="cpu"
     )
+    generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
+                                         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
+                                         max_seq_len=41,
+                                         batch_size=8,
+                                         device="cpu",
+                                         strategy="top_p",
+                                         top_p=0.95)
 
-    explainer = LIMEExplainer(model, return_samples=True, return_scores=True)
+    explainer = LIMEMaskedLMExplainer(model, generator=generator, return_samples=True, return_scores=True)
 
     seq = ("A shirtless man skateboards on a ledge.", "A man without a shirt.")
     EXPLAINED_LABEL = 0
     EXPLANATION_LENGTH = 5
-    res = explainer.explain_text(seq, label=EXPLAINED_LABEL, num_samples=3, explanation_length=EXPLANATION_LENGTH,
+    res = explainer.explain_text(seq, label=EXPLAINED_LABEL, num_samples=5,
                                  custom_features=[[1], [2, 3], [4], [5, 6], [7], [8], [9], [10],
                                                   [12], [13], [14], [15], [16], [17]])
     print(res)
@@ -164,5 +207,5 @@ if __name__ == "__main__":
                    importances=[res["importance"].tolist()],
                    pred_labels=["entailment"],
                    actual_labels=["entailment"],
-                   custom_features=[res.get("custom_features")],
+                   custom_features=[res["custom_features"]],
                    path="tmp_lime.html")
