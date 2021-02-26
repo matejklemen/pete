@@ -163,8 +163,7 @@ if __name__ == "__main__":
                                               return_samples=True,
                                               return_scores=True,
                                               return_variance=True,
-                                              return_num_samples=True,
-                                              is_aligned_vocabulary=False)
+                                              return_num_samples=True)
 
     seq = ("A shirtless man skateboards on a ledge.", "A man without a shirt")
     res = explainer.explain_text(seq, label=0, min_samples_per_feature=100)
