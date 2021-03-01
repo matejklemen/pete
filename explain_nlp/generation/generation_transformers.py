@@ -44,22 +44,26 @@ class GPTLMGenerator(SampleGenerator):
     def convert_ids_to_tokens(self, ids):
         return [self.tokenizer.convert_ids_to_tokens(curr_ids) for curr_ids in ids.tolist()]
 
-    def from_internal(self, encoded_data, skip_special_tokens=True):
+    def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False,
+                      **kwargs):
         decoded_data = []
         for idx_example in range(len(encoded_data)):
             curr_example = encoded_data[idx_example]
-            sep_tokens = torch.nonzero(curr_example == self.tokenizer.sep_token_id, as_tuple=False)
-            eos_tokens = torch.nonzero(curr_example == self.tokenizer.eos_token_id, as_tuple=False)
-            end = int(eos_tokens[-1])
-
-            # Multiple sequences present: <BOS> <seq1> <SEP> <seq2> <EOS> -> (<seq1>, <seq2>)
-            if sep_tokens.shape[0] == 1:
-                bnd = int(sep_tokens[0])
-                seq1 = self.tokenizer.decode(curr_example[1: bnd], skip_special_tokens=skip_special_tokens)
-                seq2 = self.tokenizer.decode(curr_example[bnd + 1: end], skip_special_tokens=skip_special_tokens)
-                decoded_data.append((seq1, seq2))
+            if take_as_single_sequence:
+                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example], skip_special_tokens=skip_special_tokens))
             else:
-                decoded_data.append(self.tokenizer.decode(curr_example[: end], skip_special_tokens=skip_special_tokens))
+                sep_tokens = torch.nonzero(curr_example == self.tokenizer.sep_token_id, as_tuple=False)
+                eos_tokens = torch.nonzero(curr_example == self.tokenizer.eos_token_id, as_tuple=False)
+                end = int(eos_tokens[-1])
+
+                # Multiple sequences present: <BOS> <seq1> <SEP> <seq2> <EOS> -> (<seq1>, <seq2>)
+                if sep_tokens.shape[0] == 1:
+                    bnd = int(sep_tokens[0])
+                    seq1 = self.tokenizer.decode(curr_example[1: bnd], skip_special_tokens=skip_special_tokens)
+                    seq2 = self.tokenizer.decode(curr_example[bnd + 1: end], skip_special_tokens=skip_special_tokens)
+                    decoded_data.append((seq1, seq2))
+                else:
+                    decoded_data.append(self.tokenizer.decode(curr_example[: end], skip_special_tokens=skip_special_tokens))
 
         return decoded_data
 
@@ -326,24 +330,47 @@ class BertForMaskedLMGenerator(SampleGenerator):
     def convert_ids_to_tokens(self, ids):
         return [self.tokenizer.convert_ids_to_tokens(curr_ids) for curr_ids in ids.tolist()]
 
-    def from_internal(self, encoded_data, skip_special_tokens=True):
-        decoded_data = []
-        for idx_example in range(encoded_data.shape[0]):
-            curr_example = encoded_data[idx_example]
-            sep_tokens = torch.nonzero(curr_example == self.tokenizer.sep_token_id, as_tuple=False)  # maybe flatten?
-            end = int(sep_tokens[-1])
+    def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False,
+                      **kwargs):
+        num_ex = len(encoded_data)
+        token_type_fn, attention_fn = None, None
+        if not take_as_single_sequence:
+            token_type_ids = kwargs["token_type_ids"]
+            attention_mask = kwargs["attention_mask"]
+            num_aux = token_type_ids.shape[0]
 
-            # Multiple sequences present: [CLS] <seq1> [SEP] <seq2> [SEP] -> (<seq1>, <seq2>)
-            if sep_tokens.shape[0] >= 2:
-                bnd = int(sep_tokens[0])
-                seq1 = self.tokenizer.decode(encoded_data[idx_example, 1: bnd],
-                                             skip_special_tokens=skip_special_tokens)
-                seq2 = self.tokenizer.decode(encoded_data[idx_example, bnd + 1: end],
-                                             skip_special_tokens=skip_special_tokens)
-                decoded_data.append((seq1, seq2))
+            if num_aux == 1:
+                # Assume every sequence has the same attention_mask and token_type_ids
+                token_type_fn = lambda idx_example: token_type_ids[0]
+                attention_fn = lambda idx_example: attention_mask[0]
+            elif num_aux == num_ex:
+                token_type_fn = lambda idx_example: token_type_ids[idx_example]
+                attention_fn = lambda idx_example: attention_mask[idx_example]
             else:
-                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example, :end],
-                                                          skip_special_tokens=skip_special_tokens))
+                raise ValueError(f"Auxiliary data ({num_aux} ex.) can't be broadcasted to input shape ({num_ex} ex.). "
+                                 f"Either provide a single tensor or one tensor per instance")
+
+        decoded_data = []
+        for idx_example in range(num_ex):
+            if take_as_single_sequence:
+                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example], skip_special_tokens=skip_special_tokens))
+            else:
+                curr_attendable = attention_fn(idx_example).bool()
+                curr_token_types = token_type_fn(idx_example)[curr_attendable]
+                curr_input_ids = encoded_data[idx_example][curr_attendable]
+
+                seq_ids, tokens_in_seq = torch.unique(curr_token_types, return_counts=True)
+                bins = torch.cumsum(tokens_in_seq, dim=0)
+                if seq_ids.shape[0] == 1:
+                    decoded_data.append(self.tokenizer.decode(curr_input_ids[1: tokens_in_seq[0]],
+                                                              skip_special_tokens=skip_special_tokens))
+                else:
+                    bins = [1] + bins.tolist()
+                    multiple_sequences = []
+                    for s, e in zip(bins, bins[1:]):
+                        multiple_sequences.append(self.tokenizer.decode(curr_input_ids[s: e - 1],
+                                                                        skip_special_tokens=skip_special_tokens))
+                    decoded_data.append(tuple(multiple_sequences))
 
         return decoded_data
 
