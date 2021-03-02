@@ -187,7 +187,8 @@ class TrigramForMaskedLMGenerator(SampleGenerator):
     def convert_ids_to_tokens(self, ids):
         return [self.tokenizer.convert_ids_to_tokens(curr_ids) for curr_ids in ids.tolist()]
 
-    def from_internal(self, encoded_data, skip_special_tokens=True):
+    def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False,
+                      **kwargs):
         decoded_data = []
         for idx_example in range(encoded_data.shape[0]):
             sep_tokens = torch.nonzero(encoded_data[idx_example] == self.tokenizer.sep_token_id, as_tuple=False)

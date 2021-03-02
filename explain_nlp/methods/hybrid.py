@@ -44,6 +44,34 @@ class HybridIMEExplainer(IMEExplainer):
 
         self.feature_varies = torch.gt(torch.sum(self.weights, dim=0), (0.0 + 1e-6))
 
+    def _transform_masks(self, _instance_tokens, _masked_instance_tokens):
+        # Returns mask (True/False)!
+        is_pair = isinstance(_instance_tokens, tuple)
+
+        eff_instance_tokens, eff_masked_tokens = _instance_tokens, _masked_instance_tokens
+        if not is_pair:
+            eff_instance_tokens = (_instance_tokens,)
+            eff_masked_tokens = (_masked_instance_tokens,)
+
+        _generator_instance = [[] for _ in range(len(eff_instance_tokens))]
+        for i, (all_orig_tok, all_mask_tok) in enumerate(zip(eff_instance_tokens, eff_masked_tokens)):
+            for orig, masked in zip(all_orig_tok, all_mask_tok):
+                transformed_tok = self.generator.tokenizer.tokenize(orig)
+
+                # TODO: could probably do this on IDs and only operate on strings when really needed
+                if masked == self.model.mask_token:
+                    _generator_instance[i].extend([self.generator.mask_token] * len(transformed_tok))
+                else:
+                    _generator_instance[i].append(orig)
+
+        if is_pair:
+            _generator_instance = tuple([" ".join(curr_tokens) for curr_tokens in _generator_instance])
+        else:
+            _generator_instance = " ".join(_generator_instance[0])
+
+        _generator_instance = self.generator.to_internal([_generator_instance])
+        return _generator_instance["input_ids"][0] == self.generator.mask_token_id
+
     @torch.no_grad()
     def estimate_feature_importance(self, idx_feature: Union[int, List[int]], instance: torch.Tensor, num_samples: int,
                                     perturbable_mask: torch.Tensor, label: Optional[str] = None,
@@ -75,7 +103,6 @@ class HybridIMEExplainer(IMEExplainer):
             # weight = 1 if at least one token is non-special
             data_weights = torch.gt(torch.sum(data_weights, dim=1), 0 + 1e-6).float()
 
-        # TODO: if a feature does not vary, we can return preemptively (other randomized features are identical)
         if torch.any(self.feature_varies[idx_feature]):
             rand_idx = torch.multinomial(data_weights, num_samples=num_samples, replacement=True).unsqueeze(1)
             randomly_selected_val = self.sample_data[rand_idx, idx_feature]
@@ -89,34 +116,48 @@ class HybridIMEExplainer(IMEExplainer):
             randomly_selected_label = [None] * num_samples
 
         # is_masked[i] = perturbed features for i-th sample (without observed feature)
-        masked_samples = instance.repeat((2 * num_samples, 1))
+        is_masked = torch.zeros((2 * num_samples, num_features), dtype=torch.bool)
+        samples = instance.repeat((2 * num_samples, 1))
         for idx_sample in range(num_samples):
             curr_feature_pos = int(feature_pos[idx_sample, 1])
             changed_features = self.indexer(eff_feature_groups, indices[idx_sample, curr_feature_pos + 1:])
 
             # 1 sample with, 1 sample "without" current feature fixed:
             # current feature randomized in second sample, but using sample data instead of a generator
-            masked_samples[2 * idx_sample: 2 * idx_sample + 2, changed_features] = self.model.mask_token_id
-            masked_samples[2 * idx_sample + 1, idx_feature] = randomly_selected_val[idx_sample]
+            is_masked[2 * idx_sample: 2 * idx_sample + 2, changed_features] = True
+            samples[2 * idx_sample + 1, idx_feature] = randomly_selected_val[idx_sample]
 
-        text_masked_samples = []
-        for seq_or_seq_pair in self.model.from_internal(masked_samples, skip_special_tokens=False, **modeling_kwargs):
-            if isinstance(seq_or_seq_pair, tuple):
-                s1, s2 = seq_or_seq_pair
-                text_masked_samples.append((s1.replace(self.model.mask_token, self.generator.mask_token),
-                                            s2.replace(self.model.mask_token, self.generator.mask_token)))
-            else:
-                text_masked_samples.append(seq_or_seq_pair.replace(self.model.mask_token, self.generator.mask_token))
+        # Find out which tokens are masked after converting to generator representation
+        gen_is_masked = []
+        gen_samples = []
 
-        instances_generator = self.generator.to_internal(text_masked_samples)
-        generated_examples = self.generator.generate_masked_samples(instances_generator["input_ids"],
-                                                                    control_labels=randomly_selected_label,
-                                                                    **instances_generator["aux_data"])
+        instance_generator = None
+        for idx_sample in range(2 * num_samples):
+            sample_copy = samples[[idx_sample]].clone()
+            sample_copy[0, is_masked[idx_sample]] = self.model.mask_token_id
+            masked_instance_tokens = self.model.from_internal_precise(sample_copy,
+                                                                      skip_special_tokens=False)["decoded_data"][0]
 
-        text_examples = self.generator.from_internal(generated_examples)
+            instance_tokens = self.model.from_internal_precise(samples[[idx_sample]], skip_special_tokens=False)["decoded_data"][0]
+            instance_str = tuple(" ".join(s_tok) for s_tok in instance_tokens) \
+                if isinstance(instance_tokens, tuple) else " ".join(instance_tokens)
+            instance_generator = self.generator.to_internal([instance_str])
+
+            gen_is_masked.append(self._transform_masks(instance_tokens, masked_instance_tokens))
+            gen_samples.append(instance_generator["input_ids"])
+
+        is_masked = torch.stack(gen_is_masked)
+        gen_samples = torch.cat(gen_samples)
+
+        all_examples = self.generator.generate_masked_samples(gen_samples,
+                                                              generation_mask=is_masked,
+                                                              control_labels=randomly_selected_label,
+                                                              **instance_generator["aux_data"])
+
+        text_examples = self.generator.from_internal(all_examples, **instance_generator["aux_data"])
         model_examples = self.model.to_internal(text_examples)
 
-        scores = self.model.score(model_examples["input_ids"], **model_examples["aux_data"])
+        scores = self.model.score(model_examples["input_ids"], **modeling_kwargs)
         scores_with = scores[::2]
         scores_without = scores[1::2]
         assert scores_with.shape[0] == scores_without.shape[0]
@@ -152,7 +193,7 @@ if __name__ == "__main__":
                                          max_seq_len=41,
                                          device="cpu",
                                          strategy="top_p",
-                                         top_p=0.05,
+                                         top_p=0.95,
                                          monte_carlo_dropout=False)
 
     df_data = load_nli("/home/matej/Documents/data/snli/snli_1.0_dev.txt")
@@ -165,11 +206,10 @@ if __name__ == "__main__":
                                    return_variance=True,
                                    return_num_samples=True,
                                    return_samples=True,
-                                   return_scores=True,
-                                   is_aligned_vocabulary=True)
+                                   return_scores=True)
 
     ex = ("A patient is being worked on by doctors and nurses.", "A man is sleeping.")
-    res = explainer.explain_text(ex, label=2, min_samples_per_feature=10)
+    res = explainer.explain_text(ex, label=2, min_samples_per_feature=5)
     for curr_token, curr_imp, curr_var in zip(res["input"], res["importance"], res["var"]):
         print(f"{curr_token} = {curr_imp: .4f} (var: {curr_var: .4f})")
 

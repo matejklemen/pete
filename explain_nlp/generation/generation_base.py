@@ -45,7 +45,8 @@ class SampleGenerator:
         """ Convert integer-encoded tokens to str-encoded tokens, but keep them split."""
         raise NotImplementedError
 
-    def from_internal(self, encoded_data: torch.Tensor, skip_special_tokens=True) -> List[Union[str, Tuple[str, ...]]]:
+    def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False,
+                      **kwargs):
         """ Convert from internal generator representation to text."""
         raise NotImplementedError
 
@@ -58,6 +59,7 @@ class SampleGenerator:
                  label: int, **aux_data) -> Dict:
         raise NotImplementedError
 
-    def generate_masked_samples(self, masked_input_ids: torch.Tensor,
+    def generate_masked_samples(self, input_ids: torch.Tensor,
+                                generation_mask: torch.Tensor,
                                 **generation_kwargs):
         raise NotImplementedError

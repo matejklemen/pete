@@ -4,9 +4,8 @@ import torch
 
 from explain_nlp.generation.generation_base import SampleGenerator
 from explain_nlp.methods.ime import IMEExplainer
-from explain_nlp.modeling.modeling_base import InterpretableModel
-from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
 from explain_nlp.methods.utils import sample_permutations
+from explain_nlp.modeling.modeling_base import InterpretableModel
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -24,6 +23,34 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
                          return_scores=return_scores, criterion=criterion)
 
         self.generator = generator
+
+    def _transform_masks(self, _instance_tokens, _masked_instance_tokens):
+        # Returns mask (True/False)!
+        is_pair = isinstance(_instance_tokens, tuple)
+
+        eff_instance_tokens, eff_masked_tokens = _instance_tokens, _masked_instance_tokens
+        if not is_pair:
+            eff_instance_tokens = (_instance_tokens,)
+            eff_masked_tokens = (_masked_instance_tokens,)
+
+        _generator_instance = [[] for _ in range(len(eff_instance_tokens))]
+        for i, (all_orig_tok, all_mask_tok) in enumerate(zip(eff_instance_tokens, eff_masked_tokens)):
+            for orig, masked in zip(all_orig_tok, all_mask_tok):
+                transformed_tok = self.generator.tokenizer.tokenize(orig)
+
+                # TODO: could probably do this on IDs and only operate on strings when really needed
+                if masked == self.model.mask_token:
+                    _generator_instance[i].extend([self.generator.mask_token] * len(transformed_tok))
+                else:
+                    _generator_instance[i].append(orig)
+
+        if is_pair:
+            _generator_instance = tuple([" ".join(curr_tokens) for curr_tokens in _generator_instance])
+        else:
+            _generator_instance = " ".join(_generator_instance[0])
+
+        _generator_instance = self.generator.to_internal([_generator_instance])
+        return _generator_instance["input_ids"][0] == self.generator.mask_token_id
 
     @torch.no_grad()
     def estimate_feature_importance(self, idx_feature: Union[int, List[int]], instance: torch.Tensor, num_samples: int,
@@ -57,30 +84,39 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         else:
             randomly_selected_label = [None] * num_samples
 
-        masked_samples = instance.repeat((2 * num_samples, 1))
+        is_masked = torch.zeros((2 * num_samples, num_features), dtype=torch.bool)
         for idx_sample in range(num_samples):
             curr_feature_pos = int(feature_pos[idx_sample, 1])
             changed_features = self.indexer(eff_feature_groups, indices[idx_sample, curr_feature_pos + 1:])
 
             # 1 sample with, 1 sample without current feature fixed
-            masked_samples[2 * idx_sample: 2 * idx_sample + 2, changed_features] = self.model.mask_token_id
-            masked_samples[2 * idx_sample + 1, idx_feature] = self.model.mask_token_id
+            is_masked[2 * idx_sample: 2 * idx_sample + 2, changed_features] = True
+            is_masked[2 * idx_sample + 1, idx_feature] = True
 
-        text_masked_samples = []
-        for seq_or_seq_pair in self.model.from_internal(masked_samples, skip_special_tokens=False, **modeling_kwargs):
-            if isinstance(seq_or_seq_pair, tuple):
-                s1, s2 = seq_or_seq_pair
-                text_masked_samples.append((s1.replace(self.model.mask_token, self.generator.mask_token),
-                                            s2.replace(self.model.mask_token, self.generator.mask_token)))
-            else:
-                text_masked_samples.append(seq_or_seq_pair.replace(self.model.mask_token, self.generator.mask_token))
+        instance_tokens = self.model.from_internal_precise(instance, skip_special_tokens=False)["decoded_data"][0]
 
-        instances_generator = self.generator.to_internal(text_masked_samples)
-        generated_examples = self.generator.generate_masked_samples(instances_generator["input_ids"],
-                                                                    control_labels=randomly_selected_label,
-                                                                    **instances_generator["aux_data"])
+        # Find out which tokens are masked after converting to generator representation
+        gen_is_masked = []
+        for idx_sample in range(2 * num_samples):
+            masked_instance = instance.clone()
+            masked_instance[0, is_masked[idx_sample]] = self.model.tokenizer.mask_token_id
+            masked_instance_tokens = self.model.from_internal_precise(masked_instance,
+                                                                      skip_special_tokens=False)["decoded_data"][0]
 
-        text_examples = self.generator.from_internal(generated_examples)
+            gen_is_masked.append(self._transform_masks(instance_tokens, masked_instance_tokens))
+
+        is_masked = torch.stack(gen_is_masked)
+        instance_tokens = self.model.from_internal_precise(instance, skip_special_tokens=False)["decoded_data"][0]
+        instance_str = tuple(" ".join(s_tok) for s_tok in instance_tokens) \
+            if isinstance(instance_tokens, tuple) else " ".join(instance_tokens)
+        instance_generator = self.generator.to_internal([instance_str])
+
+        all_examples = self.generator.generate_masked_samples(instance_generator["input_ids"],
+                                                              generation_mask=is_masked,
+                                                              control_labels=randomly_selected_label,
+                                                              **instance_generator["aux_data"])
+
+        text_examples = self.generator.from_internal(all_examples, **instance_generator["aux_data"])
         model_examples = self.model.to_internal(text_examples)
 
         scores = self.model.score(model_examples["input_ids"], **model_examples["aux_data"])
@@ -104,6 +140,9 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
 
 
 if __name__ == "__main__":
+    from explain_nlp.generation.generation_transformers import BertForMaskedLMGenerator
+    from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
+
     model = InterpretableBertForSequenceClassification(tokenizer_name="bert-base-uncased",
                                                        model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
                                                        batch_size=2,
@@ -120,6 +159,7 @@ if __name__ == "__main__":
     generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
                                          model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
                                          batch_size=10,
+                                         max_seq_len=41,
                                          device="cpu",
                                          strategy="top_p",
                                          top_p=0.95)
@@ -166,7 +206,7 @@ if __name__ == "__main__":
                                               return_num_samples=True)
 
     seq = ("A shirtless man skateboards on a ledge.", "A man without a shirt")
-    res = explainer.explain_text(seq, label=0, min_samples_per_feature=100)
+    res = explainer.explain_text(seq, label=0, min_samples_per_feature=5)
     print(f"Sum of importances: {sum(res['importance'])}")
     for curr_token, curr_imp, curr_var in zip(res["input"], res["importance"], res["var"]):
         print(f"{curr_token} = {curr_imp: .4f} (var: {curr_var: .4f})")

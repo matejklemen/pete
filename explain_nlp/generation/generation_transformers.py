@@ -158,11 +158,20 @@ class GPTLMGenerator(SampleGenerator):
         }
 
     @torch.no_grad()
-    def generate_masked_samples(self, masked_input_ids: torch.Tensor,
+    def generate_masked_samples(self, input_ids: torch.Tensor,
+                                generation_mask: torch.Tensor,
                                 **generation_kwargs):
-        num_samples, num_features = masked_input_ids.shape
+        num_samples = generation_mask.shape[0]
+        num_features = input_ids.shape[1]
 
-        eff_input_ids = masked_input_ids.clone()
+        if input_ids.shape[0] != 1 and input_ids.shape[0] != num_samples:
+            raise ValueError(f"input_ids ({input_ids.shape[0]} examples) can't be broadcasted to shape of "
+                             f"generation mask ({generation_mask.shape[0]} examples)")
+
+        eff_input_ids = input_ids
+        if input_ids.shape[0] == 1:
+            eff_input_ids = input_ids.repeat((num_samples, 1))
+
         # Note: currently assuming generation additional data is same for all samples
         eff_aux_data = {k: generation_kwargs[k].repeat((self.batch_size, 1)).to(self.device)
                         for k in ["attention_mask"]}
@@ -175,7 +184,7 @@ class GPTLMGenerator(SampleGenerator):
             s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
 
             curr_inputs = eff_input_ids[s_b: e_b]
-            curr_masked = curr_inputs == self.mask_token_id
+            curr_masked = generation_mask[s_b: e_b]
 
             curr_batch_size = curr_inputs.shape[0]
             _batch_indexer = torch.arange(curr_batch_size)
@@ -189,6 +198,7 @@ class GPTLMGenerator(SampleGenerator):
                 if not torch.any(is_feature_masked):
                     continue
 
+                curr_inputs[:, s_c: e_c][is_feature_masked] = self.tokenizer.mask_token_id
                 curr_aux_data = {k: v[:curr_batch_size, :s_c] for k, v in eff_aux_data.items()}
 
                 logits = self.generator(input_ids=curr_inputs[:, :s_c].to(self.device), **curr_aux_data)["logits"]
@@ -276,9 +286,11 @@ class GPTControlledLMGenerator(GPTLMGenerator):
         }
 
     @torch.no_grad()
-    def generate_masked_samples(self, masked_input_ids: torch.Tensor,
+    def generate_masked_samples(self, input_ids: torch.Tensor,
+                                generation_mask: torch.Tensor,
                                 **generation_kwargs):
-        eff_input_ids = extend_tensor(masked_input_ids)
+        eff_input_ids = extend_tensor(input_ids)
+        eff_generation_mask = extend_tensor(generation_mask)
 
         # Note: currently assuming generation additional data is same for all samples
         eff_aux_data = {k: generation_kwargs[k].repeat((self.batch_size, 1)).to(self.device)
@@ -286,12 +298,15 @@ class GPTControlledLMGenerator(GPTLMGenerator):
         eff_aux_data = {k: extend_tensor(v) for k, v in eff_aux_data.items()}
         # Control labels are attendable
         eff_aux_data["attention_mask"][:, 1] = 1
+        eff_generation_mask[:, 1] = False
 
         control_labels = generation_kwargs["control_labels"]
         encoded_control_labels = self.tokenizer.encode(control_labels, add_special_tokens=False)
         eff_input_ids[:, 1] = torch.tensor(encoded_control_labels)
 
-        all_examples = super().generate_masked_samples(masked_input_ids=eff_input_ids, **eff_aux_data)
+        all_examples = super().generate_masked_samples(input_ids=eff_input_ids,
+                                                       generation_mask=eff_generation_mask,
+                                                       **eff_aux_data)
         valid_tokens = torch.ones(eff_input_ids.shape[1], dtype=torch.bool)
         valid_tokens[1] = False
 
@@ -428,10 +443,19 @@ class BertForMaskedLMGenerator(SampleGenerator):
         return formatted_res
 
     @torch.no_grad()
-    def generate_masked_samples(self, masked_input_ids: torch.Tensor,
+    def generate_masked_samples(self, input_ids: torch.Tensor,
+                                generation_mask: torch.Tensor,
                                 **generation_kwargs):
-        num_samples, num_features = masked_input_ids.shape
-        eff_input_ids = masked_input_ids.clone()
+        num_samples = generation_mask.shape[0]
+        num_features = input_ids.shape[1]
+
+        if input_ids.shape[0] != 1 and input_ids.shape[0] != num_samples:
+            raise ValueError(f"input_ids ({input_ids.shape[0]} examples) can't be broadcasted to shape of "
+                             f"generation mask ({generation_mask.shape[0]} examples)")
+
+        eff_input_ids = input_ids
+        if input_ids.shape[0] == 1:
+            eff_input_ids = input_ids.repeat((num_samples, 1))
 
         # Note: currently assuming generation additional data is same for all samples
         eff_aux_data = {k: generation_kwargs[k].repeat((self.batch_size, 1)).to(self.device)
@@ -445,7 +469,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
             s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
 
             curr_inputs = eff_input_ids[s_b: e_b]
-            curr_masked = curr_inputs == self.mask_token_id
+            curr_masked = generation_mask[s_b: e_b]
 
             curr_batch_size = curr_inputs.shape[0]
             _batch_indexer = torch.arange(curr_batch_size)
@@ -459,6 +483,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
                 if not torch.any(is_feature_masked):
                     continue
 
+                curr_inputs[:, s_c: e_c][is_feature_masked] = self.tokenizer.mask_token_id
                 curr_aux_data = {k: v[: curr_batch_size] for k, v in eff_aux_data.items()}
 
                 logits = self.generator(input_ids=curr_inputs.to(self.device), **curr_aux_data)["logits"]
@@ -566,9 +591,11 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         }
 
     @torch.no_grad()
-    def generate_masked_samples(self, masked_input_ids: torch.Tensor,
+    def generate_masked_samples(self, input_ids: torch.Tensor,
+                                generation_mask: torch.Tensor,
                                 **generation_kwargs):
-        eff_input_ids = extend_tensor(masked_input_ids)
+        eff_input_ids = extend_tensor(input_ids)
+        eff_generation_mask = extend_tensor(generation_mask)
 
         # Note: currently assuming generation additional data is same for all samples
         eff_aux_data = {k: generation_kwargs[k].repeat((self.batch_size, 1)).to(self.device)
@@ -576,12 +603,14 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         eff_aux_data = {k: extend_tensor(v) for k, v in eff_aux_data.items()}
         # Control labels are attendable
         eff_aux_data["attention_mask"][:, 1] = 1
+        eff_generation_mask[:, 1] = False
 
         control_labels = generation_kwargs["control_labels"]
         encoded_control_labels = self.tokenizer.encode(control_labels, add_special_tokens=False)
         eff_input_ids[:, 1] = torch.tensor(encoded_control_labels)
 
-        all_examples = super().generate_masked_samples(masked_input_ids=eff_input_ids,
+        all_examples = super().generate_masked_samples(input_ids=eff_input_ids,
+                                                       generation_mask=eff_generation_mask,
                                                        **eff_aux_data)
         valid_tokens = torch.ones(eff_input_ids.shape[1], dtype=torch.bool)
         valid_tokens[1] = False
