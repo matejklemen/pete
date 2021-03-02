@@ -316,7 +316,8 @@ class GPTControlledLMGenerator(GPTLMGenerator):
 class BertForMaskedLMGenerator(SampleGenerator):
     def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
                  strategy="top_k", top_p=0.9, top_k=5, threshold=0.1,
-                 generate_cover: Optional[bool] = False, monte_carlo_dropout: Optional[bool] = False):
+                 generate_cover: Optional[bool] = False, monte_carlo_dropout: Optional[bool] = False,
+                 allowed_values: Optional[List[torch.Tensor]] = None):
         super().__init__(max_seq_len=max_seq_len, batch_size=batch_size, device=device,
                          strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
         self.tokenizer_name = tokenizer_name
@@ -333,6 +334,22 @@ class BertForMaskedLMGenerator(SampleGenerator):
             self.generator.eval()
 
         self.special_tokens_set = set(self.tokenizer.all_special_ids)
+
+        if allowed_values is not None:
+            assert len(allowed_values) == self.max_seq_len
+            self.impossible_values_mask = torch.ones((self.max_seq_len, len(self.tokenizer)), dtype=torch.bool)
+            for idx_feature, curr_possible in enumerate(allowed_values):
+                self.impossible_values_mask[idx_feature, curr_possible] = False
+
+            def mask_impossible(curr_logits, position):
+                curr_logits[:, self.impossible_values_mask[position, :]] = -float("inf")
+                return curr_logits
+        else:
+            def mask_impossible(curr_logits, position):
+                return curr_logits
+
+        self.allowed_values = allowed_values
+        self.mask_impossible = mask_impossible
 
     @property
     def mask_token(self) -> str:
@@ -488,7 +505,9 @@ class BertForMaskedLMGenerator(SampleGenerator):
 
                 logits = self.generator(input_ids=curr_inputs.to(self.device), **curr_aux_data)["logits"]
                 for pos in range(curr_mask_size):
-                    curr_logits = self.filtering_strategy(logits[:, s_c + pos, :])
+                    curr_logits = self.mask_impossible(logits[:, s_c + pos, :], position=(s_c + pos))
+                    curr_logits = self.filtering_strategy(curr_logits)
+
                     probas = torch.softmax(curr_logits, dim=-1)
                     preds = torch.multinomial(probas, num_samples=1)[:, 0].cpu()
 

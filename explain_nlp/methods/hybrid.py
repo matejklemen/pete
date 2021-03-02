@@ -187,6 +187,11 @@ if __name__ == "__main__":
         max_seq_len=41,
         device="cpu"
     )
+
+    df_data = load_nli("/home/matej/Documents/data/snli/snli_1.0_dev.txt")
+    data = model.to_internal([(s1, s2) for s1, s2 in df_data[["sentence1", "sentence2"]].values])
+    weights = create_uniform_weights(data["input_ids"], torch.logical_not(data["perturbable_mask"]))
+
     generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
                                          model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
                                          batch_size=10,
@@ -194,11 +199,22 @@ if __name__ == "__main__":
                                          device="cpu",
                                          strategy="top_p",
                                          top_p=0.95,
-                                         monte_carlo_dropout=False)
+                                         monte_carlo_dropout=False,
+                                         allowed_values=None)
 
-    df_data = load_nli("/home/matej/Documents/data/snli/snli_1.0_dev.txt")
-    data = model.to_internal([(s1, s2) for s1, s2 in df_data[["sentence1", "sentence2"]].values])
-    weights = create_uniform_weights(data["input_ids"], torch.logical_not(data["perturbable_mask"]))
+    generator_data = generator.to_internal([(s1, s2) for s1, s2 in df_data[["sentence1", "sentence2"]].values])
+    possible_values = [torch.unique(data['input_ids'][:, idx_feature]) for idx_feature in range(41)]
+
+    generator = BertForMaskedLMGenerator(
+        tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
+        model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
+        batch_size=10,
+        max_seq_len=41,
+        device="cpu",
+        strategy="top_p",
+        top_p=0.95,
+        monte_carlo_dropout=False,
+        allowed_values=possible_values)
 
     explainer = HybridIMEExplainer(model=model, generator=generator,
                                    sample_data=data["input_ids"],
@@ -210,6 +226,8 @@ if __name__ == "__main__":
 
     ex = ("A patient is being worked on by doctors and nurses.", "A man is sleeping.")
     res = explainer.explain_text(ex, label=2, min_samples_per_feature=5)
+    print(f"Sum:")
+    print(torch.sum(res["importance"]))
     for curr_token, curr_imp, curr_var in zip(res["input"], res["importance"], res["var"]):
         print(f"{curr_token} = {curr_imp: .4f} (var: {curr_var: .4f})")
 
