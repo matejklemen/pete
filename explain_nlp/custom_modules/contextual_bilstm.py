@@ -103,8 +103,13 @@ if __name__ == "__main__":
     from argparse import ArgumentParser
 
     parser = ArgumentParser()
+    parser.add_argument("--training_path", type=str, required=True)
+    parser.add_argument("--validation_path", type=str, required=True)
+    parser.add_argument("--save_dir", type=str, default="contextual_bilstm_lm")
+
     parser.add_argument("--embedding_size", type=int, default=300)
     parser.add_argument("--hidden_size", type=int, default=256)
+    parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--learning_rate", type=float, default=0.001)
     parser.add_argument("--bert_tokenizer_handle", type=str, default="bert-base-uncased",
                         help="Handle of BERT tokenizer whose vocabulary is used in the modeling process")
@@ -116,8 +121,6 @@ if __name__ == "__main__":
     parser.add_argument("--validate_every_n_steps", type=int, default=5000)
     parser.add_argument("--early_stopping_rounds", type=int, default=5)
 
-    parser.add_argument("--save_dir", type=str, default="contextual_bilstm_lm")
-
     args = parser.parse_args()
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
@@ -126,8 +129,8 @@ if __name__ == "__main__":
     tokenizer = ContextualBiLSTMSubwordTokenizer.from_pretrained(args.bert_tokenizer_handle)
     tokenizer.save_pretrained(args.save_dir)
 
-    df_train = load_nli("/home/matej/Documents/data/snli/snli_1.0_train.txt")
-    df_dev = load_nli("/home/matej/Documents/data/snli/snli_1.0_dev.txt")
+    df_train = load_nli(args.training_path)
+    df_dev = load_nli(args.validation_path)
 
     train_dataset = TransformerSeqPairDataset.build(first=df_train["sentence1"].values,
                                                     second=df_train["sentence2"].values,
@@ -146,6 +149,7 @@ if __name__ == "__main__":
     model = ContextualBiLSTM(vocab_size=len(tokenizer),
                              embedding_dim=args.embedding_size,
                              hidden_size=args.hidden_size,
+                             dropout=args.dropout,
                              padding_idx=tokenizer.pad_token_id).to(DEVICE)
     optimizer = optim.Adam(params=model.parameters(), lr=args.learning_rate)
 
