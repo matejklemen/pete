@@ -90,7 +90,7 @@ class ContextualBiLSTM(nn.Module):
             ret["loss"] = loss
 
         # Put uniform random logits to tokens that are not predicted, just so we return logits of same length as input
-        uniform_random = torch.ones((batch_size, 1, self.vocab_size)) / self.vocab_size
+        uniform_random = torch.ones((batch_size, 1, self.vocab_size), device=input_ids.device) / self.vocab_size
         ret["logits"] = torch.cat((uniform_random, ret["logits"], uniform_random), dim=1)
 
         return ret
