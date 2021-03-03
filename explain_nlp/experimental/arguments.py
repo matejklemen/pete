@@ -3,7 +3,7 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument("--experiment_type", type=str, default="required_samples",
                     choices=["accurate_importances", "required_samples"])
-parser.add_argument("--method", type=str, default="ime_hybrid",
+parser.add_argument("--method", type=str, default="ime_dependent_mlm",
                     choices=["ime", "sequential_ime", "whole_word_ime", "ime_mlm", "ime_dependent_mlm", "ime_hybrid"])
 parser.add_argument("--custom_features", type=str, default=None,
                     choices=[None, "words", "sentences", "depparse_simple", "depparse_depth"])
@@ -23,7 +23,7 @@ parser.add_argument("--model_max_words", type=int, default=39)
 parser.add_argument("--model_batch_size", type=int, default=2)
 
 parser.add_argument("--generator_type", type=str, default="bert_mlm",
-                    choices=["bert_mlm", "bert_cmlm", "gpt_lm", "gpt_clm"])
+                    choices=["bert_mlm", "bert_cmlm", "gpt_lm", "gpt_clm", "cblstm_lm"])
 parser.add_argument("--generator_dir", type=str, default="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
                     help="Path or handle of model to be used as a language modeling generator")
 parser.add_argument("--generator_batch_size", type=int, default=8)
@@ -35,7 +35,7 @@ parser.add_argument("--is_aligned_vocabulary", action="store_true")
 
 parser.add_argument("--strategy", type=str, default="top_p",
                     choices=["top_k", "top_p", "threshold", "greedy"])
-parser.add_argument("--top_p", type=float, default=0.999)
+parser.add_argument("--top_p", type=float, default=0.95)
 parser.add_argument("--top_k", type=int, default=3)
 parser.add_argument("--threshold", type=float, default=0.1)
 parser.add_argument("--unique_dropout", type=float, default=0.0)

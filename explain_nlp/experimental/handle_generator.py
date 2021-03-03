@@ -1,5 +1,6 @@
 from typing import List, Optional
 
+from explain_nlp.generation.generation_lstm import ContextualBiLSTMLMGenerator
 from explain_nlp.generation.generation_transformers import BertForMaskedLMGenerator, GPTLMGenerator, \
     GPTControlledLMGenerator, BertForControlledMaskedLMGenerator
 
@@ -64,6 +65,16 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                              top_p=args.top_p,
                                              top_k=args.top_k,
                                              threshold=args.threshold)
+    elif args.generator_type == "cblstm_lm":
+        generator = ContextualBiLSTMLMGenerator(tokenizer_name=args.generator_dir,
+                                                model_name=args.generator_dir,
+                                                max_seq_len=args.generator_max_seq_len,
+                                                batch_size=args.generator_batch_size,
+                                                device="cpu" if args.use_cpu else "cuda",
+                                                strategy=args.strategy,
+                                                top_p=args.top_p,
+                                                top_k=args.top_k,
+                                                threshold=args.threshold)
     else:
         raise NotImplementedError(f"'{args.generator_type}' is not a supported generator type")
 
