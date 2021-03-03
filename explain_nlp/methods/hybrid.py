@@ -3,7 +3,7 @@ from typing import Optional, Union, List
 import torch
 
 from explain_nlp.experimental.data import load_nli
-from explain_nlp.generation.generation_transformers import BertForMaskedLMGenerator
+from explain_nlp.generation.generation_base import SampleGenerator
 from explain_nlp.methods.ime import IMEExplainer
 from explain_nlp.modeling.modeling_base import InterpretableModel
 from explain_nlp.methods.utils import sample_permutations
@@ -18,7 +18,7 @@ def create_uniform_weights(input_ids, special_tokens_mask):
 
 
 class HybridIMEExplainer(IMEExplainer):
-    def __init__(self, sample_data: torch.Tensor, model: InterpretableModel, generator: BertForMaskedLMGenerator,
+    def __init__(self, sample_data: torch.Tensor, model: InterpretableModel, generator: SampleGenerator,
                  data_weights: Optional[torch.Tensor] = None,
                  confidence_interval: Optional[float] = None, max_abs_error: Optional[float] = None,
                  return_variance: Optional[bool] = False, return_num_samples: Optional[bool] = False,
@@ -179,6 +179,7 @@ class HybridIMEExplainer(IMEExplainer):
 
 if __name__ == "__main__":
     from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
+    from explain_nlp.generation.generation_transformers import BertForMaskedLMGenerator
 
     model = InterpretableBertForSequenceClassification(
         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
@@ -203,7 +204,7 @@ if __name__ == "__main__":
                                          allowed_values=None)
 
     generator_data = generator.to_internal([(s1, s2) for s1, s2 in df_data[["sentence1", "sentence2"]].values])
-    possible_values = [torch.unique(data['input_ids'][:, idx_feature]) for idx_feature in range(41)]
+    possible_values = [torch.unique(generator_data['input_ids'][:, idx_feature]) for idx_feature in range(41)]
 
     generator = BertForMaskedLMGenerator(
         tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
