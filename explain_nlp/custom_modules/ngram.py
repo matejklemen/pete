@@ -1,13 +1,14 @@
 import json
 import os
 import pickle
-from typing import Optional, Mapping, Counter
+from collections import Counter
+from typing import Optional, Mapping, List, Dict
 
 import torch
 from tqdm import tqdm
 from transformers import BertTokenizer
 
-
+UnigramTokenizer = BertTokenizer
 TrigramTokenizer = BertTokenizer
 
 
@@ -158,10 +159,10 @@ class TrigramMLM:
 class UnigramModel:
     def __init__(self, logprobas: torch.Tensor,
                  max_length: int = None,
-                 num_classes: int = None):
+                 classes: Dict[str, int] = None):
         self.logprobas = logprobas  # [[num_classes,] [max_length,] vocab_size]
         self.max_length = max_length
-        self.num_classes = num_classes
+        self.classes = classes
 
     @staticmethod
     def from_pretrained(model_dir):
@@ -178,7 +179,8 @@ class UnigramModel:
 
         with open(os.path.join(model_dir, "unigram_config.json"), "w", encoding="utf-8") as f:
             json.dump({
-                "max_length": self.max_length
+                "max_length": self.max_length,
+                "classes": self.classes
             }, fp=f, indent=4)
 
         torch.save(self.logprobas, os.path.join(model_dir, "logprobas.th"))
@@ -224,6 +226,9 @@ if __name__ == "__main__":
     t_e = time()
     logging.info(f"Building dataset ({len(train_set)} examples) took {t_e - t_s: .4f}s")
 
+    control_tokens = [f"<{lbl.upper()}>" for lbl in LABEL_TO_IDX["snli"]]
+    control_to_idx = {lbl: i for i, lbl in enumerate(control_tokens)}
+
     if args.used_model == "unigram":
         count_tensor = torch.zeros(len(tokenizer))
         t_s = time()
@@ -242,6 +247,11 @@ if __name__ == "__main__":
         model = UnigramModel(logprobas)
         model.save_pretrained(args.save_dir)
     elif args.used_model == "controlled_unigram":
+        tokenizer.add_special_tokens({
+            "additional_special_tokens": control_tokens
+        })
+        tokenizer.save_pretrained(args.save_dir)
+
         count_tensor = torch.zeros((len(LABEL_TO_IDX["snli"]), len(tokenizer)))
         t_s = time()
         for label, encoded_label in LABEL_TO_IDX["snli"].items():
@@ -262,7 +272,7 @@ if __name__ == "__main__":
         positional_sum = torch.sum(count_tensor, dim=1)
         logprobas = torch.log(count_tensor) - torch.log(positional_sum.unsqueeze(1))
 
-        model = UnigramModel(logprobas, num_classes=len(LABEL_TO_IDX["snli"]))
+        model = UnigramModel(logprobas, classes=control_to_idx)
         model.save_pretrained(args.save_dir)
     elif args.used_model == "positional_unigram":
         count_tensor = torch.zeros((args.max_length, len(tokenizer)))
@@ -284,6 +294,10 @@ if __name__ == "__main__":
         model = UnigramModel(logprobas, max_length=args.max_length)
         model.save_pretrained(args.save_dir)
     elif args.used_model == "controlled_positional_unigram":
+        tokenizer.add_special_tokens({
+            "additional_special_tokens": control_tokens
+        })
+        tokenizer.save_pretrained(args.save_dir)
         count_tensor = torch.zeros((len(LABEL_TO_IDX["snli"]), args.max_length, len(tokenizer)))
 
         t_s = time()
@@ -307,5 +321,5 @@ if __name__ == "__main__":
         positional_sum = torch.sum(count_tensor, dim=2)
         logprobas = torch.log(count_tensor) - torch.log(positional_sum.unsqueeze(2))
 
-        model = UnigramModel(logprobas, max_length=args.max_length, num_classes=len(LABEL_TO_IDX["snli"]))
+        model = UnigramModel(logprobas, max_length=args.max_length, classes=control_to_idx)
         model.save_pretrained(args.save_dir)
