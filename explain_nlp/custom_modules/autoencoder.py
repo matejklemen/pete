@@ -115,6 +115,7 @@ if __name__ == "__main__":
     parser.add_argument("--embedding_size", type=int, default=300)
     parser.add_argument("--hidden_size", type=int, default=256)
     parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument("--bidirectional", action="store_true")
     parser.add_argument("--learning_rate", type=float, default=0.001)
     parser.add_argument("--bert_tokenizer_handle", type=str, default="bert-base-uncased",
                         help="Handle of BERT tokenizer whose vocabulary is used in the modeling process")
@@ -134,8 +135,8 @@ if __name__ == "__main__":
     tokenizer = LSTMAutoencoderSubwordTokenizer.from_pretrained(args.bert_tokenizer_handle)
     tokenizer.save_pretrained(args.save_dir)
 
-    df_train = load_nli(args.training_path).sample(n=100)
-    df_dev = load_nli(args.validation_path).sample(n=20)
+    df_train = load_nli(args.training_path)
+    df_dev = load_nli(args.validation_path)
 
     train_dataset = TransformerSeqPairDataset.build(first=df_train["sentence1"].values,
                                                     second=df_train["sentence2"].values,
@@ -156,6 +157,7 @@ if __name__ == "__main__":
                             hidden_size=args.hidden_size,
                             max_length=args.max_length,
                             dropout=args.dropout,
+                            bidirectional=args.bidirectional,
                             padding_idx=tokenizer.pad_token_id).to(DEVICE)
     optimizer = optim.Adam(params=model.parameters(), lr=args.learning_rate)
 
