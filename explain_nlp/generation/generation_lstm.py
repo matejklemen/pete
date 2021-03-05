@@ -8,14 +8,6 @@ from explain_nlp.generation.generation_base import SampleGenerator
 
 
 class LSTMConditionallyIndependentGenerator(SampleGenerator):
-    """
-        def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
-                 strategy="top_k", top_p=0.9, top_k=5, threshold=0.1,
-                 monte_carlo_dropout: Optional[bool] = False,
-                 allowed_values: Optional[List[torch.Tensor]] = None):
-        super().__init__(max_seq_len=max_seq_len, batch_size=batch_size, device=device,
-                         strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
-    """
     def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
                  strategy="top_k", top_p=0.9, top_k=5, threshold=0.1,
                  allowed_values: Optional[List[torch.Tensor]] = None):
