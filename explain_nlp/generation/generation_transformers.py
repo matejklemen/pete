@@ -2,7 +2,8 @@ import warnings
 from typing import Optional, List, Union, Tuple, Dict
 
 import torch
-from transformers import OpenAIGPTTokenizer, OpenAIGPTLMHeadModel, BertTokenizer, BertForMaskedLM
+from transformers import OpenAIGPTTokenizer, OpenAIGPTLMHeadModel, BertTokenizer, BertForMaskedLM, RobertaTokenizer, \
+    RobertaForMaskedLM
 
 from explain_nlp.generation.generation_base import SampleGenerator
 from explain_nlp.methods.decoding import greedy_decoding, top_p_decoding
@@ -637,44 +638,216 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         return all_examples[:, valid_tokens]
 
 
+class RobertaForMaskedLMGenerator(SampleGenerator):
+    def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
+                 strategy="top_k", top_p=0.9, top_k=5, threshold=0.1, monte_carlo_dropout: Optional[bool] = False,
+                 allowed_values: Optional[List[torch.Tensor]] = None):
+        super().__init__(max_seq_len=max_seq_len, batch_size=batch_size, device=device,
+                         strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
+        self.tokenizer_name = tokenizer_name
+        self.model_name = model_name
+
+        self.tokenizer = RobertaTokenizer.from_pretrained(self.tokenizer_name)
+        self.generator = RobertaForMaskedLM.from_pretrained(self.model_name, return_dict=True).to(self.device)
+        if monte_carlo_dropout:
+            self.generator.train()
+        else:
+            self.generator.eval()
+
+        self.special_tokens_set = set(self.tokenizer.all_special_ids)
+
+        if allowed_values is not None:
+            assert len(allowed_values) == self.max_seq_len
+            self.impossible_values_mask = torch.ones((self.max_seq_len, len(self.tokenizer)), dtype=torch.bool)
+            for idx_feature, curr_possible in enumerate(allowed_values):
+                self.impossible_values_mask[idx_feature, curr_possible] = False
+
+            def mask_impossible(curr_logits, position):
+                curr_logits[:, self.impossible_values_mask[position, :]] = -float("inf")
+                return curr_logits
+        else:
+            def mask_impossible(curr_logits, position):
+                return curr_logits
+
+        self.allowed_values = allowed_values
+        self.mask_impossible = mask_impossible
+
+    @property
+    def mask_token(self) -> str:
+        return self.tokenizer.mask_token
+
+    @property
+    def mask_token_id(self) -> int:
+        return self.tokenizer.mask_token_id
+
+    def convert_ids_to_tokens(self, ids: torch.Tensor) -> List[List[str]]:
+        return [self.tokenizer.convert_ids_to_tokens(curr_ids) for curr_ids in ids.tolist()]
+
+    def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False,
+                      **kwargs):
+        num_ex = len(encoded_data)
+        attention_fn = None
+        if not take_as_single_sequence:
+            attention_mask = kwargs["attention_mask"]
+            num_aux = attention_mask.shape[0]
+
+            if num_aux == 1:
+                # Assume every sequence has the same attention_mask and token_type_ids
+                attention_fn = lambda idx_example: attention_mask[0]
+            elif num_aux == num_ex:
+                attention_fn = lambda idx_example: attention_mask[idx_example]
+            else:
+                raise ValueError(f"Auxiliary data ({num_aux} ex.) can't be broadcasted to input shape ({num_ex} ex.). "
+                                 f"Either provide a single tensor or one tensor per instance")
+
+        decoded_data = []
+        for idx_example in range(num_ex):
+            if take_as_single_sequence:
+                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example], skip_special_tokens=skip_special_tokens))
+            else:
+                curr_attendable = attention_fn(idx_example).bool()
+                curr_input_ids = encoded_data[idx_example][curr_attendable]
+                sep_positions = torch.flatten(torch.nonzero(curr_input_ids == self.tokenizer.sep_token_id,
+                                                            as_tuple=False))
+
+                if sep_positions.shape[0] == 1:
+                    # <s> <seq> </s>
+                    decoded_data.append(self.tokenizer.decode(curr_input_ids[1: -1],
+                                                              skip_special_tokens=skip_special_tokens))
+                else:
+                    # <s> <seq1> </s></s> <seq2> </s>
+                    starts = [1] + (sep_positions[1::2] + 1).tolist()
+                    ends = sep_positions[::2].tolist() + [-1]
+
+                    multiple_sequences = []
+                    for s, e in zip(starts, ends):
+                        multiple_sequences.append(self.tokenizer.decode(curr_input_ids[s: e],
+                                                                        skip_special_tokens=skip_special_tokens))
+                    decoded_data.append(tuple(multiple_sequences))
+
+        return decoded_data
+
+    def from_internal_precise(self, encoded_data, skip_special_tokens=True):
+        # TODO: properly set `is_continuation` (based on Ġ and add_prefix_space option of tokenizer)
+        converted = {
+            "decoded_data": [],
+            "is_continuation": []
+        }
+        for idx_example in range(encoded_data.shape[0]):
+            curr_example = encoded_data[idx_example]
+            sep_tokens = torch.flatten(torch.nonzero(curr_example == self.tokenizer.sep_token_id, as_tuple=False))
+            end = int(sep_tokens[-1])
+
+            print(curr_example)
+
+            processed_example, is_continuation = [], []
+            for el in curr_example:
+                is_continuation.append(False)
+
+                if skip_special_tokens and el.item() in self.special_tokens_set:
+                    processed_example.append("")
+                    continue
+
+                str_tok = self.tokenizer.convert_ids_to_tokens(el.item())
+                str_tok = self.tokenizer.convert_tokens_to_string(str_tok).strip()
+                processed_example.append(str_tok)
+
+            if sep_tokens.shape[0] == 1:
+                # <s> <seq> </s>
+                converted["decoded_data"].append(processed_example[1: end])
+                converted["is_continuation"].append(is_continuation[1: end])
+            else:
+                # <s> <seq1> </s></s> <seq2> </s> -> (<seq1>, <seq2>)
+                bnd = int(sep_tokens[0])
+                converted["decoded_data"].append((processed_example[1: bnd],
+                                                    processed_example[bnd + 2: end]))
+                converted["is_continuation"].append((is_continuation[1: bnd],
+                                                     is_continuation[bnd + 2: end]))
+
+        return converted
+
+    def to_internal(self, text_data: List[Union[str, Tuple[str, ...]]]) -> Dict:
+        res = self.tokenizer.batch_encode_plus(text_data, return_special_tokens_mask=True, return_tensors="pt",
+                                               padding="max_length", max_length=self.max_seq_len,
+                                               truncation="longest_first")
+        formatted_res = {
+            "input_ids": res["input_ids"],
+            "perturbable_mask": torch.logical_not(res["special_tokens_mask"]),
+            "aux_data": {
+                "attention_mask": res["attention_mask"]
+            }
+        }
+
+        return formatted_res
+
+    def generate_masked_samples(self, input_ids: torch.Tensor, generation_mask: torch.Tensor, **generation_kwargs):
+        num_samples = generation_mask.shape[0]
+        num_features = input_ids.shape[1]
+
+        if input_ids.shape[0] != 1 and input_ids.shape[0] != num_samples:
+            raise ValueError(f"input_ids ({input_ids.shape[0]} examples) can't be broadcasted to shape of "
+                             f"generation mask ({generation_mask.shape[0]} examples)")
+
+        eff_input_ids = input_ids
+        if input_ids.shape[0] == 1:
+            eff_input_ids = input_ids.repeat((num_samples, 1))
+
+        # Note: currently assuming generation additional data is same for all samples
+        eff_aux_data = {k: generation_kwargs[k].repeat((self.batch_size, 1)).to(self.device)
+                        for k in ["attention_mask"]}
+
+        mask_size = 1
+        num_batches = (num_samples + self.batch_size - 1) // self.batch_size
+        num_total_chunks = (num_features + mask_size - 1) // mask_size
+
+        for idx_batch in range(num_batches):
+            s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
+
+            curr_inputs = eff_input_ids[s_b: e_b]
+            curr_masked = generation_mask[s_b: e_b]
+
+            curr_batch_size = curr_inputs.shape[0]
+            _batch_indexer = torch.arange(curr_batch_size)
+
+            # Move left to right by a sliding window of width `mask_size`
+            for idx_masked_chunk in range(num_total_chunks):
+                s_c, e_c = idx_masked_chunk * mask_size, (idx_masked_chunk + 1) * mask_size
+                is_feature_masked = curr_masked[:, s_c: e_c]
+                curr_mask_size = is_feature_masked.shape[1]
+
+                if not torch.any(is_feature_masked):
+                    continue
+
+                curr_inputs[:, s_c: e_c][is_feature_masked] = self.tokenizer.mask_token_id
+                curr_aux_data = {k: v[: curr_batch_size] for k, v in eff_aux_data.items()}
+
+                logits = self.generator(input_ids=curr_inputs.to(self.device), **curr_aux_data)["logits"]
+                for pos in range(curr_mask_size):
+                    curr_logits = self.mask_impossible(logits[:, s_c + pos, :], position=(s_c + pos))
+                    curr_logits = self.filtering_strategy(curr_logits)
+
+                    probas = torch.softmax(curr_logits, dim=-1)
+                    preds = torch.multinomial(probas, num_samples=1)[:, 0].cpu()
+
+                    curr_inputs[is_feature_masked[:, pos], s_c + pos] = preds[is_feature_masked[:, pos]]
+
+        return eff_input_ids
+
+
 if __name__ == "__main__":
-    # generator = BertForControlledMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
-    #                                                model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
-    #                                                control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
-    #                                                batch_size=2,
-    #                                                device="cpu",
-    #                                                strategy="top_k",
-    #                                                top_k=3,
-    #                                                generate_cover=True)
-
-    # generator = GPTControlledLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
-    #                                      model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_clm_maxseqlen42",
-    #                                      control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
-    #                                      batch_size=2,
-    #                                      device="cpu",
-    #                                      strategy="top_p",
-    #                                      top_p=0.9)
-
-    # generator = GPTLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_lm_maxseqlen42",
-    #                            model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_lm_maxseqlen42",
-    #                            batch_size=2,
-    #                            max_seq_len=42,
-    #                            device="cpu")
-
-    generator = BertForMaskedLMGenerator(max_seq_len=41,
-                                         tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
-                                         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
-                                         batch_size=10,
-                                         device="cpu",
-                                         strategy="top_p",
-                                         top_p=0.999,
-                                         monte_carlo_dropout=False)
+    NUM_SAMPLES = 10
+    generator = RobertaForMaskedLMGenerator(tokenizer_name="roberta-base", model_name="roberta-base",
+                                            batch_size=10, max_seq_len=41,
+                                            device="cpu",
+                                            strategy="top_p",
+                                            top_p=0.99,
+                                            monte_carlo_dropout=False)
 
     ex = ("A shirtless man skateboards on a ledge.", "A man without a shirt")
-    label = 0  # "entailment"
     encoded = generator.to_internal([ex])
-    generated = generator.generate(encoded["input_ids"], label=label, perturbable_mask=encoded["perturbable_mask"],
-                                   num_samples=10, **encoded["aux_data"])["input_ids"]
+    generated = generator.generate_masked_samples(encoded["input_ids"],
+                                                  generation_mask=encoded["perturbable_mask"].repeat((NUM_SAMPLES, 1)),
+                                                  **encoded["aux_data"])
 
     for curr_ids in generated:
         print(generator.tokenizer.decode(curr_ids, skip_special_tokens=False))
