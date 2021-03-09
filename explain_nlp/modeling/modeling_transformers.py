@@ -8,7 +8,7 @@ from explain_nlp.utils.tokenization_utils import BertAlignedTokenizationMixin
 
 
 class InterpretableBertBase(InterpretableModel, BertAlignedTokenizationMixin):
-    tokenizer: Union[BertTokenizer, BertTokenizerFast]
+    tokenizer: BertTokenizerFast
 
     @property
     def mask_token(self):
@@ -31,7 +31,7 @@ class InterpretableBertBase(InterpretableModel, BertAlignedTokenizationMixin):
         return set(self.tokenizer.all_special_ids)
 
     def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False,
-                      **kwargs):
+                      return_tokens=False, **kwargs):
         num_ex = len(encoded_data)
         token_type_fn, attention_fn = None, None
         if not take_as_single_sequence:
@@ -50,6 +50,17 @@ class InterpretableBertBase(InterpretableModel, BertAlignedTokenizationMixin):
                 raise ValueError(f"Auxiliary data ({num_aux} ex.) can't be broadcasted to input shape ({num_ex} ex.). "
                                  f"Either provide a single tensor or one tensor per instance")
 
+        if return_tokens:
+            def decoding_fn(input_ids, **decode_kwargs):
+                decoded_ids = []
+                for curr_id in input_ids:
+                    str_token = self.tokenizer.decode(curr_id, **decode_kwargs)
+                    decoded_ids.append(str_token[2:] if str_token.startswith("##") else str_token)
+                return decoded_ids
+        else:
+            def decoding_fn(input_ids, **decode_kwargs):
+                return self.tokenizer.decode(input_ids, **decode_kwargs)
+
         decoded_data = []
         for idx_example in range(num_ex):
             if take_as_single_sequence:
@@ -62,14 +73,14 @@ class InterpretableBertBase(InterpretableModel, BertAlignedTokenizationMixin):
                 seq_ids, tokens_in_seq = torch.unique(curr_token_types, return_counts=True)
                 bins = torch.cumsum(tokens_in_seq, dim=0)
                 if seq_ids.shape[0] == 1:
-                    decoded_data.append(self.tokenizer.decode(curr_input_ids[1: tokens_in_seq[0]],
-                                                              skip_special_tokens=skip_special_tokens))
+                    decoded_data.append(decoding_fn(curr_input_ids[1: tokens_in_seq[0]],
+                                                    skip_special_tokens=skip_special_tokens))
                 else:
                     bins = [1] + bins.tolist()
                     multiple_sequences = []
                     for s, e in zip(bins, bins[1:]):
-                        multiple_sequences.append(self.tokenizer.decode(curr_input_ids[s: e - 1],
-                                                                        skip_special_tokens=skip_special_tokens))
+                        multiple_sequences.append(decoding_fn(curr_input_ids[s: e - 1],
+                                                              skip_special_tokens=skip_special_tokens))
                     decoded_data.append(tuple(multiple_sequences))
 
         return decoded_data
@@ -267,7 +278,7 @@ class InterpretableBertForSequenceClassification(InterpretableBertBase):
                              "on CPU, set device to 'cpu'")
         self.device = torch.device(device)
 
-        self.tokenizer = BertTokenizer.from_pretrained(tokenizer_name)
+        self.tokenizer = BertTokenizerFast.from_pretrained(tokenizer_name)
         self.model = BertForSequenceClassification.from_pretrained(model_name, return_dict=True).to(self.device)
         self.model.eval()
 
