@@ -5,9 +5,10 @@ import torch
 
 from explain_nlp.custom_modules.ngram import TrigramTokenizer, TrigramMLM, UnigramTokenizer, UnigramModel
 from explain_nlp.generation.generation_base import SampleGenerator
+from explain_nlp.utils.tokenization_utils import TransformersAlignedTokenizationMixin
 
 
-class TrigramForMaskedLMGenerator(SampleGenerator):
+class TrigramForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizationMixin):
     def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
                  strategy="top_p", top_p=0.9, top_k=5, threshold=0.1,
                  generate_cover: Optional[bool] = False):
@@ -19,75 +20,13 @@ class TrigramForMaskedLMGenerator(SampleGenerator):
         self.generate_cover = generate_cover
 
         assert self.batch_size > 1 and self.batch_size % 2 == 0
-        assert device == "cpu", "Device 'cuda' is not implemented for trigram MLM, defaulting to 'cpu'"
+        if device == "cuda":
+            warnings.warn("Device 'cuda' is not supported for UnigramLMGenerator, defaulting to cpu")
 
         self.tokenizer = TrigramTokenizer.from_pretrained(self.tokenizer_name)
         self.generator = TrigramMLM.from_pretrained(self.model_name)
 
-    @property
-    def mask_token(self) -> str:
-        return self.tokenizer.mask_token
-
-    @property
-    def mask_token_id(self) -> int:
-        return self.tokenizer.mask_token_id
-
-    def convert_ids_to_tokens(self, ids):
-        return [self.tokenizer.convert_ids_to_tokens(curr_ids) for curr_ids in ids.tolist()]
-
-    def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False,
-                      **kwargs):
-        decoded_data = []
-        for idx_example in range(encoded_data.shape[0]):
-            sep_tokens = torch.nonzero(encoded_data[idx_example] == self.tokenizer.sep_token_id, as_tuple=False)
-            end = int(sep_tokens[-1])
-
-            # Multiple sequences present: [CLS] <seq1> [SEP] <seq2> [SEP] -> (<seq1>, <seq2>)
-            if sep_tokens.shape[0] == 2:
-                bnd = int(sep_tokens[0])
-                seq1 = self.tokenizer.decode(encoded_data[idx_example, 1 :bnd],
-                                             skip_special_tokens=skip_special_tokens)
-                seq2 = self.tokenizer.decode(encoded_data[idx_example, bnd + 1: end],
-                                             skip_special_tokens=skip_special_tokens)
-                decoded_data.append((seq1, seq2))
-            else:
-                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example, :end],
-                                                          skip_special_tokens=skip_special_tokens))
-
-        return decoded_data
-
-    def to_internal(self, text_data):
-        res = self.tokenizer.batch_encode_plus(text_data, return_special_tokens_mask=True, return_tensors="pt",
-                                               padding="max_length", max_length=self.max_seq_len,
-                                               truncation="longest_first")
-
-        formatted_res = {
-            "input_ids": res["input_ids"],
-            "perturbable_mask": torch.logical_not(res["special_tokens_mask"]),
-            "aux_data": {
-                "token_type_ids": res["token_type_ids"],
-                "attention_mask": res["attention_mask"]
-            }
-        }
-
-        return formatted_res
-
-
-class UnigramLMGenerator(SampleGenerator):
-    def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
-                 strategy="top_k", top_p=0.9, top_k=5, threshold=0.1):
-        super().__init__(max_seq_len=max_seq_len, batch_size=batch_size, device=device,
-                         strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
-
-        if device == "cuda":
-            warnings.warn("Device 'cuda' is not supported for UnigramLMGenerator, defaulting to cpu")
-
-        self.tokenizer_name = tokenizer_name
-        self.model_name = model_name
-        self.tokenizer = UnigramTokenizer.from_pretrained(self.tokenizer_name)
-        self.generator = UnigramModel.from_pretrained(self.model_name)
-
-        self.special_tokens_set = set(self.tokenizer.all_special_ids)
+        self.aux_data_keys = ["attention_mask", "token_type_ids"]
 
     @property
     def mask_token(self) -> str:
@@ -97,11 +36,8 @@ class UnigramLMGenerator(SampleGenerator):
     def mask_token_id(self) -> int:
         return self.tokenizer.mask_token_id
 
-    def convert_ids_to_tokens(self, ids: torch.Tensor) -> List[List[str]]:
-        return [self.tokenizer.convert_ids_to_tokens(curr_ids) for curr_ids in ids.tolist()]
-
     def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False,
-                      **kwargs):
+                      return_tokens=False, **kwargs):
         num_ex = len(encoded_data)
         token_type_fn, attention_fn = None, None
         if not take_as_single_sequence:
@@ -120,10 +56,21 @@ class UnigramLMGenerator(SampleGenerator):
                 raise ValueError(f"Auxiliary data ({num_aux} ex.) can't be broadcasted to input shape ({num_ex} ex.). "
                                  f"Either provide a single tensor or one tensor per instance")
 
+        if return_tokens:
+            def decoding_fn(input_ids, **decode_kwargs):
+                decoded_ids = []
+                for curr_id in input_ids:
+                    str_token = self.tokenizer.decode(curr_id, **decode_kwargs)
+                    decoded_ids.append(str_token[2:] if str_token.startswith("##") else str_token)
+                return decoded_ids
+        else:
+            def decoding_fn(input_ids, **decode_kwargs):
+                return self.tokenizer.decode(input_ids, **decode_kwargs)
+
         decoded_data = []
         for idx_example in range(num_ex):
             if take_as_single_sequence:
-                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example], skip_special_tokens=skip_special_tokens))
+                decoded_data.append(decoding_fn(encoded_data[idx_example], skip_special_tokens=skip_special_tokens))
             else:
                 curr_attendable = attention_fn(idx_example).bool()
                 curr_token_types = token_type_fn(idx_example)[curr_attendable]
@@ -132,70 +79,108 @@ class UnigramLMGenerator(SampleGenerator):
                 seq_ids, tokens_in_seq = torch.unique(curr_token_types, return_counts=True)
                 bins = torch.cumsum(tokens_in_seq, dim=0)
                 if seq_ids.shape[0] == 1:
-                    decoded_data.append(self.tokenizer.decode(curr_input_ids[1: tokens_in_seq[0]],
-                                                              skip_special_tokens=skip_special_tokens))
+                    decoded_data.append(decoding_fn(curr_input_ids[1: tokens_in_seq[0]],
+                                                    skip_special_tokens=skip_special_tokens))
                 else:
                     bins = [1] + bins.tolist()
                     multiple_sequences = []
                     for s, e in zip(bins, bins[1:]):
-                        multiple_sequences.append(self.tokenizer.decode(curr_input_ids[s: e - 1],
-                                                                        skip_special_tokens=skip_special_tokens))
+                        multiple_sequences.append(decoding_fn(curr_input_ids[s: e - 1],
+                                                              skip_special_tokens=skip_special_tokens))
                     decoded_data.append(tuple(multiple_sequences))
 
         return decoded_data
 
-    def from_internal_precise(self, encoded_data, skip_special_tokens=True):
-        converted = {
-            "decoded_data": [],
-            "is_continuation": []
-        }
-        for idx_example in range(encoded_data.shape[0]):
-            curr_example = encoded_data[idx_example]
-            sep_tokens = torch.nonzero(curr_example == self.tokenizer.sep_token_id, as_tuple=False)
-            end = int(sep_tokens[-1])
+    def to_internal(self, text_data: Union[List[str], List[Tuple[str, ...]],
+                                           List[List[str]], List[Tuple[List[str], ...]]],
+                    is_split_into_units: Optional[bool] = False) -> Dict:
+        return self.encode_aligned(text_data, is_split_into_units=is_split_into_units)
 
-            processed_example, is_continuation = [], []
-            for el in curr_example:
-                if skip_special_tokens and el.item() in self.special_tokens_set:
-                    processed_example.append("")
-                    is_continuation.append(False)
-                    continue
 
-                str_tok = self.tokenizer.convert_ids_to_tokens(el.item())
-                if str_tok.startswith("##"):
-                    processed_example.append(str_tok[2:])
-                    is_continuation.append(True)
-                else:
-                    processed_example.append(str_tok)
-                    is_continuation.append(False)
+class UnigramLMGenerator(SampleGenerator, TransformersAlignedTokenizationMixin):
+    def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
+                 strategy="top_k", top_p=0.9, top_k=5, threshold=0.1):
+        super().__init__(max_seq_len=max_seq_len, batch_size=batch_size, device=device,
+                         strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
 
-            # Multiple sequences present: [CLS] <seq1> [SEP] <seq2> [SEP] -> (<seq1>, <seq2>)
-            if sep_tokens.shape[0] >= 2:
-                bnd = int(sep_tokens[0])
-                converted["decoded_data"].append((processed_example[1: bnd],
-                                                  processed_example[bnd + 1: end]))
-                converted["is_continuation"].append((is_continuation[1: bnd],
-                                                     is_continuation[bnd + 1: end]))
+        if device == "cuda":
+            warnings.warn("Device 'cuda' is not supported for UnigramLMGenerator, defaulting to cpu")
+
+        self.tokenizer_name = tokenizer_name
+        self.model_name = model_name
+        self.tokenizer = UnigramTokenizer.from_pretrained(self.tokenizer_name)
+        self.generator = UnigramModel.from_pretrained(self.model_name)
+
+        self.aux_data_keys = ["attention_mask", "token_type_ids"]
+        self.special_tokens_set = set(self.tokenizer.all_special_ids)
+
+    @property
+    def mask_token(self) -> str:
+        return self.tokenizer.mask_token
+
+    @property
+    def mask_token_id(self) -> int:
+        return self.tokenizer.mask_token_id
+
+    def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False,
+                      return_tokens: bool = False, **kwargs):
+        num_ex = len(encoded_data)
+        token_type_fn, attention_fn = None, None
+        if not take_as_single_sequence:
+            token_type_ids = kwargs["token_type_ids"]
+            attention_mask = kwargs["attention_mask"]
+            num_aux = token_type_ids.shape[0]
+
+            if num_aux == 1:
+                # Assume every sequence has the same attention_mask and token_type_ids
+                token_type_fn = lambda idx_example: token_type_ids[0]
+                attention_fn = lambda idx_example: attention_mask[0]
+            elif num_aux == num_ex:
+                token_type_fn = lambda idx_example: token_type_ids[idx_example]
+                attention_fn = lambda idx_example: attention_mask[idx_example]
             else:
-                converted["decoded_data"].append(processed_example[1: end])
-                converted["is_continuation"].append(is_continuation[1: end])
+                raise ValueError(f"Auxiliary data ({num_aux} ex.) can't be broadcasted to input shape ({num_ex} ex.). "
+                                 f"Either provide a single tensor or one tensor per instance")
 
-        return converted
+        if return_tokens:
+            def decoding_fn(input_ids, **decode_kwargs):
+                decoded_ids = []
+                for curr_id in input_ids:
+                    str_token = self.tokenizer.decode(curr_id, **decode_kwargs)
+                    decoded_ids.append(str_token[2:] if str_token.startswith("##") else str_token)
+                return decoded_ids
+        else:
+            def decoding_fn(input_ids, **decode_kwargs):
+                return self.tokenizer.decode(input_ids, **decode_kwargs)
 
-    def to_internal(self, text_data: List[Union[str, Tuple[str, ...]]]) -> Dict:
-        res = self.tokenizer.batch_encode_plus(text_data, return_special_tokens_mask=True, return_tensors="pt",
-                                               padding="max_length", max_length=self.max_seq_len,
-                                               truncation="longest_first")
-        formatted_res = {
-            "input_ids": res["input_ids"],
-            "perturbable_mask": torch.logical_not(res["special_tokens_mask"]),
-            "aux_data": {
-                "token_type_ids": res["token_type_ids"],
-                "attention_mask": res["attention_mask"]
-            }
-        }
+        decoded_data = []
+        for idx_example in range(num_ex):
+            if take_as_single_sequence:
+                decoded_data.append(decoding_fn(encoded_data[idx_example], skip_special_tokens=skip_special_tokens))
+            else:
+                curr_attendable = attention_fn(idx_example).bool()
+                curr_token_types = token_type_fn(idx_example)[curr_attendable]
+                curr_input_ids = encoded_data[idx_example][curr_attendable]
 
-        return formatted_res
+                seq_ids, tokens_in_seq = torch.unique(curr_token_types, return_counts=True)
+                bins = torch.cumsum(tokens_in_seq, dim=0)
+                if seq_ids.shape[0] == 1:
+                    decoded_data.append(decoding_fn(curr_input_ids[1: tokens_in_seq[0]],
+                                                    skip_special_tokens=skip_special_tokens))
+                else:
+                    bins = [1] + bins.tolist()
+                    multiple_sequences = []
+                    for s, e in zip(bins, bins[1:]):
+                        multiple_sequences.append(decoding_fn(curr_input_ids[s: e - 1],
+                                                              skip_special_tokens=skip_special_tokens))
+                    decoded_data.append(tuple(multiple_sequences))
+
+        return decoded_data
+
+    def to_internal(self, text_data: Union[List[str], List[Tuple[str, ...]],
+                                           List[List[str]], List[Tuple[List[str], ...]]],
+                    is_split_into_units: Optional[bool] = False) -> Dict:
+        return self.encode_aligned(text_data, is_split_into_units=is_split_into_units)
 
     def generate_masked_samples(self, input_ids: torch.Tensor,
                                 generation_mask: torch.Tensor,

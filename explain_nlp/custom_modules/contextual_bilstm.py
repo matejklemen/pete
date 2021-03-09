@@ -7,17 +7,18 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Subset, DataLoader
 
-from transformers import BertTokenizer
+from transformers import BertTokenizerFast
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 # Use BERT's vocabulary as a slight simplification
-ContextualBiLSTMSubwordTokenizer = BertTokenizer
+ContextualBiLSTMSubwordTokenizer = BertTokenizerFast
 
 
 class ContextualBiLSTM(nn.Module):
     def __init__(self, vocab_size, embedding_dim, hidden_size, dropout=0.0, padding_idx=0):
-        """
+        """ A LSTM that takes into account both left and right context without information leak.
+
         Described in `Contextual Bidirectional Long Short-Term Memory Recurrent Neural Network Language Models:
         A Generative Approach to Sentiment Analysis` (Mousa and Schuller, 2017)
         """

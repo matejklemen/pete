@@ -6,13 +6,12 @@ from typing import Optional
 import torch
 import torch.nn as nn
 from torch.utils.data import Subset, DataLoader
-
-from transformers import BertTokenizer
+from transformers import BertTokenizerFast
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 # Use BERT's vocabulary as a slight simplification
-LSTMAutoencoderSubwordTokenizer = BertTokenizer
+LSTMAutoencoderSubwordTokenizer = BertTokenizerFast
 
 
 class LSTMAutoencoder(nn.Module):

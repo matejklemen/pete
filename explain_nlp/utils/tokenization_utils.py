@@ -1,7 +1,7 @@
-from typing import Union, List, Tuple
+from typing import Union, List, Tuple, Set
 
 import torch
-from transformers import BertTokenizer
+from transformers import BertTokenizer, PreTrainedTokenizerFast
 
 
 class BertAlignedTokenizationMixin:
@@ -96,3 +96,47 @@ class BertAlignedTokenizationMixin:
             ret_dict["aux_data"]["alignment_ids"] = word_ids
 
         return ret_dict
+
+
+class TransformersAlignedTokenizationMixin:
+    tokenizer: PreTrainedTokenizerFast
+    max_seq_len: int
+
+    new_word_offset: int = 0
+    aux_data_keys: List[str]
+    # Additional special tokens, that we want to ignore when aligning words
+    additional_special_token_ids: Set[int] = set()
+
+    def encode_aligned(self, text_data, is_split_into_units=False):
+        num_examples = len(text_data)
+        res = self.tokenizer.batch_encode_plus(text_data,
+                                               is_split_into_words=is_split_into_units,
+                                               return_offsets_mapping=is_split_into_units,
+                                               return_special_tokens_mask=True, return_tensors="pt",
+                                               padding="max_length", max_length=self.max_seq_len,
+                                               truncation="longest_first")
+        formatted_res = {
+            "input_ids": res["input_ids"],
+            "perturbable_mask": torch.logical_not(res["special_tokens_mask"]),
+            "aux_data": {k: res[k] for k in self.aux_data_keys}
+        }
+
+        if is_split_into_units:
+            all_word_ids = []
+            for idx_example in range(num_examples):
+                idx_word, word_ids = -1, []
+                for curr_id, curr_offset in zip(res["input_ids"][idx_example], res["offset_mapping"][idx_example]):
+                    s, e = curr_offset
+                    # Special token
+                    if s == e == 0 or int(curr_id) in self.additional_special_token_ids:
+                        word_ids.append(-1)
+                    else:
+                        if s == self.new_word_offset:
+                            idx_word += 1
+                        word_ids.append(idx_word)
+
+                all_word_ids.append(word_ids)
+
+            formatted_res["aux_data"]["alignment_ids"] = all_word_ids
+
+        return formatted_res

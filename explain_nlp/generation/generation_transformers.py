@@ -2,15 +2,16 @@ import warnings
 from typing import Optional, List, Union, Tuple, Dict
 
 import torch
-from transformers import OpenAIGPTTokenizer, OpenAIGPTLMHeadModel, BertTokenizer, BertForMaskedLM, RobertaTokenizer, \
-    RobertaForMaskedLM
+from transformers import OpenAIGPTLMHeadModel, BertForMaskedLM, RobertaForMaskedLM
+from transformers import OpenAIGPTTokenizerFast, BertTokenizerFast, RobertaTokenizerFast
 
 from explain_nlp.generation.generation_base import SampleGenerator
 from explain_nlp.methods.decoding import greedy_decoding, top_p_decoding
 from explain_nlp.methods.utils import extend_tensor
+from explain_nlp.utils.tokenization_utils import TransformersAlignedTokenizationMixin
 
 
-class GPTLMGenerator(SampleGenerator):
+class GPTLMGenerator(SampleGenerator, TransformersAlignedTokenizationMixin):
     def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=2, device="cuda",
                  strategy="top_p", top_p=0.9, top_k=5, threshold=0.1):
         super().__init__(max_seq_len=max_seq_len, batch_size=batch_size, device=device,
@@ -19,7 +20,7 @@ class GPTLMGenerator(SampleGenerator):
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
 
-        self.tokenizer = OpenAIGPTTokenizer.from_pretrained(self.tokenizer_name)
+        self.tokenizer = OpenAIGPTTokenizerFast.from_pretrained(self.tokenizer_name)
         self.generator = OpenAIGPTLMHeadModel.from_pretrained(self.model_name, return_dict=True)
         if self.tokenizer.mask_token_id is None:
             warnings.warn(f"'mask_token' is not set in GPTLMGenerator's tokenizer, temporarily setting it to '<MASK>'")
@@ -34,6 +35,10 @@ class GPTLMGenerator(SampleGenerator):
         assert self.tokenizer.sep_token_id is not None
         assert self.tokenizer.eos_token_id is not None
 
+        self.additional_special_token_ids = {self.tokenizer.bos_token_id, self.tokenizer.sep_token_id,
+                                             self.tokenizer.eos_token_id}
+        self.aux_data_keys = ["attention_mask"]
+
     @property
     def mask_token(self):
         return self.tokenizer.mask_token
@@ -42,16 +47,24 @@ class GPTLMGenerator(SampleGenerator):
     def mask_token_id(self):
         return self.tokenizer.mask_token_id
 
-    def convert_ids_to_tokens(self, ids):
-        return [self.tokenizer.convert_ids_to_tokens(curr_ids) for curr_ids in ids.tolist()]
-
     def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False,
-                      **kwargs):
+                      return_tokens=False, **kwargs):
+        if return_tokens:
+            def decoding_fn(input_ids, **decode_kwargs):
+                decoded_ids = []
+                for curr_id in input_ids:
+                    str_token = self.tokenizer.decode(curr_id, **decode_kwargs)
+                    decoded_ids.append(str_token[2:] if str_token.startswith("##") else str_token)
+                return decoded_ids
+        else:
+            def decoding_fn(input_ids, **decode_kwargs):
+                return self.tokenizer.decode(input_ids, **decode_kwargs)
+
         decoded_data = []
         for idx_example in range(len(encoded_data)):
             curr_example = encoded_data[idx_example]
             if take_as_single_sequence:
-                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example], skip_special_tokens=skip_special_tokens))
+                decoded_data.append(decoding_fn(encoded_data[idx_example], skip_special_tokens=skip_special_tokens))
             else:
                 sep_tokens = torch.nonzero(curr_example == self.tokenizer.sep_token_id, as_tuple=False)
                 eos_tokens = torch.nonzero(curr_example == self.tokenizer.eos_token_id, as_tuple=False)
@@ -60,45 +73,42 @@ class GPTLMGenerator(SampleGenerator):
                 # Multiple sequences present: <BOS> <seq1> <SEP> <seq2> <EOS> -> (<seq1>, <seq2>)
                 if sep_tokens.shape[0] == 1:
                     bnd = int(sep_tokens[0])
-                    seq1 = self.tokenizer.decode(curr_example[1: bnd], skip_special_tokens=skip_special_tokens)
-                    seq2 = self.tokenizer.decode(curr_example[bnd + 1: end], skip_special_tokens=skip_special_tokens)
+                    seq1 = decoding_fn(curr_example[1: bnd], skip_special_tokens=skip_special_tokens)
+                    seq2 = decoding_fn(curr_example[bnd + 1: end], skip_special_tokens=skip_special_tokens)
                     decoded_data.append((seq1, seq2))
                 else:
-                    decoded_data.append(self.tokenizer.decode(curr_example[: end], skip_special_tokens=skip_special_tokens))
+                    decoded_data.append(decoding_fn(curr_example[: end], skip_special_tokens=skip_special_tokens))
 
         return decoded_data
 
-    def to_internal(self, text_data: List[Union[str, Tuple[str, ...]]]) -> Dict:
+    def to_internal(self, text_data: Union[List[str], List[Tuple[str, ...]],
+                                           List[List[str]], List[Tuple[List[str], ...]]],
+                    is_split_into_units: Optional[bool] = False) -> Dict:
+        if is_split_into_units:
+            def format_example(curr_text):
+                if isinstance(curr_text, list):
+                    return [self.tokenizer.bos_token] + curr_text + [self.tokenizer.sep_token]
+                else:  # tuple
+                    return [self.tokenizer.bos_token] + curr_text[0] + [self.tokenizer.sep_token] + curr_text[1] + [self.tokenizer.eos_token]
+        else:
+            def format_example(curr_text):
+                if isinstance(curr_text, str):
+                    return f"{self.tokenizer.bos_token} {curr_text} {self.tokenizer.sep_token}"
+                else:  # tuple
+                    return f"{self.tokenizer.bos_token} {curr_text[0]} {self.tokenizer.sep_token} {curr_text[1]} {self.tokenizer.eos_token}"
+
         _text_data = []
         for curr_text in text_data:
-            if isinstance(curr_text, str):
-                _text_data.append(
-                    f"{self.tokenizer.bos_token} {curr_text[0]} {self.tokenizer.sep_token}")
-            else:  # tuple/list
-                _text_data.append(
-                    f"{self.tokenizer.bos_token} {curr_text[0]} {self.tokenizer.sep_token} {curr_text[1]} {self.tokenizer.eos_token}")
+            _text_data.append(format_example(curr_text))
 
-        res = self.tokenizer.batch_encode_plus(_text_data, return_special_tokens_mask=True, return_tensors="pt",
-                                               padding="max_length", max_length=self.max_seq_len,
-                                               truncation="longest_first")
+        res = self.encode_aligned(_text_data, is_split_into_units=is_split_into_units)
+        for idx_example in range(res["input_ids"].shape[0]):
+            for idx_feature in range(res["input_ids"].shape[1]):
+                curr_input_id = int(res["input_ids"][idx_example, idx_feature])
+                res["perturbable_mask"][idx_example, idx_feature] &= \
+                    curr_input_id not in self.additional_special_token_ids
 
-        fixed_perturbable_mask = []
-        for idx_example in range(len(text_data)):
-            sequence = res["input_ids"][idx_example].tolist()
-            mask = res["special_tokens_mask"][idx_example].tolist()
-            fixed_perturbable = [not (is_special | (enc_token in self.tokenizer.all_special_ids))
-                                 for is_special, enc_token in zip(mask, sequence)]
-            fixed_perturbable_mask.append(fixed_perturbable)
-
-        formatted_res = {
-            "input_ids": res["input_ids"],
-            "perturbable_mask": torch.tensor(fixed_perturbable_mask),
-            "aux_data": {
-                "attention_mask": res["attention_mask"]
-            }
-        }
-
-        return formatted_res
+        return res
 
     @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor, num_samples: int, label=None,
@@ -314,7 +324,7 @@ class GPTControlledLMGenerator(GPTLMGenerator):
         return all_examples[:, valid_tokens]
 
 
-class BertForMaskedLMGenerator(SampleGenerator):
+class BertForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizationMixin):
     def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
                  strategy="top_k", top_p=0.9, top_k=5, threshold=0.1,
                  generate_cover: Optional[bool] = False, monte_carlo_dropout: Optional[bool] = False,
@@ -327,7 +337,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
 
         assert self.batch_size > 1 and self.batch_size % 2 == 0
 
-        self.tokenizer = BertTokenizer.from_pretrained(self.tokenizer_name)
+        self.tokenizer = BertTokenizerFast.from_pretrained(self.tokenizer_name)
         self.generator = BertForMaskedLM.from_pretrained(self.model_name, return_dict=True).to(self.device)
         if monte_carlo_dropout:
             self.generator.train()
@@ -351,6 +361,7 @@ class BertForMaskedLMGenerator(SampleGenerator):
 
         self.allowed_values = allowed_values
         self.mask_impossible = mask_impossible
+        self.aux_data_keys = ["attention_mask", "token_type_ids"]
 
     @property
     def mask_token(self) -> str:
@@ -360,11 +371,8 @@ class BertForMaskedLMGenerator(SampleGenerator):
     def mask_token_id(self) -> int:
         return self.tokenizer.mask_token_id
 
-    def convert_ids_to_tokens(self, ids):
-        return [self.tokenizer.convert_ids_to_tokens(curr_ids) for curr_ids in ids.tolist()]
-
     def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False,
-                      **kwargs):
+                      return_tokens: bool = False, **kwargs):
         num_ex = len(encoded_data)
         token_type_fn, attention_fn = None, None
         if not take_as_single_sequence:
@@ -383,10 +391,21 @@ class BertForMaskedLMGenerator(SampleGenerator):
                 raise ValueError(f"Auxiliary data ({num_aux} ex.) can't be broadcasted to input shape ({num_ex} ex.). "
                                  f"Either provide a single tensor or one tensor per instance")
 
+        if return_tokens:
+            def decoding_fn(input_ids, **decode_kwargs):
+                decoded_ids = []
+                for curr_id in input_ids:
+                    str_token = self.tokenizer.decode(curr_id, **decode_kwargs)
+                    decoded_ids.append(str_token[2:] if str_token.startswith("##") else str_token)
+                return decoded_ids
+        else:
+            def decoding_fn(input_ids, **decode_kwargs):
+                return self.tokenizer.decode(input_ids, **decode_kwargs)
+
         decoded_data = []
         for idx_example in range(num_ex):
             if take_as_single_sequence:
-                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example], skip_special_tokens=skip_special_tokens))
+                decoded_data.append(decoding_fn(encoded_data[idx_example], skip_special_tokens=skip_special_tokens))
             else:
                 curr_attendable = attention_fn(idx_example).bool()
                 curr_token_types = token_type_fn(idx_example)[curr_attendable]
@@ -395,70 +414,22 @@ class BertForMaskedLMGenerator(SampleGenerator):
                 seq_ids, tokens_in_seq = torch.unique(curr_token_types, return_counts=True)
                 bins = torch.cumsum(tokens_in_seq, dim=0)
                 if seq_ids.shape[0] == 1:
-                    decoded_data.append(self.tokenizer.decode(curr_input_ids[1: tokens_in_seq[0]],
-                                                              skip_special_tokens=skip_special_tokens))
+                    decoded_data.append(decoding_fn(curr_input_ids[1: tokens_in_seq[0]],
+                                                    skip_special_tokens=skip_special_tokens))
                 else:
                     bins = [1] + bins.tolist()
                     multiple_sequences = []
                     for s, e in zip(bins, bins[1:]):
-                        multiple_sequences.append(self.tokenizer.decode(curr_input_ids[s: e - 1],
-                                                                        skip_special_tokens=skip_special_tokens))
+                        multiple_sequences.append(decoding_fn(curr_input_ids[s: e - 1],
+                                                              skip_special_tokens=skip_special_tokens))
                     decoded_data.append(tuple(multiple_sequences))
 
         return decoded_data
 
-    def from_internal_precise(self, encoded_data, skip_special_tokens=True):
-        converted = {
-            "decoded_data": [],
-            "is_continuation": []
-        }
-        for idx_example in range(encoded_data.shape[0]):
-            curr_example = encoded_data[idx_example]
-            sep_tokens = torch.nonzero(curr_example == self.tokenizer.sep_token_id, as_tuple=False)
-            end = int(sep_tokens[-1])
-
-            processed_example, is_continuation = [], []
-            for el in curr_example:
-                if skip_special_tokens and el.item() in self.special_tokens_set:
-                    processed_example.append("")
-                    is_continuation.append(False)
-                    continue
-
-                str_tok = self.tokenizer.convert_ids_to_tokens(el.item())
-                if str_tok.startswith("##"):
-                    processed_example.append(str_tok[2:])
-                    is_continuation.append(True)
-                else:
-                    processed_example.append(str_tok)
-                    is_continuation.append(False)
-
-            # Multiple sequences present: [CLS] <seq1> [SEP] <seq2> [SEP] -> (<seq1>, <seq2>)
-            if sep_tokens.shape[0] >= 2:
-                bnd = int(sep_tokens[0])
-                converted["decoded_data"].append((processed_example[1: bnd],
-                                                    processed_example[bnd + 1: end]))
-                converted["is_continuation"].append((is_continuation[1: bnd],
-                                                     is_continuation[bnd + 1: end]))
-            else:
-                converted["decoded_data"].append(processed_example[1: end])
-                converted["is_continuation"].append(is_continuation[1: end])
-
-        return converted
-
-    def to_internal(self, text_data):
-        res = self.tokenizer.batch_encode_plus(text_data, return_special_tokens_mask=True, return_tensors="pt",
-                                               padding="max_length", max_length=self.max_seq_len,
-                                               truncation="longest_first")
-        formatted_res = {
-            "input_ids": res["input_ids"],
-            "perturbable_mask": torch.logical_not(res["special_tokens_mask"]),
-            "aux_data": {
-                "token_type_ids": res["token_type_ids"],
-                "attention_mask": res["attention_mask"]
-            }
-        }
-
-        return formatted_res
+    def to_internal(self, text_data: Union[List[str], List[Tuple[str, ...]],
+                                           List[List[str]], List[Tuple[List[str], ...]]],
+                    is_split_into_units: Optional[bool] = False) -> Dict:
+        return self.encode_aligned(text_data, is_split_into_units=is_split_into_units)
 
     @torch.no_grad()
     def generate_masked_samples(self, input_ids: torch.Tensor,
@@ -638,7 +609,7 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         return all_examples[:, valid_tokens]
 
 
-class RobertaForMaskedLMGenerator(SampleGenerator):
+class RobertaForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizationMixin):
     def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
                  strategy="top_k", top_p=0.9, top_k=5, threshold=0.1, monte_carlo_dropout: Optional[bool] = False,
                  allowed_values: Optional[List[torch.Tensor]] = None):
@@ -647,13 +618,15 @@ class RobertaForMaskedLMGenerator(SampleGenerator):
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
 
-        self.tokenizer = RobertaTokenizer.from_pretrained(self.tokenizer_name)
+        self.tokenizer = RobertaTokenizerFast.from_pretrained(self.tokenizer_name, add_prefix_space=True)
         self.generator = RobertaForMaskedLM.from_pretrained(self.model_name, return_dict=True).to(self.device)
         if monte_carlo_dropout:
             self.generator.train()
         else:
             self.generator.eval()
 
+        self.aux_data_keys = ["attention_mask"]
+        self.new_word_offset = 1
         self.special_tokens_set = set(self.tokenizer.all_special_ids)
 
         if allowed_values is not None:
@@ -680,11 +653,8 @@ class RobertaForMaskedLMGenerator(SampleGenerator):
     def mask_token_id(self) -> int:
         return self.tokenizer.mask_token_id
 
-    def convert_ids_to_tokens(self, ids: torch.Tensor) -> List[List[str]]:
-        return [self.tokenizer.convert_ids_to_tokens(curr_ids) for curr_ids in ids.tolist()]
-
     def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False,
-                      **kwargs):
+                      return_tokens: bool = False, **kwargs):
         num_ex = len(encoded_data)
         attention_fn = None
         if not take_as_single_sequence:
@@ -700,10 +670,17 @@ class RobertaForMaskedLMGenerator(SampleGenerator):
                 raise ValueError(f"Auxiliary data ({num_aux} ex.) can't be broadcasted to input shape ({num_ex} ex.). "
                                  f"Either provide a single tensor or one tensor per instance")
 
+        if return_tokens:
+            def decoding_fn(input_ids, **decode_kwargs):
+                return [self.tokenizer.decode(curr_id, **decode_kwargs) for curr_id in input_ids]
+        else:
+            def decoding_fn(input_ids, **decode_kwargs):
+                return self.tokenizer.decode(input_ids, **decode_kwargs)
+
         decoded_data = []
         for idx_example in range(num_ex):
             if take_as_single_sequence:
-                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example], skip_special_tokens=skip_special_tokens))
+                decoded_data.append(decoding_fn(encoded_data[idx_example], skip_special_tokens=skip_special_tokens))
             else:
                 curr_attendable = attention_fn(idx_example).bool()
                 curr_input_ids = encoded_data[idx_example][curr_attendable]
@@ -712,8 +689,7 @@ class RobertaForMaskedLMGenerator(SampleGenerator):
 
                 if sep_positions.shape[0] == 1:
                     # <s> <seq> </s>
-                    decoded_data.append(self.tokenizer.decode(curr_input_ids[1: -1],
-                                                              skip_special_tokens=skip_special_tokens))
+                    decoded_data.append(decoding_fn(curr_input_ids[1: -1], skip_special_tokens=skip_special_tokens))
                 else:
                     # <s> <seq1> </s></s> <seq2> </s>
                     starts = [1] + (sep_positions[1::2] + 1).tolist()
@@ -721,64 +697,16 @@ class RobertaForMaskedLMGenerator(SampleGenerator):
 
                     multiple_sequences = []
                     for s, e in zip(starts, ends):
-                        multiple_sequences.append(self.tokenizer.decode(curr_input_ids[s: e],
-                                                                        skip_special_tokens=skip_special_tokens))
+                        multiple_sequences.append(decoding_fn(curr_input_ids[s: e],
+                                                              skip_special_tokens=skip_special_tokens))
                     decoded_data.append(tuple(multiple_sequences))
 
         return decoded_data
 
-    def from_internal_precise(self, encoded_data, skip_special_tokens=True):
-        # TODO: properly set `is_continuation` (based on Ġ and add_prefix_space option of tokenizer)
-        converted = {
-            "decoded_data": [],
-            "is_continuation": []
-        }
-        for idx_example in range(encoded_data.shape[0]):
-            curr_example = encoded_data[idx_example]
-            sep_tokens = torch.flatten(torch.nonzero(curr_example == self.tokenizer.sep_token_id, as_tuple=False))
-            end = int(sep_tokens[-1])
-
-            print(curr_example)
-
-            processed_example, is_continuation = [], []
-            for el in curr_example:
-                is_continuation.append(False)
-
-                if skip_special_tokens and el.item() in self.special_tokens_set:
-                    processed_example.append("")
-                    continue
-
-                str_tok = self.tokenizer.convert_ids_to_tokens(el.item())
-                str_tok = self.tokenizer.convert_tokens_to_string(str_tok).strip()
-                processed_example.append(str_tok)
-
-            if sep_tokens.shape[0] == 1:
-                # <s> <seq> </s>
-                converted["decoded_data"].append(processed_example[1: end])
-                converted["is_continuation"].append(is_continuation[1: end])
-            else:
-                # <s> <seq1> </s></s> <seq2> </s> -> (<seq1>, <seq2>)
-                bnd = int(sep_tokens[0])
-                converted["decoded_data"].append((processed_example[1: bnd],
-                                                    processed_example[bnd + 2: end]))
-                converted["is_continuation"].append((is_continuation[1: bnd],
-                                                     is_continuation[bnd + 2: end]))
-
-        return converted
-
-    def to_internal(self, text_data: List[Union[str, Tuple[str, ...]]]) -> Dict:
-        res = self.tokenizer.batch_encode_plus(text_data, return_special_tokens_mask=True, return_tensors="pt",
-                                               padding="max_length", max_length=self.max_seq_len,
-                                               truncation="longest_first")
-        formatted_res = {
-            "input_ids": res["input_ids"],
-            "perturbable_mask": torch.logical_not(res["special_tokens_mask"]),
-            "aux_data": {
-                "attention_mask": res["attention_mask"]
-            }
-        }
-
-        return formatted_res
+    def to_internal(self, text_data: Union[List[str], List[Tuple[str, ...]],
+                                           List[List[str]], List[Tuple[List[str], ...]]],
+                    is_split_into_units: Optional[bool] = False) -> Dict:
+        return self.encode_aligned(text_data, is_split_into_units=is_split_into_units)
 
     def generate_masked_samples(self, input_ids: torch.Tensor, generation_mask: torch.Tensor, **generation_kwargs):
         num_samples = generation_mask.shape[0]
@@ -836,18 +764,17 @@ class RobertaForMaskedLMGenerator(SampleGenerator):
 
 if __name__ == "__main__":
     NUM_SAMPLES = 10
-    generator = RobertaForMaskedLMGenerator(tokenizer_name="roberta-base", model_name="roberta-base",
-                                            batch_size=10, max_seq_len=41,
-                                            device="cpu",
-                                            strategy="top_p",
-                                            top_p=0.99,
-                                            monte_carlo_dropout=False)
+    generator = GPTLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_lm_maxseqlen42",
+                               model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_lm_maxseqlen42",
+                               batch_size=10, max_seq_len=41,
+                               device="cpu", strategy="top_p", top_p=0.99)
 
-    ex = ("A shirtless man skateboards on a ledge.", "A man without a shirt")
-    encoded = generator.to_internal([ex])
+    ex = ("A shirtless man skateboards on a ledge", "A man without a shirt")
+    pretokenized_ex = (ex[0].split(" "), ex[1].split(" "))
+    encoded = generator.to_internal([pretokenized_ex], is_split_into_units=True)
     generated = generator.generate_masked_samples(encoded["input_ids"],
                                                   generation_mask=encoded["perturbable_mask"].repeat((NUM_SAMPLES, 1)),
                                                   **encoded["aux_data"])
 
-    for curr_ids in generated:
-        print(generator.tokenizer.decode(curr_ids, skip_special_tokens=False))
+    for curr_ex in generator.from_internal(generated, skip_special_tokens=False, **encoded["aux_data"]):
+        print(curr_ex)

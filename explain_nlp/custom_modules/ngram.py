@@ -6,10 +6,10 @@ from typing import Optional, Mapping, List, Dict
 
 import torch
 from tqdm import tqdm
-from transformers import BertTokenizer
+from transformers import BertTokenizerFast
 
-UnigramTokenizer = BertTokenizer
-TrigramTokenizer = BertTokenizer
+UnigramTokenizer = BertTokenizerFast
+TrigramTokenizer = BertTokenizerFast
 
 
 class TrigramMLM:
