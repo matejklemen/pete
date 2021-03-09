@@ -3,6 +3,7 @@ from typing import Optional, Union, Tuple, List
 
 import torch
 from copy import deepcopy
+import logging
 
 from explain_nlp.modeling.modeling_base import InterpretableModel
 from explain_nlp.methods.utils import sample_permutations, incremental_mean, incremental_var, \
@@ -70,31 +71,45 @@ class IMEExplainer:
         self.weights = data_weights
         self.num_features = new_data.shape[1]
 
-    def estimate_feature_importance(self, idx_feature: Union[int, List[int]], instance: torch.Tensor, num_samples: int,
-                                    perturbable_mask: torch.Tensor, label: Optional[str] = None,
-                                    feature_groups: Optional[List[List[int]]] = None, **modeling_kwargs):
-        # Note: instance is currently supposed to be of shape [1, num_features]
+    @torch.no_grad()
+    def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor,
+                                    num_samples: int, perturbable_mask: torch.Tensor,
+                                    feature_groups: Optional[Union[torch.Tensor, List[List[int]]]] = None,
+                                    **modeling_kwargs):
+        """ Estimate importance of a single feature or a group of features for `instance` using `num_samples` samples,
+        where each sample corresponds to a pair of perturbations (one with estimated feature set and another
+        with estimated feature randomized).
+
+        Args:
+            idx_feature:
+                Feature whose importance is estimated. If `feature_groups` is provided, `idx_feature` points to the
+                position of the estimated custom feature.
+            instance:
+                Explained instance, shape: [1, num_features].
+            num_samples:
+                Number of samples to take.
+            perturbable_mask:
+                Mask of features that can be perturbed ("modified"), shape: [1, num_features].
+            feature_groups:
+                Groups that define which features are to be taken as an atomic unit (are to be perturbed together).
+                If not provided, groups of single perturbable features are used.
+            **modeling_kwargs:
+                Additional modeling data (e.g. attention masks,...)
+        """
+
         num_features = int(len(instance[0]))
-
-        # TODO: this is temporary
-        # if isinstance(idx_feature, int):
-        #     print(f"Estimating importance of '{self.model.tokenizer.decode([instance[0, idx_feature]])}'")
-        # else:
-        #     print(f"Estimating importance of '{self.model.tokenizer.decode(instance[0, idx_feature])}'")
-
         if num_features != self.num_features:
             raise ValueError(f"Number of features in instance ({num_features}) "
                              f"does not match number of features in sampling data ({self.num_features})")
 
-        # Custom features present
-        if feature_groups is not None:
-            eff_feature_groups = feature_groups
-            # Convert group of features to a new, "artificial" superfeature
-            idx_superfeature = feature_groups.index(idx_feature)
-        # Use regular, "primary" units (e.g. subwords)
-        else:
+        if feature_groups is None:
             eff_feature_groups = torch.arange(num_features)[perturbable_mask[0]]
             idx_superfeature = eff_feature_groups.tolist().index(idx_feature)
+        else:
+            eff_feature_groups = feature_groups
+            idx_superfeature = idx_feature
+
+        est_instance_features = eff_feature_groups[idx_feature]
 
         # Permuted POSITIONS of (super)features inside `eff_feature_groups`
         indices = sample_permutations(upper=len(eff_feature_groups),
@@ -120,7 +135,7 @@ class IMEExplainer:
 
             # With feature `idx_feature` randomized
             samples[2 * idx_sample + 1, changed_features] = self.sample_data[idx_rand, changed_features]
-            samples[2 * idx_sample + 1, idx_feature] = self.sample_data[idx_rand, idx_feature]
+            samples[2 * idx_sample + 1, est_instance_features] = self.sample_data[idx_rand, est_instance_features]
 
         scores = self.model.score(samples, **modeling_kwargs)
         scores_with = scores[::2]
@@ -140,6 +155,14 @@ class IMEExplainer:
             results["scores"] = scores.tolist()
 
         return results
+
+    def get_generator_mapping(self, input_ids, perturbable_mask, **modeling_kwargs):
+        """ Maps the POSITIONS of perturbable indices in model instance to perturbable indices in generator instance."""
+        num_features = input_ids.shape[1]
+        perturbable_mask = perturbable_mask[0]
+
+        perturbable_inds = torch.arange(num_features)[perturbable_mask]
+        return {pos: int(i) for pos, i in enumerate(perturbable_inds)}
 
     def explain(self, instance: Union[torch.Tensor, List], label: Optional[int] = 0, perturbable_mask: Optional[torch.Tensor] = None,
                 min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None,
@@ -165,41 +188,62 @@ class IMEExplainer:
             List of non-overlapping feature groups to be explained. Used for obtaining explanations of bigger units,
             such as sentences.
         """
-        num_features = len(instance[0])
-        num_additional = 0
+        num_features, num_additional = len(instance[0]), 0
         eff_perturbable_mask = perturbable_mask if perturbable_mask is not None \
             else torch.ones((1, num_features), dtype=torch.bool)
-        self.indexer = tensor_indexer
 
-        feature_groups = None
-        superfeatures = list(range(num_features))
-        if custom_features is not None:
+        perturbable_inds = torch.arange(num_features)[eff_perturbable_mask[0]].tolist()
+        perturbable_position = {idx_pert: i for i, idx_pert in enumerate(perturbable_inds)}
+        mapping = self.get_generator_mapping(instance, eff_perturbable_mask, **modeling_kwargs)
+
+        if custom_features is None:
+            feature_groups, has_bigger_units = [], False
+            for idx_feature in perturbable_inds:
+                new_feature = mapping[perturbable_position[idx_feature]]
+                has_bigger_units |= isinstance(new_feature, list)
+
+                feature_groups.append(new_feature)
+
+            if has_bigger_units:
+                self.indexer = list_indexer
+                feature_groups = [[group] if isinstance(group, int) else group for group in feature_groups]
+            else:
+                self.indexer = tensor_indexer
+                feature_groups = torch.tensor(feature_groups)
+
+            used_inds = perturbable_inds
+        else:
             self.indexer = list_indexer
             num_additional = len(custom_features)
 
             cover_count = torch.zeros(num_features)
+            free_features = eff_perturbable_mask.clone()
+            feature_groups = []
             for curr_group in custom_features:
-                superfeatures.append(curr_group)
                 if not torch.all(eff_perturbable_mask[0, curr_group]):
                     raise ValueError(f"At least one of the features in group {curr_group} is not perturbable")
                 if torch.any(cover_count[curr_group] > 0):
                     raise ValueError(f"Custom features are not allowed to overlap (feature group {curr_group} overlaps "
                                      f"with some other group)")
                 cover_count[curr_group] += 1
-
-            feature_groups = []  # type: Optional[List[List[int]]]
-            free_features = eff_perturbable_mask.clone()
-            for curr_group in custom_features:
                 free_features[0, curr_group] = False
-                feature_groups.append(curr_group)
+
+                mapped_group = list(map(lambda idx_feature: mapping[perturbable_position[idx_feature]], curr_group))
+                feature_groups.append(mapped_group)
 
             for _, idx_feature in torch.nonzero(free_features, as_tuple=False):
                 free_features[0, idx_feature] = False
-                feature_groups.append([idx_feature.item()])
+                feature_groups.append([mapping[perturbable_position[idx_feature]]])
                 num_additional += 1
+
+            used_inds = list(range(num_features, num_features + num_additional))
+
+        inds_group = dict(zip(used_inds, range(len(used_inds))))
+        num_used = len(used_inds)
 
         importance_means = torch.zeros(num_features + num_additional, dtype=torch.float32)
         importance_vars = torch.zeros(num_features + num_additional, dtype=torch.float32)
+        samples_per_feature = torch.ones(num_features + num_additional, dtype=torch.long)
 
         empty_metadata = {}
         if self.return_samples:
@@ -208,27 +252,20 @@ class IMEExplainer:
             empty_metadata["scores"] = []
         feature_debug_data = [deepcopy(empty_metadata) for _ in range(num_features + num_additional)]
 
-        perturbable_inds = torch.arange(num_features)[eff_perturbable_mask[0]].tolist() \
-            if custom_features is None else list(range(num_features, num_features + num_additional))
-        num_perturbable = len(perturbable_inds)
-
-        eff_max_samples = max_samples if max_samples is not None else (num_perturbable * min_samples_per_feature)
+        eff_max_samples = max_samples if max_samples is not None else (num_used * min_samples_per_feature)
         assert min_samples_per_feature >= 2  # otherwise variance isn't defined
-        assert eff_max_samples >= num_perturbable * min_samples_per_feature
+        assert eff_max_samples >= num_used * min_samples_per_feature
 
-        samples_per_feature = torch.ones(num_features + num_additional, dtype=torch.long)
-        samples_per_feature[perturbable_inds] = min_samples_per_feature
-        samples_per_feature[num_features:] = min_samples_per_feature
-
-        taken_samples = num_perturbable * min_samples_per_feature  # cumulative sum
+        samples_per_feature[used_inds] = min_samples_per_feature
+        taken_samples = num_used * min_samples_per_feature  # cumulative sum
 
         # Initial pass: every feature will use at least `min_samples_per_feature` samples
-        for idx_feature in perturbable_inds:
-            res = self.estimate_feature_importance(superfeatures[idx_feature],
+        for idx_feature in used_inds:
+            res = self.estimate_feature_importance(inds_group[idx_feature],
+                                                   feature_groups=feature_groups,
                                                    instance=instance, label=label,
                                                    num_samples=samples_per_feature[idx_feature],
                                                    perturbable_mask=eff_perturbable_mask,
-                                                   feature_groups=feature_groups,
                                                    **modeling_kwargs)
             importance_means[idx_feature] = res["diff_mean"][label]
             importance_vars[idx_feature] = res["diff_var"][label]
@@ -253,11 +290,11 @@ class IMEExplainer:
             var_diffs = self.criterion(importance_vars, samples_per_feature)
             idx_feature = int(torch.argmax(var_diffs))
 
-            res = self.estimate_feature_importance(superfeatures[idx_feature],
+            res = self.estimate_feature_importance(inds_group[idx_feature],
+                                                   feature_groups=feature_groups,
                                                    instance=instance, label=label,
                                                    num_samples=1,
                                                    perturbable_mask=eff_perturbable_mask,
-                                                   feature_groups=feature_groups,
                                                    **modeling_kwargs)
             curr_imp = res["diff_mean"][label]
             samples_per_feature[idx_feature] += 1
@@ -285,7 +322,7 @@ class IMEExplainer:
         # Convert from variance of the differences (sigma^2) to variance of the importances (sigma^2 / m)
         importance_vars /= samples_per_feature
         _samples_per_feature = torch.zeros_like(samples_per_feature)
-        _samples_per_feature[perturbable_inds] = samples_per_feature[perturbable_inds]
+        _samples_per_feature[used_inds] = samples_per_feature[used_inds]
 
         results = {
             "importance": importance_means,
@@ -307,7 +344,7 @@ class IMEExplainer:
                                  for feature_data in feature_debug_data]
 
         if custom_features is not None:
-            results["custom_features"] = superfeatures[num_features:]
+            results["custom_features"] = feature_groups
 
         return results
 
@@ -328,6 +365,7 @@ class IMEExplainer:
         return res
 
 
+# TODO: fix estimate_feature_importance
 class SequentialIMEExplainer(IMEExplainer):
     def __init__(self, sample_data: torch.Tensor, model: InterpretableModel,
                  data_weights: Optional[torch.FloatTensor] = None,
@@ -352,16 +390,10 @@ class SequentialIMEExplainer(IMEExplainer):
             self.valid_indices.append(curr_valid)
 
     def estimate_feature_importance(self, idx_feature: Union[int, List[int]], instance: torch.Tensor, num_samples: int,
-                                    perturbable_mask: torch.Tensor, label: Optional[str] = None,
+                                    perturbable_mask: torch.Tensor,
                                     feature_groups: Optional[List[List[int]]] = None, **modeling_kwargs):
         # Note: instance is currently supposed to be of shape [1, num_features]
         num_features = int(len(instance[0]))
-
-        # TODO: this is temporary
-        # if isinstance(idx_feature, int):
-        #     print(f"Estimating importance of '{self.model.tokenizer.decode([instance[0, idx_feature]])}'")
-        # else:
-        #     print(f"Estimating importance of '{self.model.tokenizer.decode(instance[0, idx_feature])}'")
 
         if num_features != self.num_features:
             raise ValueError(f"Number of features in instance ({num_features}) "
@@ -431,10 +463,11 @@ class SequentialIMEExplainer(IMEExplainer):
         return results
 
 
+# TODO: fix estimate_feature_importance
 class WholeWordIMEExplainer(IMEExplainer):
     """ TODO: currently only intended for use with InterpretableBertForSequenceClassification (not generalized) """
-    def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor, num_samples: int,
-                                    perturbable_mask: torch.Tensor, label: Optional[str] = None,
+    def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor,
+                                    num_samples: int, perturbable_mask: torch.Tensor,
                                     feature_groups: Optional[List[List[int]]] = None, **modeling_kwargs):
         if feature_groups is not None:  # TODO
             raise NotImplementedError("'feature_groups' is not supported in WholeWordIME and probably won't be, but "
@@ -515,7 +548,7 @@ class WholeWordIMEExplainer(IMEExplainer):
 
     def explain_text(self, text_data: Union[List[str], Tuple[List[str], ...]], label: Optional[int] = 0,
                      min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None,
-                     pretokenized_text_data: Optional[Union[List[str], Tuple[List[str], ...]]] = None,  # unused
+                     pretokenized_text_data: Optional[Union[List[str], Tuple[List[str], ...]]] = None,
                      custom_features: Optional[List[List[int]]] = None):
         # Convert instance being interpreted to representation of interpreted model
         model_instance = self.model.words_to_internal([text_data])
@@ -530,6 +563,8 @@ class WholeWordIMEExplainer(IMEExplainer):
 
 if __name__ == "__main__":
     from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
 
     model = InterpretableBertForSequenceClassification(
         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
@@ -557,6 +592,6 @@ if __name__ == "__main__":
                              return_scores=True)
 
     ex = "The big brown fox jumps over the lazy dog."
-    res = explainer.explain_text(ex, label=2, min_samples_per_feature=10, custom_features=[[1], [2], [3, 4], [5, 6, 7, 8, 9], [10]])
+    res = explainer.explain_text(ex, label=2, min_samples_per_feature=10)
     print(res["importance"])
 
