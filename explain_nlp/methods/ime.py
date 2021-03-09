@@ -263,7 +263,7 @@ class IMEExplainer:
         for idx_feature in used_inds:
             res = self.estimate_feature_importance(inds_group[idx_feature],
                                                    feature_groups=feature_groups,
-                                                   instance=instance, label=label,
+                                                   instance=instance,
                                                    num_samples=samples_per_feature[idx_feature],
                                                    perturbable_mask=eff_perturbable_mask,
                                                    **modeling_kwargs)
@@ -292,7 +292,7 @@ class IMEExplainer:
 
             res = self.estimate_feature_importance(inds_group[idx_feature],
                                                    feature_groups=feature_groups,
-                                                   instance=instance, label=label,
+                                                   instance=instance,
                                                    num_samples=1,
                                                    perturbable_mask=eff_perturbable_mask,
                                                    **modeling_kwargs)
