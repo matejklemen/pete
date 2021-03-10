@@ -78,7 +78,7 @@ if __name__ == "__main__":
 
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
     num_subsets = (len(train_set) + args.validate_every_n_examples - 1) // args.validate_every_n_examples
-    best_dev_loss, rounds_no_increase = 0.0, 0
+    best_dev_loss, rounds_no_increase = float("inf"), 0
     stop_training = False
     for idx_epoch in range(args.max_epochs):
         logging.info(f"Epoch #{idx_epoch}/{args.max_epochs - 1}")
