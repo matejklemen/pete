@@ -60,21 +60,15 @@ class TransformerSeqDataset(Dataset):
         self.labels = []
         self.max_seq_len = max_seq_len
 
-        for curr_seq, curr_label in zip(sequences, labels):
-            processed = tokenizer.encode_plus(curr_seq, max_length=max_seq_len,
-                                              padding="max_length", truncation="longest_first",
-                                              return_special_tokens_mask=True)
-            self.input_ids.append(processed["input_ids"])
-            self.segments.append(processed["token_type_ids"])
-            self.attn_masks.append(processed["attention_mask"])
-            self.special_tokens_masks.append(processed["special_tokens_mask"])
-            self.labels.append(curr_label)
+        processed = tokenizer.batch_encode_plus(sequences, return_tensors="pt", max_length=max_seq_len,
+                                                padding="max_length", truncation="longest_first",
+                                                return_special_tokens_mask=True)
 
-        self.input_ids = torch.tensor(self.input_ids)
-        self.segments = torch.tensor(self.segments)
-        self.attn_masks = torch.tensor(self.attn_masks)
-        self.special_tokens_masks = torch.tensor(self.special_tokens_masks)
-        self.labels = torch.tensor(self.labels)
+        self.input_ids = processed["input_ids"]
+        self.segments = processed["token_type_ids"]
+        self.attn_masks = processed["attention_mask"]
+        self.special_tokens_masks = processed["special_tokens_mask"]
+        self.labels = torch.tensor(labels)
 
     def __getitem__(self, idx):
         return {
