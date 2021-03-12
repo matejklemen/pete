@@ -133,7 +133,7 @@ if __name__ == "__main__":
 
     logging.info("Evaluating model on test set")
     uniq, count = torch.unique(test_set.labels, return_counts=True)
-    uniq = [IDX_TO_LABEL["sentinews"][int(_i)] for _i in uniq]
+    uniq = [IDX_TO_LABEL["imsypp"][int(_i)] for _i in uniq]
     count = count.float()
     count /= torch.sum(count)
     logging.info(f"[Diagnostics] Test set class distribution is: {dict(zip(uniq, count.tolist()))}")
