@@ -16,6 +16,7 @@ def _argsort_bin(b):
 
 def visualize_lime_internals(sequence_tokens: List[str], token_mask, probabilities,
                              width_per_sample: Optional[float] = 0.1,
+                             height_per_token: Optional[float] = 0.1,
                              file_path: Optional[str] = None,
                              allow_large_samples: Optional[bool] = False,
                              sort_key: Optional[str] = None,
@@ -53,6 +54,12 @@ def visualize_lime_internals(sequence_tokens: List[str], token_mask, probabiliti
 
     _token_mask = _token_mask.astype(np.bool)
     num_samples = _token_mask.shape[0]
+
+    if num_samples > MAX_INTENDED_SAMPLES and not allow_large_samples:
+        raise ValueError(f"Visualization is not intended to be used with such a large sample "
+                         f"({num_samples} > {MAX_INTENDED_SAMPLES}) as it can become extremely large and convoluted. "
+                         f"To disable this check, pass `allow_large_samples=True`.")
+
     if sort_key == "token_mask":
         sort_inds = _argsort_bin(_token_mask)
     elif sort_key == "probabilities":
@@ -64,16 +71,18 @@ def visualize_lime_internals(sequence_tokens: List[str], token_mask, probabiliti
     _probabilities = _probabilities[sort_inds]
     num_tokens = len(sequence_tokens)
 
-    if num_samples > MAX_INTENDED_SAMPLES and not allow_large_samples:
-        raise ValueError(f"Visualization is not intended to be used with such a large sample "
-                         f"({num_samples} > {MAX_INTENDED_SAMPLES}) as it can become extremely large and convoluted. "
-                         f"To disable this check, pass `allow_large_samples=True`.")
+    # Top plot is fixed to a reasonable height, bottom height can be adjusted if visualizing long sequence
+    fig1_height = 3.0
+    fig2_height = num_tokens * height_per_token
 
-    fig, ax = plt.subplots(2, 1, gridspec_kw={"wspace": 0.0, "hspace": 0.0})
+    fig, ax = plt.subplots(2, 1, gridspec_kw={"wspace": 0.0, "hspace": 0.0,
+                                              "height_ratios": [fig1_height, fig2_height]})
     fig.set_figwidth(num_samples * width_per_sample)
+    fig.set_figheight(fig1_height + fig2_height)
     fig.subplots_adjust(wspace=0, hspace=0)
 
-    ax[0].plot(np.arange(num_samples), _probabilities, "bo", linestyle="none")
+    ax[0].plot(np.arange(num_samples) + 0.5, _probabilities, "bo", linestyle="none")
+    ax[0].set_xlim([0, num_samples])
     ax[0].set_xticks(np.arange(num_samples))
     ax[0].set_xticklabels([""] * num_samples)
     ax[0].set_yticks(np.arange(0.0, 1.0 + 1e-5, 0.2))
