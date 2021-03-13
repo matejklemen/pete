@@ -195,6 +195,7 @@ class GPTLMGenerator(SampleGenerator, TransformersAlignedTokenizationMixin):
             s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
 
             curr_inputs = eff_input_ids[s_b: e_b]
+            orig_tokens = curr_inputs.clone()
             curr_masked = generation_mask[s_b: e_b]
 
             curr_batch_size = curr_inputs.shape[0]
@@ -215,6 +216,8 @@ class GPTLMGenerator(SampleGenerator, TransformersAlignedTokenizationMixin):
                 logits = self.generator(input_ids=curr_inputs[:, :s_c].to(self.device), **curr_aux_data)["logits"]
                 for pos in range(curr_mask_size):
                     curr_logits = logits[:, s_c + pos - 1, :]
+                    for curr_filter in self.filters:
+                        curr_logits = curr_filter(curr_logits, orig_values=orig_tokens[:, s_c + pos])
 
                     # Special tokens are set in place, no new ones should be predicted
                     curr_logits[:, self.tokenizer.bos_token_id] = -float("inf")
@@ -327,13 +330,12 @@ class GPTControlledLMGenerator(GPTLMGenerator):
 class BertForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizationMixin):
     def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
                  strategy="top_k", top_p=0.9, top_k=5, threshold=0.1,
-                 generate_cover: Optional[bool] = False, monte_carlo_dropout: Optional[bool] = False,
+                 monte_carlo_dropout: Optional[bool] = False,
                  allowed_values: Optional[List[torch.Tensor]] = None):
         super().__init__(max_seq_len=max_seq_len, batch_size=batch_size, device=device,
                          strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
-        self.generate_cover = generate_cover
 
         assert self.batch_size > 1 and self.batch_size % 2 == 0
 
@@ -458,6 +460,7 @@ class BertForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizationM
             s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
 
             curr_inputs = eff_input_ids[s_b: e_b]
+            orig_tokens = curr_inputs.clone()
             curr_masked = generation_mask[s_b: e_b]
 
             curr_batch_size = curr_inputs.shape[0]
@@ -477,8 +480,9 @@ class BertForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizationM
 
                 logits = self.generator(input_ids=curr_inputs.to(self.device), **curr_aux_data)["logits"]
                 for pos in range(curr_mask_size):
-                    curr_logits = self.mask_impossible(logits[:, s_c + pos, :], position=(s_c + pos))
-                    curr_logits = self.filtering_strategy(curr_logits)
+                    curr_logits = logits[:, s_c + pos, :]
+                    for curr_filter in self.filters:
+                        curr_logits = curr_filter(curr_logits, orig_values=orig_tokens[:, s_c + pos])
 
                     probas = torch.softmax(curr_logits, dim=-1)
                     preds = torch.multinomial(probas, num_samples=1)[:, 0].cpu()
@@ -732,6 +736,7 @@ class RobertaForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizati
             s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
 
             curr_inputs = eff_input_ids[s_b: e_b]
+            orig_tokens = curr_inputs.clone()
             curr_masked = generation_mask[s_b: e_b]
 
             curr_batch_size = curr_inputs.shape[0]
@@ -751,8 +756,9 @@ class RobertaForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizati
 
                 logits = self.generator(input_ids=curr_inputs.to(self.device), **curr_aux_data)["logits"]
                 for pos in range(curr_mask_size):
-                    curr_logits = self.mask_impossible(logits[:, s_c + pos, :], position=(s_c + pos))
-                    curr_logits = self.filtering_strategy(curr_logits)
+                    curr_logits = logits[:, s_c + pos, :]
+                    for curr_filter in self.filters:
+                        curr_logits = curr_filter(curr_logits, orig_values=orig_tokens[:, s_c + pos])
 
                     probas = torch.softmax(curr_logits, dim=-1)
                     preds = torch.multinomial(probas, num_samples=1)[:, 0].cpu()
@@ -764,10 +770,10 @@ class RobertaForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizati
 
 if __name__ == "__main__":
     NUM_SAMPLES = 10
-    generator = GPTLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_lm_maxseqlen42",
-                               model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/gpt_snli_lm_maxseqlen42",
-                               batch_size=10, max_seq_len=41,
-                               device="cpu", strategy="top_p", top_p=0.99)
+    GENERATOR_HANDLE = "/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm"
+    generator = BertForMaskedLMGenerator(tokenizer_name=GENERATOR_HANDLE, model_name=GENERATOR_HANDLE,
+                                         batch_size=10, max_seq_len=41,
+                                         device="cpu", strategy=["unique", "top_k"], top_k=3)
 
     ex = ("A shirtless man skateboards on a ledge", "A man without a shirt")
     pretokenized_ex = (ex[0].split(" "), ex[1].split(" "))

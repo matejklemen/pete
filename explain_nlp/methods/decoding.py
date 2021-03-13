@@ -1,5 +1,4 @@
 import torch
-import torch.nn.functional as F
 
 
 def greedy_decoding(logits: torch.Tensor):
@@ -7,21 +6,42 @@ def greedy_decoding(logits: torch.Tensor):
 
 
 def top_p_decoding(logits: torch.Tensor, top_p: float):
-    # TODO: instead of keeping all logits, performing softmax over them etc., we could only keep the valid ones
     logits = top_p_filtering(logits, top_p=top_p)
-    return torch.multinomial(F.softmax(logits, dim=-1), num_samples=1)
+    return torch.multinomial(torch.softmax(logits, dim=-1), num_samples=1)
 
 
 def top_k_decoding(logits: torch.Tensor, top_k: int):
     top_logits, top_i = torch.topk(logits, k=top_k)
-    selected = torch.multinomial(F.softmax(top_logits, dim=-1), num_samples=1)
-    return top_i[torch.arange(logits.shape[0]), selected.flatten()].unsqueeze(1)
+    selected = torch.multinomial(torch.softmax(top_logits, dim=-1), num_samples=1)
+    return top_i[torch.arange(logits.shape[0]), torch.flatten(selected)].unsqueeze(1)
 
 
-def top_p_filtering(logits, top_p):
+def filter_factory(strategy="top_p", top_p=0.9, top_k=5, threshold=0.1):
+    if strategy is None:
+        # no-op, used to simplify code
+        def strategy_fn(logits, **strategy_kwargs):
+            return logits
+    elif strategy == "top_p":
+        def strategy_fn(logits, **strategy_kwargs):
+            return top_p_filtering(logits, top_p=top_p)
+    elif strategy == "top_k":
+        def strategy_fn(logits, **strategy_kwargs):
+            return top_k_filtering(logits, top_k=top_k)
+    elif strategy == "threshold":
+        raise NotImplementedError("TODO")
+    elif strategy == "unique":
+        def strategy_fn(logits, orig_values, **strategy_kwargs):
+            return filter_unique(logits, orig_values=orig_values)
+    else:
+        raise NotImplementedError(f"Unrecognized strategy: '{strategy}'")
+
+    return strategy_fn
+
+
+def top_p_filtering(logits, top_p, **kwargs):
     """ Sets tokens that go beyond top_p cumulative probability to unsamplable (logit = -inf). """
     sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-    cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+    cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
 
     sorted_indices_to_remove = cumulative_probs > top_p
     # Shift the indices to the right to keep also the first token above the threshold
@@ -37,7 +57,7 @@ def top_p_filtering(logits, top_p):
     return logits_copy
 
 
-def top_k_filtering(logits, top_k):
+def top_k_filtering(logits, top_k, **kwargs):
     """ Makes all but the top K tokens unsamplable (logit = -inf). """
     mask = torch.ones_like(logits, dtype=torch.bool)
     top_logits, top_i = torch.topk(logits, k=top_k)
@@ -47,6 +67,18 @@ def top_k_filtering(logits, top_k):
     logits_copy[mask] = -float("inf")
 
     return logits_copy
+
+
+def filter_unique(logits, orig_values, **kwargs):
+    """ Makes original input values unsamplable.
+    Args:
+        logits:
+            Predicted logits for token at `position`. Shape: [batch_size, vocab_size]
+        orig_values:
+            Values present in the original input. Shape: [batch_size]
+    """
+    logits[torch.arange(orig_values.shape[0]), orig_values] = -float("inf")
+    return logits
 
 
 if __name__ == "__main__":

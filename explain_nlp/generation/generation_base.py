@@ -2,12 +2,12 @@ from typing import List, Union, Tuple, Dict, Optional
 
 import torch
 
-from explain_nlp.methods.decoding import top_p_filtering, top_k_filtering
+from explain_nlp.methods.decoding import filter_factory
 
 
 class SampleGenerator:
     def __init__(self, max_seq_len: int, batch_size: int = 8, device: str = "cuda",
-                 strategy: str = "top_p", top_p: Optional[float] = None, top_k: Optional[int] = 5,
+                 strategy: Union[str, List] = "top_p", top_p: Optional[float] = None, top_k: Optional[int] = 5,
                  threshold: Optional[float] = 0.1):
         self.max_seq_len = max_seq_len
         self.batch_size = batch_size
@@ -21,17 +21,15 @@ class SampleGenerator:
         if self.device == "cuda" and not torch.cuda.is_available():
             raise ValueError("Device is set to 'cuda', but no CUDA device could be found. If you want to run the model "
                              "on CPU, set device to 'cpu'")
-
-        if self.strategy == "top_p":
-            assert self.top_p is not None
-            self.filtering_strategy = lambda logits: top_p_filtering(logits, top_p=self.top_p)
-        elif self.strategy == "top_k":
-            assert self.top_k is not None
-            self.filtering_strategy = lambda logits: top_k_filtering(logits, top_k=self.top_k)
-        elif self.strategy == "threshold":
-            raise NotImplementedError(f"Unimplemented (but planned) strategy: '{self.strategy}'")  # TODO
-        else:
-            raise NotImplementedError(f"Unsupported filtering strategy: '{strategy}'")
+        self.filters = []
+        strategy_list = strategy if isinstance(strategy, list) else [strategy]
+        for curr_strategy in strategy_list:
+            if isinstance(curr_strategy, str):
+                self.filters.append(filter_factory(strategy=curr_strategy,
+                                                   top_p=top_p, top_k=top_k, threshold=threshold))
+            else:
+                # custom function: (logits, **kwargs) => new_logits
+                self.filters.append(curr_strategy)
 
     @property
     def mask_token(self) -> str:
