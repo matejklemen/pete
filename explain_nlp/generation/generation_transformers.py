@@ -216,15 +216,14 @@ class GPTLMGenerator(SampleGenerator, TransformersAlignedTokenizationMixin):
                 logits = self.generator(input_ids=curr_inputs[:, :s_c].to(self.device), **curr_aux_data)["logits"]
                 for pos in range(curr_mask_size):
                     curr_logits = logits[:, s_c + pos - 1, :]
-                    for curr_filter in self.filters:
-                        curr_logits = curr_filter(curr_logits, orig_values=orig_tokens[:, s_c + pos])
-
                     # Special tokens are set in place, no new ones should be predicted
                     curr_logits[:, self.tokenizer.bos_token_id] = -float("inf")
                     curr_logits[:, self.tokenizer.sep_token_id] = -float("inf")
                     curr_logits[:, self.tokenizer.eos_token_id] = -float("inf")
 
-                    curr_logits = self.filtering_strategy(curr_logits)
+                    for curr_filter in self.filters:
+                        curr_logits = curr_filter(curr_logits, orig_values=orig_tokens[:, s_c + pos])
+
                     probas = torch.softmax(curr_logits, dim=-1)
                     preds = torch.multinomial(probas, num_samples=1)[:, 0].cpu()
 
