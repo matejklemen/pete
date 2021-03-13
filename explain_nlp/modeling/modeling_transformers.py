@@ -64,7 +64,7 @@ class InterpretableBertBase(InterpretableModel, BertAlignedTokenizationMixin):
         decoded_data = []
         for idx_example in range(num_ex):
             if take_as_single_sequence:
-                decoded_data.append(self.tokenizer.decode(encoded_data[idx_example], skip_special_tokens=skip_special_tokens))
+                decoded_data.append(decoding_fn(encoded_data[idx_example], skip_special_tokens=skip_special_tokens))
             else:
                 curr_attendable = attention_fn(idx_example).bool()
                 curr_token_types = token_type_fn(idx_example)[curr_attendable]
