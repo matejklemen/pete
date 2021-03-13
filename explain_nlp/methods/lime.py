@@ -8,7 +8,6 @@ from explain_nlp.generation.generation_base import SampleGenerator
 from explain_nlp.methods.utils import sample_permutations, tensor_indexer, list_indexer
 from explain_nlp.modeling.modeling_base import InterpretableModel
 from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
-from explain_nlp.visualizations.highlight import highlight_plot
 
 
 def exponential_kernel(dists: torch.Tensor, kernel_width: float):
@@ -128,7 +127,7 @@ class LIMEExplainer:
             results["indicators"] = feature_indicators.tolist()
 
         if self.return_scores:
-            results["scores"] = pred_probas[:, [label]]
+            results["scores"] = pred_probas[:, label].tolist()
 
         if custom_features is not None:
             results["custom_features"] = feature_groups
@@ -313,7 +312,7 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
             results["indicators"] = feature_indicators.tolist()
 
         if self.return_scores:
-            results["scores"] = pred_probas[:, [label]]
+            results["scores"] = pred_probas[:, label].tolist()
 
         if custom_features is not None:
             results["custom_features"] = feature_groups
@@ -323,6 +322,8 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
 
 if __name__ == "__main__":
     from explain_nlp.generation.generation_transformers import BertForMaskedLMGenerator
+    from explain_nlp.visualizations.highlight import highlight_plot
+    from explain_nlp.visualizations.internal import visualize_lime_internals
 
     model = InterpretableBertForSequenceClassification(
         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
@@ -331,21 +332,29 @@ if __name__ == "__main__":
         max_seq_len=41,
         device="cpu"
     )
-    generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
-                                         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
-                                         max_seq_len=41,
-                                         batch_size=8,
-                                         device="cpu",
-                                         strategy="top_p",
-                                         top_p=0.95)
+    # generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
+    #                                      model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
+    #                                      max_seq_len=41,
+    #                                      batch_size=8,
+    #                                      device="cpu",
+    #                                      strategy="top_p",
+    #                                      top_p=0.95)
 
-    explainer = LIMEMaskedLMExplainer(model, generator, return_samples=True, return_scores=True)
+    explainer = LIMEExplainer(model, return_samples=True, return_scores=True)
+    # explainer = LIMEMaskedLMExplainer(model, generator=generator, return_samples=True, return_scores=True)
 
     seq = ("A shirtless man skateboards on a ledge.", "A man without a shirt.")
     EXPLAINED_LABEL = 0
     EXPLANATION_LENGTH = 5
-    res = explainer.explain_text(seq, label=EXPLAINED_LABEL, num_samples=5)
-    print(res)
+    res = explainer.explain_text(seq, label=EXPLAINED_LABEL, num_samples=100)
+
+    visualize_lime_internals(sequence_tokens=res["input"][:19],
+                             token_mask=[res["indicators"][_i][:19] for _i in range(len(res["indicators"]))],
+                             probabilities=res["scores"],
+                             width_per_sample=0.1,
+                             height_per_token=0.2,
+                             ylabel="Probability (entailment)",
+                             sort_key="token_mask")
 
     highlight_plot([res["input"]],
                    importances=[res["importance"].tolist()],
