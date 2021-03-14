@@ -73,6 +73,7 @@ class LIMEExplainer:
             used_inds = list(range(num_features, num_features + num_additional))
 
         num_used = len(used_inds)
+        used_inds = torch.tensor(used_inds)
 
         eff_explanation_length = explanation_length if explanation_length is not None else num_used
         assert eff_explanation_length <= num_used
@@ -85,13 +86,13 @@ class LIMEExplainer:
         samples = instance.repeat((num_samples, 1))
 
         feature_indicators = torch.zeros((num_samples, num_features + num_additional), dtype=torch.bool)
-        feature_indicators[:, perturbable_inds] = True  # explained instance
+        feature_indicators[:, used_inds] = True  # explained instance
         removed_mask = torch.zeros_like(samples, dtype=torch.bool)
         for idx_sample in range(num_samples - 1):
             curr_removed_features = self.indexer(feature_groups, permuted_inds[idx_sample, :num_removed[idx_sample]])
 
             removed_mask[idx_sample + 1, curr_removed_features] = True
-            feature_indicators[idx_sample + 1, curr_removed_features] = False
+            feature_indicators[idx_sample + 1, used_inds[permuted_inds[idx_sample, :num_removed[idx_sample]]]] = False
 
         samples = self.generate_neighbourhood(samples, removal_mask=removed_mask, **modeling_kwargs)
 
@@ -146,6 +147,7 @@ class LIMEExplainer:
                            num_samples=num_samples, explanation_length=explanation_length,
                            custom_features=custom_features, **model_instance["aux_data"])
         res["input"] = self.model.convert_ids_to_tokens(model_instance["input_ids"])[0]
+        res["taken_samples"] = num_samples
 
         return res
 
@@ -242,21 +244,23 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
                 cover_count[curr_group] += 1
                 free_features[0, curr_group] = False
 
-                mapped_group = list(map(lambda idx_feature: mapping[perturbable_position[idx_feature]],
-                                        curr_group))
+                mapped_group = []
+                for idx_feature in curr_group:
+                    mapped_group.extend(mapping[perturbable_position[idx_feature]])
+
                 feature_groups.append(curr_group)
                 generator_groups.append(mapped_group)
 
             for _, idx_feature in torch.nonzero(free_features, as_tuple=False):
                 free_features[0, idx_feature] = False
                 feature_groups.append([idx_feature])
-                generator_groups.append([mapping[perturbable_position[idx_feature]]])
+                generator_groups.append(mapping[perturbable_position[idx_feature]])
                 num_additional += 1
 
             used_inds = list(range(num_features, num_features + num_additional))
 
-        inds_group = dict(zip(used_inds, range(len(used_inds))))
         num_used = len(used_inds)
+        used_inds = torch.tensor(used_inds)
 
         eff_explanation_length = explanation_length if explanation_length is not None else num_used
         assert eff_explanation_length <= num_used
@@ -267,16 +271,15 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
         num_removed = torch.randint(1, num_used + 1, size=(num_samples - 1,))
 
         feature_indicators = torch.zeros((num_samples, num_features + num_additional), dtype=torch.bool)
-        feature_indicators[:, perturbable_inds] = True  # explained instance
+        feature_indicators[:, used_inds] = True  # explained instance
 
         samples = instance_generator["input_ids"].repeat((num_samples, 1))
         removed_mask = torch.zeros_like(samples, dtype=torch.bool)
         for idx_sample in range(num_samples - 1):
-            curr_removed_model = self.indexer(feature_groups, permuted_inds[idx_sample, :num_removed[idx_sample]])
             curr_removed_generator = self.indexer(generator_groups, permuted_inds[idx_sample, :num_removed[idx_sample]])
 
             removed_mask[idx_sample + 1, curr_removed_generator] = True
-            feature_indicators[idx_sample + 1, curr_removed_model] = False
+            feature_indicators[idx_sample + 1, used_inds[permuted_inds[idx_sample, :num_removed[idx_sample]]]] = False
 
         samples = self.generate_neighbourhood(samples, removal_mask=removed_mask, **modeling_kwargs)
 

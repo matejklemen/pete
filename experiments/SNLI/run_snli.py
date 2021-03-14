@@ -96,7 +96,7 @@ if __name__ == "__main__":
                                          # Method-specific options below:
                                          used_sample_data=used_sample_data, generator=generator,
                                          num_generated_samples=args.num_generated_samples,
-                                         data_weights=data_weights)
+                                         data_weights=data_weights, kernel_width=args.kernel_width)
 
     # Container that wraps debugging data and a lot of repetitive appends
     method_data = MethodData(method_type=method_type, model_description=model_description,
@@ -145,27 +145,38 @@ if __name__ == "__main__":
                                             pipe=nlp)
             pretokenized_example = pretokenized_test_data[idx_example]
 
+        side_results = {}
         t1 = time()
-        res = method.explain_text(input_pair, pretokenized_text_data=pretokenized_example,
-                                  label=predicted_label, min_samples_per_feature=args.min_samples_per_feature,
-                                  custom_features=curr_features)
-        t2 = time()
-
-        if compute_accurately:
-            taken_or_estimated_samples = res['taken_samples']
+        if "lime" in args.method:
+            res = method.explain_text(input_pair, pretokenized_text_data=pretokenized_example,
+                                      label=predicted_label, num_samples=args.min_samples_per_feature,
+                                      explanation_length=args.explanation_length,
+                                      custom_features=curr_features)
+            t2 = time()
         else:
-            required_samples_per_feature = estimate_feature_samples(res["var"] * res["num_samples"],
-                                                                    alpha=(1 - args.confidence_interval),
-                                                                    max_abs_error=args.max_abs_error)
-            required_samples_per_feature -= res["num_samples"]
-            taken_or_estimated_samples = int(
-                res["taken_samples"] + torch.sum(required_samples_per_feature[required_samples_per_feature > 0])
-            )
+            res = method.explain_text(input_pair, pretokenized_text_data=pretokenized_example,
+                                      label=predicted_label, min_samples_per_feature=args.min_samples_per_feature,
+                                      custom_features=curr_features)
+            t2 = time()
 
-        logging.info(f"[{args.method}] {'taken' if compute_accurately else '(estimated) required'} "
-                     f"samples: {taken_or_estimated_samples}")
+            side_results["variances"] = res["var"].tolist()
+            side_results["num_samples"] = res["num_samples"].tolist()
+
+            if compute_accurately:
+                taken_or_estimated_samples = res['taken_samples']
+            else:
+                required_samples_per_feature = estimate_feature_samples(res["var"] * res["num_samples"],
+                                                                        alpha=(1 - args.confidence_interval),
+                                                                        max_abs_error=args.max_abs_error)
+                required_samples_per_feature -= res["num_samples"]
+                taken_or_estimated_samples = int(
+                    res["taken_samples"] + torch.sum(required_samples_per_feature[required_samples_per_feature > 0])
+                )
+
+            logging.info(f"[{args.method}] {'taken' if compute_accurately else '(estimated) required'} "
+                         f"samples: {taken_or_estimated_samples}")
+
         logging.info(f"[{args.method}] Time taken: {t2 - t1:.2f}s")
-
         sequence_tokens = res["input"]
 
         gen_samples = []
@@ -180,10 +191,11 @@ if __name__ == "__main__":
         method_data.add_example(sequence=sequence_tokens, label=predicted_label, probas=probas[0].tolist(),
                                 actual_label=actual_label, custom_features=curr_features,
                                 importances=res["importance"].tolist(),
-                                variances=res["var"].tolist(), num_samples=res["num_samples"].tolist(),
-                                samples=gen_samples, num_estimated_samples=res["taken_samples"], time_taken=(t2 - t1),
+                                num_estimated_samples=res["taken_samples"], time_taken=(t2 - t1),
+                                samples=gen_samples,
                                 model_scores=[[] if scores is None else scores
-                                              for scores in res["scores"]] if args.return_model_scores else [])
+                                              for scores in res["scores"]] if args.return_model_scores else [],
+                                **side_results)
 
         if (1 + idx_example) % args.save_every_n_examples == 0:
             logging.info(f"Saving data to {args.experiment_dir}")

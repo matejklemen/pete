@@ -3,9 +3,9 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument("--experiment_type", type=str, default="required_samples",
                     choices=["accurate_importances", "required_samples"])
-parser.add_argument("--method", type=str, default="ime_dependent_mlm",
-                    choices=["ime", "ime_mlm", "ime_dependent_mlm", "ime_hybrid"])
-parser.add_argument("--custom_features", type=str, default=None,
+parser.add_argument("--method", type=str, default="lime_lm",
+                    choices=["ime", "lime", "ime_mlm", "ime_dependent_mlm", "ime_hybrid", "lime_lm"])
+parser.add_argument("--custom_features", type=str, default="depparse_simple",
                     choices=[None, "words", "sentences", "depparse_simple", "depparse_depth"])
 parser.add_argument("--min_samples_per_feature", type=int, default=10,
                     help="Minimum number of samples that get created for each feature for initial variance estimation")
@@ -13,6 +13,8 @@ parser.add_argument("--confidence_interval", type=float, default=0.99)
 parser.add_argument("--max_abs_error", type=float, default=0.01)
 parser.add_argument("--return_generated_samples", action="store_true")
 parser.add_argument("--return_model_scores", action="store_true")
+parser.add_argument("--explanation_length", type=int, default=3)
+parser.add_argument("--kernel_width", type=float, default=25.0)
 
 parser.add_argument("--train_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_train.txt")
 parser.add_argument("--test_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_test_xs.txt")

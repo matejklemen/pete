@@ -6,8 +6,8 @@ from explain_nlp.generation.generation_transformers import BertForMaskedLMGenera
 
 
 def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
-    # IME does not require a generator and loading it would be a waste of a lot of memory
-    if args.method in ["ime", "sequential_ime", "whole_word_ime"]:
+    # base IME and LIME do not require a generator and loading it could be a waste of a lot of memory
+    if args.method in ["ime", "lime"]:
         return None, {}
 
     generator_description = {
@@ -27,8 +27,6 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                              top_k=args.top_k,
                                              threshold=args.threshold)
     elif args.generator_type == "bert_cmlm":
-        print(f"Using strategy: {args.strategy}, top_p={args.top_p}, top_k={args.top_k}, "
-              f"unique_dropout={args.unique_dropout}")
         generator = BertForControlledMaskedLMGenerator(tokenizer_name=args.generator_dir,
                                                        model_name=args.generator_dir,
                                                        control_labels=clm_labels,
@@ -53,7 +51,6 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                    top_k=args.top_k,
                                    threshold=args.threshold)
     elif args.generator_type == "gpt_clm":
-        print(f"Using strategy: {args.strategy}, top_p={args.top_p}, top_k={args.top_k}")
         generator = GPTControlledLMGenerator(tokenizer_name=args.generator_dir,
                                              model_name=args.generator_dir,
                                              control_labels=clm_labels,
