@@ -5,6 +5,7 @@ import torch
 from sklearn.linear_model import Ridge
 
 from explain_nlp.generation.generation_base import SampleGenerator
+from explain_nlp.methods.decoding import filter_factory
 from explain_nlp.methods.utils import sample_permutations, tensor_indexer, list_indexer
 from explain_nlp.modeling.modeling_base import InterpretableModel
 from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
@@ -158,6 +159,7 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
         super().__init__(model=model, kernel_width=kernel_width,
                          return_samples=return_samples, return_scores=return_scores)
         self.generator = generator
+        self.generator.filters = [filter_factory("unique")] + self.generator.filters
 
     def generate_neighbourhood(self, samples: torch.Tensor, removal_mask, **generation_kwargs):
         # TODO: control labels!
