@@ -4,7 +4,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--experiment_type", type=str, default="required_samples",
                     choices=["accurate_importances", "required_samples"])
 parser.add_argument("--method", type=str, default="ime_dependent_mlm",
-                    choices=["ime", "sequential_ime", "whole_word_ime", "ime_mlm", "ime_dependent_mlm", "ime_hybrid"])
+                    choices=["ime", "ime_mlm", "ime_dependent_mlm", "ime_hybrid"])
 parser.add_argument("--custom_features", type=str, default=None,
                     choices=[None, "words", "sentences", "depparse_simple", "depparse_depth"])
 parser.add_argument("--min_samples_per_feature", type=int, default=10,
@@ -31,7 +31,6 @@ parser.add_argument("--generator_max_seq_len", type=int, default=41)
 parser.add_argument("--num_generated_samples", type=int, default=100)
 parser.add_argument("--generate_cover", action="store_true", default=False,
                     help="Take all relevant tokens instead of sampling one token from renormalized distributions")
-parser.add_argument("--is_aligned_vocabulary", action="store_true")
 
 parser.add_argument("--strategy", type=str, default="top_p",
                     choices=["top_k", "top_p", "threshold", "greedy"])

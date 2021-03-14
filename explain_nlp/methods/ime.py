@@ -162,7 +162,7 @@ class IMEExplainer:
         perturbable_mask = perturbable_mask[0]
 
         perturbable_inds = torch.arange(num_features)[perturbable_mask]
-        return {pos: int(i) for pos, i in enumerate(perturbable_inds)}
+        return {pos: [int(i)] for pos, i in enumerate(perturbable_inds)}
 
     def explain(self, instance: Union[torch.Tensor, List], label: Optional[int] = 0, perturbable_mask: Optional[torch.Tensor] = None,
                 min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None,
@@ -228,12 +228,14 @@ class IMEExplainer:
                 cover_count[curr_group] += 1
                 free_features[0, curr_group] = False
 
-                mapped_group = list(map(lambda idx_feature: mapping[perturbable_position[idx_feature]], curr_group))
+                mapped_group = []
+                for idx_feature in curr_group:
+                    mapped_group.extend(mapping[perturbable_position[idx_feature]])
                 feature_groups.append(mapped_group)
 
             for _, idx_feature in torch.nonzero(free_features, as_tuple=False):
                 free_features[0, idx_feature] = False
-                feature_groups.append([mapping[perturbable_position[idx_feature]]])
+                feature_groups.append(mapping[perturbable_position[idx_feature]])
                 num_additional += 1
 
             used_inds = list(range(num_features, num_features + num_additional))

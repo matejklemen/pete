@@ -1,8 +1,11 @@
+import json
 import os
+import sys
 from time import time
 
 import stanza
 import torch
+import logging
 
 from explain_nlp.experimental.arguments import parser
 from explain_nlp.experimental.core import MethodData
@@ -17,16 +20,7 @@ from explain_nlp.visualizations.highlight import highlight_plot
 
 if __name__ == "__main__":
     args = parser.parse_args()
-
     DEVICE = torch.device("cpu") if args.use_cpu else torch.device("cuda")
-    print(f"Experiment type: '{args.experiment_type}'")
-    print(f"Used device: {DEVICE}")
-    print(f"Using method '{args.method}'")
-    if args.custom_features is not None:
-        print(f"Using custom features: '{args.custom_features}'")
-
-    nlp = stanza.Pipeline(lang="en", processors="tokenize", use_gpu=not args.use_cpu, tokenize_no_ssplit=True)
-    pretokenized_test_data = None
     compute_accurately = args.experiment_type == "accurate_importances"
 
     if args.experiment_dir is None:
@@ -36,19 +30,39 @@ if __name__ == "__main__":
     if not os.path.exists(args.experiment_dir):
         os.makedirs(args.experiment_dir)
 
-    # Define model and generator
+    # Set up logging to file and stdout
+    log_fmt = logging.Formatter("%(asctime)s [%(levelname)-5.5s]  %(message)s")
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    for curr_handler in [logging.StreamHandler(sys.stdout),
+                         logging.FileHandler(os.path.join(args.experiment_dir, "experiment.log"))]:
+        curr_handler.setFormatter(log_fmt)
+        logger.addHandler(curr_handler)
+
+    # Display used experiment settings on stdout and save to file
+    for k, v in vars(args).items():
+        v_str = str(v)
+        v_str = f"...{v_str[-(50-3):]}" if len(v_str) > 50 else v_str
+        logging.info(f"|{k:30s}|{v_str:50s}|")
+
+    with open(os.path.join(args.experiment_dir, "experiment_config.json"), "w") as f:
+        json.dump(vars(args), fp=f, indent=4)
+
+    nlp = stanza.Pipeline(lang="en", processors="tokenize", use_gpu=not args.use_cpu, tokenize_no_ssplit=True)
+    pretokenized_test_data = None
+
     model = InterpretableBertForSequenceClassification(tokenizer_name=args.model_dir,
                                                        model_name=args.model_dir,
                                                        batch_size=args.model_batch_size,
                                                        max_seq_len=args.model_max_seq_len,
                                                        max_words=args.model_max_words,
                                                        device="cpu" if args.use_cpu else "cuda")
-    model_desc = {"type": "bert", "max_seq_len": args.model_max_seq_len, "handle": args.model_dir}
+    model_description = {"type": "bert", "max_seq_len": args.model_max_seq_len, "handle": args.model_dir}
     generator, gen_desc = load_generator(args,
                                          clm_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"])
 
     df_test = load_nli(args.test_path)
-    if args.method == "whole_word_ime" or args.custom_features is not None:
+    if args.custom_features is not None:
         pretokenized_test_data = []
         for idx_subset in range((df_test.shape[0] + 1024 - 1) // 1024):
             s, e = idx_subset * 1024, (1 + idx_subset) * 1024
@@ -62,28 +76,17 @@ if __name__ == "__main__":
     used_data = {"test_path": args.test_path}
     used_sample_data = None
     data_weights = None
-    if args.method in {"ime", "sequential_ime", "whole_word_ime", "ime_hybrid"}:
+    if args.method in {"ime", "ime_hybrid"}:
+        logging.info("Loading training dataset as sampling data")
         used_data["train_path"] = args.train_path
         df_train = load_nli(args.train_path).sample(frac=1.0).reset_index(drop=True)
-        train_set = TransformerSeqPairDataset.build(df_train["sentence1"].values, df_train["sentence2"].values,
+        used_tokenizer = model.tokenizer if args.method == "ime" else generator.tokenizer
+        train_set = TransformerSeqPairDataset.build(df_train["sentence1"].tolist(), df_train["sentence2"].tolist(),
                                                     labels=df_train["gold_label"].apply(
-                                                        lambda label_str: LABEL_TO_IDX["snli"][label_str]).values,
-                                                    tokenizer=model.tokenizer, max_seq_len=args.model_max_seq_len)
+                                                        lambda label_str: LABEL_TO_IDX["snli"][label_str]).tolist(),
+                                                    tokenizer=used_tokenizer, max_seq_len=args.model_max_seq_len)
         data_weights = create_uniform_weights(train_set.input_ids, train_set.special_tokens_masks)
-
         used_sample_data = train_set.input_ids
-        if args.method == "whole_word_ime":
-            pretokenized_train_data = []
-            for idx_subset in range((df_train.shape[0] + 1024 - 1) // 1024):
-                s, e = idx_subset * 1024, (1 + idx_subset) * 1024
-                for s0, s1 in zip(nlp("\n\n".join(df_train["sentence1"].iloc[s: e].values)).sentences,
-                                  nlp("\n\n".join(df_train["sentence2"].iloc[s: e].values)).sentences):
-                    pretokenized_train_data.append((
-                        [token.words[0].text for token in s0.tokens],
-                        [token.words[0].text for token in s1.tokens]
-                    ))
-
-            used_sample_data = model.words_to_internal(pretokenized_train_data)["input_ids"]
 
     method, method_type = load_explainer(method=args.method, model=model,
                                          confidence_interval=args.confidence_interval if compute_accurately else None,
@@ -93,11 +96,10 @@ if __name__ == "__main__":
                                          # Method-specific options below:
                                          used_sample_data=used_sample_data, generator=generator,
                                          num_generated_samples=args.num_generated_samples,
-                                         is_aligned_vocabulary=args.is_aligned_vocabulary,
                                          data_weights=data_weights)
 
     # Container that wraps debugging data and a lot of repetitive appends
-    method_data = MethodData(method_type=method_type, model_description=model_desc,
+    method_data = MethodData(method_type=method_type, model_description=model_description,
                              generator_description=gen_desc, min_samples_per_feature=args.min_samples_per_feature,
                              possible_labels=[IDX_TO_LABEL["snli"][i] for i in sorted(IDX_TO_LABEL["snli"])],
                              used_data=used_data, confidence_interval=args.confidence_interval,
@@ -112,52 +114,42 @@ if __name__ == "__main__":
     until = min(until, df_test.shape[0])
 
     if args.custom_features is not None:
+        # Reload pipeline if depparse features are used (not done from the start as this would slow down tokenization)
         if args.custom_features.startswith("depparse"):
             nlp = stanza.Pipeline(lang="en", processors="tokenize,lemma,pos,depparse")
         else:
             nlp = stanza.Pipeline(lang="en", processors="tokenize")
 
-    print(f"Running computation from example#{start_from} (inclusive) to example#{until} (exclusive)")
+    logging.info(f"Running computation from example#{start_from} (inclusive) to example#{until} (exclusive)")
     for idx_example, input_pair in enumerate(df_test.iloc[start_from: until][["sentence1", "sentence2"]].values.tolist(),
                                              start=start_from):
-        if args.method == "whole_word_ime" or args.custom_features is not None:
+        if args.custom_features is not None:
             encoded_example = model.to_internal(pretokenized_text_data=[pretokenized_test_data[idx_example]])
         else:
             encoded_example = model.to_internal(text_data=[input_pair])
 
         probas = model.score(input_ids=encoded_example["input_ids"].to(DEVICE),
-                             token_type_ids=encoded_example["aux_data"]["token_type_ids"].to(DEVICE),
-                             attention_mask=encoded_example["aux_data"]["attention_mask"].to(DEVICE))
+                             **{k: v.to(DEVICE) for k, v in encoded_example["aux_data"].items()})
         predicted_label = int(torch.argmax(probas))
         actual_label = int(df_test.iloc[[idx_example]]["gold_label"].apply(
                                                         lambda label_str: LABEL_TO_IDX["snli"][label_str]))
 
-        if args.method == "whole_word_ime":
-            input_text = pretokenized_test_data[idx_example]
-        else:
-            input_text = input_pair
-
-        curr_features = None
-        if args.method in {"ime", "sequential_ime"} and args.custom_features is not None:
+        pretokenized_example, curr_features = None, None
+        if args.custom_features is not None:
             # Obtain word IDs for subwords in all cases as the custom features are usually obtained from words
             word_ids = encoded_example["aux_data"]["alignment_ids"][0].tolist()
-
             curr_features = handle_features(args.custom_features,
                                             word_ids=word_ids,
                                             raw_example=(df_test.iloc[idx_example]["sentence1"],
                                                          df_test.iloc[idx_example]["sentence2"]),
                                             pipe=nlp)
+            pretokenized_example = pretokenized_test_data[idx_example]
 
-            t1 = time()
-            res = method.explain_text(input_text, pretokenized_text_data=pretokenized_test_data[idx_example],
-                                      label=predicted_label, min_samples_per_feature=args.min_samples_per_feature,
-                                      custom_features=curr_features)
-            t2 = time()
-        else:
-            t1 = time()
-            res = method.explain_text(input_text,
-                                      label=predicted_label, min_samples_per_feature=args.min_samples_per_feature)
-            t2 = time()
+        t1 = time()
+        res = method.explain_text(input_pair, pretokenized_text_data=pretokenized_example,
+                                  label=predicted_label, min_samples_per_feature=args.min_samples_per_feature,
+                                  custom_features=curr_features)
+        t2 = time()
 
         if compute_accurately:
             taken_or_estimated_samples = res['taken_samples']
@@ -170,8 +162,9 @@ if __name__ == "__main__":
                 res["taken_samples"] + torch.sum(required_samples_per_feature[required_samples_per_feature > 0])
             )
 
-        print(f"[{args.method}] {'taken' if compute_accurately else '(estimated) required'} samples: {taken_or_estimated_samples}")
-        print(f"[{args.method}] Time taken: {t2 - t1:.2f}s")
+        logging.info(f"[{args.method}] {'taken' if compute_accurately else '(estimated) required'} "
+                     f"samples: {taken_or_estimated_samples}")
+        logging.info(f"[{args.method}] Time taken: {t2 - t1:.2f}s")
 
         sequence_tokens = res["input"]
 
@@ -181,8 +174,8 @@ if __name__ == "__main__":
                 if curr_samples is None:  # non-perturbable feature
                     gen_samples.append([])
                 else:
-                    gen_samples.append(method.model.from_internal(curr_samples, skip_special_tokens=False,
-                                                                  take_as_single_sequence=True))
+                    gen_samples.append(model.from_internal(curr_samples, skip_special_tokens=False,
+                                                           take_as_single_sequence=True))
 
         method_data.add_example(sequence=sequence_tokens, label=predicted_label, probas=probas[0].tolist(),
                                 actual_label=actual_label, custom_features=curr_features,
@@ -193,7 +186,7 @@ if __name__ == "__main__":
                                               for scores in res["scores"]] if args.return_model_scores else [])
 
         if (1 + idx_example) % args.save_every_n_examples == 0:
-            print(f"Saving data to {args.experiment_dir}")
+            logging.info(f"Saving data to {args.experiment_dir}")
             method_data.save(args.experiment_dir, file_name=f"{args.method}_data.json")
 
             highlight_plot(method_data.sequences, method_data.importances,

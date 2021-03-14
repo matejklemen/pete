@@ -44,7 +44,7 @@ class BertAlignedTokenizationMixin:
 
         curr_seq_len = len(formatted_ex0) + (len(formatted_ex1) if is_text_pair else 0)
         num_special_tokens = 3 if is_text_pair else 2
-        curr_res = self.tokenizer.encode_plus(text=proxy_ex0, text_pair=proxy_ex1, is_pretokenized=True,
+        curr_res = self.tokenizer.encode_plus(text=proxy_ex0, text_pair=proxy_ex1, is_split_into_words=True,
                                               return_special_tokens_mask=True, return_tensors="pt",
                                               padding="max_length", max_length=MAX_LEN,
                                               truncation="longest_first")

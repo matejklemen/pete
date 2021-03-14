@@ -34,7 +34,7 @@ class TransformerSeqPairDataset(Dataset):
     @staticmethod
     def build(first: Iterable[str], second: Iterable[str], labels: Iterable[int],
               tokenizer, max_seq_len: int = 41):
-        dataset_dict = tokenizer.batch_encode_plus(zip(first, second), max_length=max_seq_len,
+        dataset_dict = tokenizer.batch_encode_plus(list(zip(first, second)), max_length=max_seq_len,
                                                    padding="max_length", truncation="longest_first",
                                                    return_special_tokens_mask=True, return_tensors="pt")
         dataset_dict["labels"] = torch.tensor(labels)
