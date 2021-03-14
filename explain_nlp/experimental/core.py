@@ -36,6 +36,8 @@ class MethodType(Enum):
     INDEPENDENT_IME_LM = 2
     INDEPENDENT_IME_MLM = 3
     DEPENDENT_IME_MLM = 4
+    LIME = 5
+    LIME_LM = 6
 
 
 class MethodData:
@@ -78,8 +80,9 @@ class MethodData:
         self.times: List[Optional[int]] = existing_data.get("times", [])
 
     def add_example(self, sequence: List[str], label,
-                    importances: List[float], variances: List[float],
-                    num_samples: List[int],
+                    importances: List[float],
+                    variances: Optional[List[float]] = None,
+                    num_samples: Optional[List[int]] = None,
                     probas: Optional[List[float]] = None,
                     actual_label: Optional = None,
                     custom_features: List[List[int]] = None,
@@ -94,9 +97,9 @@ class MethodData:
         self.custom_features.append(custom_features if custom_features is not None else [])
 
         self.importances.append(importances)
-        self.variances.append(variances)
+        self.variances.append(variances if variances is not None else [])
 
-        self.num_samples.append(num_samples)
+        self.num_samples.append(num_samples if num_samples is not None else [])
         self.samples.append(samples if samples is not None else [])
         self.model_scores.append(model_scores if model_scores is not None else [])
         self.num_estimated_samples.append(num_estimated_samples)
