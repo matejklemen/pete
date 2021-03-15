@@ -5,7 +5,7 @@ parser.add_argument("--experiment_type", type=str, default="required_samples",
                     choices=["accurate_importances", "required_samples"])
 parser.add_argument("--method", type=str, default="lime_lm",
                     choices=["ime", "lime", "ime_mlm", "ime_dependent_mlm", "ime_hybrid", "lime_lm"])
-parser.add_argument("--custom_features", type=str, default="depparse_simple",
+parser.add_argument("--custom_features", type=str, default=None,
                     choices=[None, "words", "sentences", "depparse_simple", "depparse_depth"])
 parser.add_argument("--min_samples_per_feature", type=int, default=10,
                     help="Minimum number of samples that get created for each feature for initial variance estimation")
