@@ -13,7 +13,7 @@ parser.add_argument("--confidence_interval", type=float, default=0.99)
 parser.add_argument("--max_abs_error", type=float, default=0.01)
 parser.add_argument("--return_generated_samples", action="store_true")
 parser.add_argument("--return_model_scores", action="store_true")
-parser.add_argument("--explanation_length", type=int, default=3)
+parser.add_argument("--explanation_length", type=int, default=None)
 parser.add_argument("--kernel_width", type=float, default=25.0)
 
 parser.add_argument("--train_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_train.txt")
