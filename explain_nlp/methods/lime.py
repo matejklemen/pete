@@ -3,6 +3,7 @@ from typing import Optional, Union, Tuple, List
 import numpy as np
 import torch
 from sklearn.linear_model import Ridge
+from sklearn.metrics import mean_absolute_error
 
 from explain_nlp.generation.generation_base import SampleGenerator
 from explain_nlp.methods.decoding import filter_factory
@@ -18,7 +19,8 @@ def exponential_kernel(dists: torch.Tensor, kernel_width: float):
 
 class LIMEExplainer:
     def __init__(self, model: InterpretableModel, kernel_width=25.0,
-                 return_samples: Optional[bool] = False, return_scores: Optional[bool] = False):
+                 return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
+                 return_metrics: Optional[bool] = True):
         self.model = model
         self.kernel_width = kernel_width
 
@@ -27,6 +29,7 @@ class LIMEExplainer:
 
         self.return_samples = return_samples
         self.return_scores = return_scores
+        self.return_metrics = return_metrics
 
         self.indexer = tensor_indexer
 
@@ -132,6 +135,18 @@ class LIMEExplainer:
         if self.return_scores:
             results["scores"] = pred_probas[:, label].tolist()
 
+        if self.return_metrics:
+            results["dense_mae"] = mean_absolute_error(y_true=pred_probas[:, label].numpy(),
+                                                       y_pred=feature_selector.predict(feature_indicators.numpy()),
+                                                       sample_weight=weights.numpy())
+            results["sparse_mae"] = mean_absolute_error(y_true=pred_probas[:, label].numpy(),
+                                                        y_pred=explanation_model.predict(feature_indicators[:, used_features].numpy()),
+                                                        sample_weight=weights.numpy())
+            results["random_mae"] = mean_absolute_error(y_true=pred_probas[:, label].numpy(),
+                                                        y_pred=np.repeat(np.mean(pred_probas[:, label].numpy()),
+                                                                         (num_samples,)),
+                                                        sample_weight=weights.numpy())
+
         if custom_features is not None:
             results["custom_features"] = feature_groups
 
@@ -156,9 +171,10 @@ class LIMEExplainer:
 
 class LIMEMaskedLMExplainer(LIMEExplainer):
     def __init__(self, model: InterpretableModel, generator: SampleGenerator, kernel_width=25.0,
-                 return_samples: Optional[bool] = False, return_scores: Optional[bool] = False):
+                 return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
+                 return_metrics: Optional[bool] = True):
         super().__init__(model=model, kernel_width=kernel_width,
-                         return_samples=return_samples, return_scores=return_scores)
+                         return_samples=return_samples, return_scores=return_scores, return_metrics=return_metrics)
         self.generator = generator
         self.generator.filters = [filter_factory("unique")] + self.generator.filters
 
@@ -324,6 +340,18 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
 
         if self.return_scores:
             results["scores"] = pred_probas[:, label].tolist()
+
+        if self.return_metrics:
+            results["dense_mae"] = mean_absolute_error(y_true=pred_probas[:, label].numpy(),
+                                                       y_pred=feature_selector.predict(feature_indicators.numpy()),
+                                                       sample_weight=weights.numpy())
+            results["sparse_mae"] = mean_absolute_error(y_true=pred_probas[:, label].numpy(),
+                                                        y_pred=explanation_model.predict(feature_indicators[:, used_features].numpy()),
+                                                        sample_weight=weights.numpy())
+            results["random_mae"] = mean_absolute_error(y_true=pred_probas[:, label].numpy(),
+                                                        y_pred=np.repeat(np.mean(pred_probas[:, label].numpy()),
+                                                                         (num_samples,)),
+                                                        sample_weight=weights.numpy())
 
         if custom_features is not None:
             results["custom_features"] = feature_groups
