@@ -9,6 +9,7 @@ from explain_nlp.methods.decoding import filter_factory
 from explain_nlp.methods.utils import sample_permutations, tensor_indexer, list_indexer
 from explain_nlp.modeling.modeling_base import InterpretableModel
 from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
+from explain_nlp.utils import EncodingException
 
 
 def exponential_kernel(dists: torch.Tensor, kernel_width: float):
@@ -174,7 +175,14 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
     def transform_to_generator(self, input_ids, perturbable_mask, **modeling_kwargs):
         """ Maps the POSITIONS of perturbable indices in model instance to perturbable indices in generator instance."""
         instance_tokens = self.model.from_internal(input_ids, return_tokens=True, **modeling_kwargs)
-        instance_generator = self.generator.to_internal(instance_tokens, is_split_into_units=True)
+        try:
+            instance_generator = self.generator.to_internal(instance_tokens, is_split_into_units=True,
+                                                            allow_truncation=False)
+        except EncodingException:
+            raise ValueError("Conversion between model instance and generator's instance could not be performed: "
+                             "the obtained generator instance is longer than allowed generator's maximum length.\n"
+                             "To fix this, either (1) increase generator's max_seq_len or (2) decrease model's "
+                             "max_seq_len.")
 
         model2generator = {}
         for idx_example, alignment_ids in enumerate(instance_generator["aux_data"]["alignment_ids"]):
@@ -190,9 +198,6 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
             "instance_generator": instance_generator,
             "mapping": model2generator
         }
-
-        if len(modeling_kwargs) > 0:
-            ret["instance_generator"]["aux_data"] = modeling_kwargs
 
         return ret
 
@@ -215,10 +220,10 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
             has_bigger_units = False
             for idx_feature in perturbable_inds:
                 new_feature = mapping[perturbable_position[idx_feature]]
-                has_bigger_units |= isinstance(new_feature, list)
+                has_bigger_units |= len(new_feature) > 1
 
                 feature_groups.append(idx_feature)
-                generator_groups.append(new_feature)
+                generator_groups.append(new_feature if has_bigger_units else new_feature[0])
 
             if has_bigger_units:
                 self.indexer = list_indexer
@@ -278,12 +283,13 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
         samples = instance_generator["input_ids"].repeat((num_samples, 1))
         removed_mask = torch.zeros_like(samples, dtype=torch.bool)
         for idx_sample in range(num_samples - 1):
-            curr_removed_generator = self.indexer(generator_groups, permuted_inds[idx_sample, :num_removed[idx_sample]])
+            groups_to_remove = permuted_inds[idx_sample, :num_removed[idx_sample]]
+            removed_generator_feats = self.indexer(generator_groups, groups_to_remove)
 
-            removed_mask[idx_sample + 1, curr_removed_generator] = True
-            feature_indicators[idx_sample + 1, used_inds[permuted_inds[idx_sample, :num_removed[idx_sample]]]] = False
+            removed_mask[idx_sample + 1, removed_generator_feats] = True
+            feature_indicators[idx_sample + 1, used_inds[groups_to_remove]] = False
 
-        samples = self.generate_neighbourhood(samples, removal_mask=removed_mask, **modeling_kwargs)
+        samples = self.generate_neighbourhood(samples, removal_mask=removed_mask, **instance_generator["aux_data"])
 
         feature_indicators = feature_indicators.float()
         dists = 1.0 - torch.cosine_similarity(feature_indicators[[0]], feature_indicators)

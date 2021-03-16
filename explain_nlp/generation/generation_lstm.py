@@ -87,8 +87,12 @@ class LSTMConditionallyIndependentGenerator(SampleGenerator, TransformersAligned
 
     def to_internal(self, text_data: Union[List[str], List[Tuple[str, ...]],
                                            List[List[str]], List[Tuple[List[str], ...]]],
-                    is_split_into_units: Optional[bool] = False) -> Dict:
-        return self.encode_aligned(text_data, is_split_into_units=is_split_into_units)
+                    is_split_into_units: Optional[bool] = False,
+                    allow_truncation: Optional[bool] = True) -> Dict:
+        truncation_strategy = "longest_first" if allow_truncation else "do_not_truncate"
+        return self.encode_aligned(text_data,
+                                   is_split_into_units=is_split_into_units,
+                                   truncation_strategy=truncation_strategy)
 
     @torch.no_grad()
     def generate_masked_samples(self, input_ids: torch.Tensor,
@@ -239,8 +243,12 @@ class ContextualBiLSTMLMGenerator(SampleGenerator, TransformersAlignedTokenizati
 
     def to_internal(self, text_data: Union[List[str], List[Tuple[str, ...]],
                                            List[List[str]], List[Tuple[List[str], ...]]],
-                    is_split_into_units: Optional[bool] = False) -> Dict:
-        return self.encode_aligned(text_data, is_split_into_units=is_split_into_units)
+                    is_split_into_units: Optional[bool] = False,
+                    allow_truncation: Optional[bool] = True) -> Dict:
+        truncation_strategy = "longest_first" if allow_truncation else "do_not_truncate"
+        return self.encode_aligned(text_data,
+                                   is_split_into_units=is_split_into_units,
+                                   truncation_strategy=truncation_strategy)
 
     @torch.no_grad()
     def generate_masked_samples(self, input_ids: torch.Tensor,

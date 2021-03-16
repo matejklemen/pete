@@ -46,9 +46,10 @@ class SampleGenerator:
 
     def to_internal(self, text_data: Union[List[str], List[Tuple[str, ...]],
                                            List[List[str]], List[Tuple[List[str], ...]]],
-                    is_split_into_units: Optional[bool] = False) -> Dict:
+                    is_split_into_units: Optional[bool] = False,
+                    allow_truncation: Optional[bool] = True) -> Dict:
         """ Convert from text to internal generator representation.
-        Make sure to include 'input_ids', 'perturbable_mask' and 'aux_data' in the returned dictionary."""
+        `allow_truncation` specifies whether overflowing tokens (past max_seq_len) are allowed to be dropped. """
         raise NotImplementedError
 
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor, num_samples: int,

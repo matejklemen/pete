@@ -83,7 +83,9 @@ class GPTLMGenerator(SampleGenerator, TransformersAlignedTokenizationMixin):
 
     def to_internal(self, text_data: Union[List[str], List[Tuple[str, ...]],
                                            List[List[str]], List[Tuple[List[str], ...]]],
-                    is_split_into_units: Optional[bool] = False) -> Dict:
+                    is_split_into_units: Optional[bool] = False,
+                    allow_truncation: Optional[bool] = True) -> Dict:
+        truncation_strategy = "longest_first" if allow_truncation else "do_not_truncate"
         if is_split_into_units:
             def format_example(curr_text):
                 if isinstance(curr_text, list):
@@ -101,7 +103,9 @@ class GPTLMGenerator(SampleGenerator, TransformersAlignedTokenizationMixin):
         for curr_text in text_data:
             _text_data.append(format_example(curr_text))
 
-        res = self.encode_aligned(_text_data, is_split_into_units=is_split_into_units)
+        res = self.encode_aligned(_text_data,
+                                  is_split_into_units=is_split_into_units,
+                                  truncation_strategy=truncation_strategy)
         for idx_example in range(res["input_ids"].shape[0]):
             for idx_feature in range(res["input_ids"].shape[1]):
                 curr_input_id = int(res["input_ids"][idx_example, idx_feature])
@@ -429,8 +433,12 @@ class BertForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizationM
 
     def to_internal(self, text_data: Union[List[str], List[Tuple[str, ...]],
                                            List[List[str]], List[Tuple[List[str], ...]]],
-                    is_split_into_units: Optional[bool] = False) -> Dict:
-        return self.encode_aligned(text_data, is_split_into_units=is_split_into_units)
+                    is_split_into_units: Optional[bool] = False,
+                    allow_truncation: Optional[bool] = True) -> Dict:
+        truncation_strategy = "longest_first" if allow_truncation else "do_not_truncate"
+        return self.encode_aligned(text_data,
+                                   is_split_into_units=is_split_into_units,
+                                   truncation_strategy=truncation_strategy)
 
     @torch.no_grad()
     def generate_masked_samples(self, input_ids: torch.Tensor,
@@ -708,8 +716,12 @@ class RobertaForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizati
 
     def to_internal(self, text_data: Union[List[str], List[Tuple[str, ...]],
                                            List[List[str]], List[Tuple[List[str], ...]]],
-                    is_split_into_units: Optional[bool] = False) -> Dict:
-        return self.encode_aligned(text_data, is_split_into_units=is_split_into_units)
+                    is_split_into_units: Optional[bool] = False,
+                    allow_truncation: Optional[bool] = True) -> Dict:
+        truncation_strategy = "longest_first" if allow_truncation else "do_not_truncate"
+        return self.encode_aligned(text_data,
+                                   is_split_into_units=is_split_into_units,
+                                   truncation_strategy=truncation_strategy)
 
     def generate_masked_samples(self, input_ids: torch.Tensor, generation_mask: torch.Tensor, **generation_kwargs):
         num_samples = generation_mask.shape[0]

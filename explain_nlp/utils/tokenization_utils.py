@@ -3,9 +3,10 @@ from typing import Union, List, Tuple, Set
 import torch
 from transformers import BertTokenizer, PreTrainedTokenizerFast
 
+from explain_nlp.utils import EncodingException
+
 
 class BertAlignedTokenizationMixin:
-    # TODO: assert isinstance(tokenizer, PreTrainedTokenizerFast) and rework!
     tokenizer: BertTokenizer
     max_seq_len: int
     max_words: int
@@ -107,14 +108,19 @@ class TransformersAlignedTokenizationMixin:
     # Additional special tokens, that we want to ignore when aligning words
     additional_special_token_ids: Set[int] = set()
 
-    def encode_aligned(self, text_data, is_split_into_units=False):
+    def encode_aligned(self, text_data, is_split_into_units=False, truncation_strategy="do_not_truncate"):
         num_examples = len(text_data)
         res = self.tokenizer.batch_encode_plus(text_data,
                                                is_split_into_words=is_split_into_units,
                                                return_offsets_mapping=is_split_into_units,
                                                return_special_tokens_mask=True, return_tensors="pt",
                                                padding="max_length", max_length=self.max_seq_len,
-                                               truncation="longest_first")
+                                               truncation=truncation_strategy)
+        if truncation_strategy == "do_not_truncate" and res["input_ids"].shape[1] > self.max_seq_len:
+            raise EncodingException(f"Truncation strategy is 'do_not_truncate', but the encoded data is "
+                                    f"longer than allowed ({res['input_ids'].shape[1]} > {self.max_seq_len}). "
+                                    f"Either set a different strategy or increase max_seq_len.")
+
         formatted_res = {
             "input_ids": res["input_ids"],
             "perturbable_mask": torch.logical_not(res["special_tokens_mask"]),

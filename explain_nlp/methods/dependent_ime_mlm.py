@@ -6,6 +6,7 @@ from explain_nlp.generation.generation_base import SampleGenerator
 from explain_nlp.methods.ime import IMEExplainer
 from explain_nlp.methods.utils import sample_permutations
 from explain_nlp.modeling.modeling_base import InterpretableModel
+from explain_nlp.utils import EncodingException
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -26,7 +27,14 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
 
     def get_generator_mapping(self, input_ids, perturbable_mask, **modeling_kwargs):
         instance_tokens = self.model.from_internal(input_ids, return_tokens=True, **modeling_kwargs)
-        instance_generator = self.generator.to_internal(instance_tokens, is_split_into_units=True)
+        try:
+            instance_generator = self.generator.to_internal(instance_tokens, is_split_into_units=True,
+                                                            allow_truncation=False)
+        except EncodingException:
+            raise ValueError("Conversion between model instance and generator's instance could not be performed: "
+                             "the obtained generator instance is longer than allowed generator's maximum length.\n"
+                             "To fix this, either (1) increase generator's max_seq_len or (2) decrease model's "
+                             "max_seq_len.")
 
         model2generator = {}
         for idx_example, alignment_ids in enumerate(instance_generator["aux_data"]["alignment_ids"]):
