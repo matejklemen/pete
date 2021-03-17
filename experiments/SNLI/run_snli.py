@@ -1,52 +1,35 @@
-import json
+import logging
 import os
 import sys
 from time import time
 
 import stanza
 import torch
-import logging
 
-from explain_nlp.experimental.arguments import parser
+from explain_nlp.experimental.arguments import methods_parser, runtime_parse_args
 from explain_nlp.experimental.core import MethodData
 from explain_nlp.experimental.data import load_nli, TransformerSeqPairDataset, LABEL_TO_IDX, IDX_TO_LABEL
 from explain_nlp.experimental.handle_explainer import load_explainer
 from explain_nlp.experimental.handle_features import handle_features
 from explain_nlp.experimental.handle_generator import load_generator
 from explain_nlp.methods.hybrid import create_uniform_weights
-from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
 from explain_nlp.methods.utils import estimate_feature_samples
+from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
 from explain_nlp.visualizations.highlight import highlight_plot
 
 if __name__ == "__main__":
-    args = parser.parse_args()
+    args = methods_parser.parse_args(["ime"])
+    args = runtime_parse_args(args)
     DEVICE = torch.device("cpu") if args.use_cpu else torch.device("cuda")
-    compute_accurately = args.experiment_type == "accurate_importances"
-
-    if args.experiment_dir is None:
-        test_file_name = args.test_path.split(os.path.sep)[-1][:-len(".txt")]  # test file without .txt
-        args.experiment_dir = f"{test_file_name}_compute_{args.experiment_type}"
-
-    if not os.path.exists(args.experiment_dir):
-        os.makedirs(args.experiment_dir)
+    compute_accurately = args.method_class == "ime" and args.experiment_type == "accurate_importances"
 
     # Set up logging to file and stdout
-    log_fmt = logging.Formatter("%(asctime)s [%(levelname)-5.5s]  %(message)s")
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
     for curr_handler in [logging.StreamHandler(sys.stdout),
                          logging.FileHandler(os.path.join(args.experiment_dir, "experiment.log"))]:
-        curr_handler.setFormatter(log_fmt)
+        curr_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)-5.5s]  %(message)s"))
         logger.addHandler(curr_handler)
-
-    # Display used experiment settings on stdout and save to file
-    for k, v in vars(args).items():
-        v_str = str(v)
-        v_str = f"...{v_str[-(50-3):]}" if len(v_str) > 50 else v_str
-        logging.info(f"|{k:30s}|{v_str:50s}|")
-
-    with open(os.path.join(args.experiment_dir, "experiment_config.json"), "w") as f:
-        json.dump(vars(args), fp=f, indent=4)
 
     nlp = stanza.Pipeline(lang="en", processors="tokenize", use_gpu=not args.use_cpu, tokenize_no_ssplit=True)
     pretokenized_test_data = None
@@ -58,8 +41,8 @@ if __name__ == "__main__":
                                                        max_words=args.model_max_words,
                                                        device="cpu" if args.use_cpu else "cuda")
     model_description = {"type": "bert", "max_seq_len": args.model_max_seq_len, "handle": args.model_dir}
-    generator, gen_desc = load_generator(args,
-                                         clm_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"])
+    generator, gen_description = load_generator(args,
+                                                clm_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"])
 
     df_test = load_nli(args.test_path)
     if args.custom_features is not None:
@@ -88,23 +71,24 @@ if __name__ == "__main__":
         data_weights = create_uniform_weights(train_set.input_ids, train_set.special_tokens_masks)
         used_sample_data = train_set.input_ids
 
-    method, method_type = load_explainer(method=args.method, model=model,
-                                         confidence_interval=args.confidence_interval if compute_accurately else None,
-                                         max_abs_error=args.max_abs_error if compute_accurately else None,
-                                         return_model_scores=args.return_model_scores,
-                                         return_generated_samples=args.return_generated_samples,
-                                         # Method-specific options below:
-                                         used_sample_data=used_sample_data, generator=generator,
-                                         num_generated_samples=args.num_generated_samples,
-                                         data_weights=data_weights, kernel_width=args.kernel_width)
+    method, method_type = load_explainer(model=model, generator=generator,
+                                         used_sample_data=used_sample_data, data_weights=data_weights,
+                                         **vars(args))
+    num_taken_samples = args.min_samples_per_feature if args.method_class == "ime" else args.num_samples
 
     # Container that wraps debugging data and a lot of repetitive appends
-    method_data = MethodData(method_type=method_type, model_description=model_description,
-                             generator_description=gen_desc, min_samples_per_feature=args.min_samples_per_feature,
+    method_data = MethodData(method_type=method_type,
+                             model_description=model_description, generator_description=gen_description,
                              possible_labels=[IDX_TO_LABEL["snli"][i] for i in sorted(IDX_TO_LABEL["snli"])],
-                             used_data=used_data, confidence_interval=args.confidence_interval,
-                             max_abs_error=args.max_abs_error, custom_features_type=args.custom_features)
+                             min_samples_per_feature=
+                             (args.min_samples_per_feature if args.method_class == "ime" else args.num_samples),
+                             confidence_interval=
+                             (args.confidence_interval if args.method_class == "ime" else None),
+                             max_abs_error=
+                             (args.max_abs_error if args.method_class == "ime" else None),
+                             used_data=used_data, custom_features_type=args.custom_features)
 
+    # Load existing data for experiment and make sure the computation is not needlessly reran
     if os.path.exists(os.path.join(args.experiment_dir, f"{args.method}_data.json")):
         method_data = MethodData.load(os.path.join(args.experiment_dir, f"{args.method}_data.json"))
 
@@ -147,15 +131,15 @@ if __name__ == "__main__":
 
         side_results = {}
         t1 = time()
-        if "lime" in args.method:
+        if args.method_class == "lime":
             res = method.explain_text(input_pair, pretokenized_text_data=pretokenized_example,
-                                      label=predicted_label, num_samples=args.min_samples_per_feature,
+                                      label=predicted_label, num_samples=num_taken_samples,
                                       explanation_length=args.explanation_length,
                                       custom_features=curr_features)
             t2 = time()
         else:
             res = method.explain_text(input_pair, pretokenized_text_data=pretokenized_example,
-                                      label=predicted_label, min_samples_per_feature=args.min_samples_per_feature,
+                                      label=predicted_label, min_samples_per_feature=num_taken_samples,
                                       custom_features=curr_features)
             t2 = time()
 
