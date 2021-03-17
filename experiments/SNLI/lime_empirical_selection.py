@@ -23,9 +23,11 @@ if __name__ == "__main__":
     assert args.explanation_length is not None
     DEVICE = torch.device("cpu") if args.use_cpu else torch.device("cuda")
 
-    experiment_dir = f"{args.method}_{args.num_samples}samples_k{args.explanation_length}_{args.num_repeats}" \
+    experiment_dir = f"{args.method}_{args.num_samples}samples_k{args.explanation_length}_{args.num_repeats}reps" \
         if args.experiment_dir is None else args.experiment_dir
-    os.makedirs(experiment_dir)
+
+    if not os.path.exists(experiment_dir):
+        os.makedirs(experiment_dir)
 
     # Set up logging to file and stdout
     logger = logging.getLogger()
@@ -51,10 +53,20 @@ if __name__ == "__main__":
     with open(os.path.join(experiment_dir, "experiment_config.json"), "w") as f_config:
         json.dump(vars(args), fp=f_config, indent=4)
 
-    df_test = load_nli(args.test_path)
     selected_features_per_example = []
-    for idx_example, input_pair in enumerate(df_test[["sentence1", "sentence2"]].values.tolist()):
-        logging.info(f"Processing {input_pair}")
+    start_from = 0
+    if os.path.exists(os.path.join(experiment_dir, "selected_features_per_sample.json")):
+        with open(os.path.join(experiment_dir, "selected_features_per_sample.json"), "r", encoding="utf-8") as f:
+            existing_data = json.load(f)
+
+        selected_features_per_example = existing_data["selected_features_per_example"]
+        start_from = len(selected_features_per_example)
+        logging.info(f"Loaded existing experiment data - continuing from example#{start_from}")
+
+    df_test = load_nli(args.test_path)
+    for idx_example, input_pair in enumerate(df_test[["sentence1", "sentence2"]].values[start_from:].tolist(),
+                                             start=start_from):
+        logging.info(f"#{idx_example}. Processing {input_pair}")
         encoded_example = model.to_internal(text_data=[input_pair])
         probas = model.score(input_ids=encoded_example["input_ids"].to(DEVICE),
                              **{k: v.to(DEVICE) for k, v in encoded_example["aux_data"].items()})
@@ -94,13 +106,14 @@ if __name__ == "__main__":
         plt.savefig(os.path.join(experiment_dir, f"ex{idx_example}.png"))
         plt.clf()
 
-    with open(os.path.join(experiment_dir, "selected_features_per_sample.json"), "w") as f:
-        json.dump({
-            "selected_features_per_example": selected_features_per_example,
-            "mean_selected_features": np.mean(selected_features_per_example),
-            "sd_selected_features": np.std(selected_features_per_example)
-        }, fp=f, indent=4)
+        logging.info(f"Saving updated data")
+        with open(os.path.join(experiment_dir, "selected_features_per_sample.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "selected_features_per_example": selected_features_per_example,
+                "mean_selected_features": np.mean(selected_features_per_example),
+                "sd_selected_features": np.std(selected_features_per_example)
+            }, fp=f, indent=4)
 
-    logging.info(f"[RESULTS] Selected features per example: "
+    logging.info(f"[FINAL RESULTS] Selected features per example: "
                  f"mean={np.mean(selected_features_per_example)}, "
                  f"sd={np.std(selected_features_per_example)}")
