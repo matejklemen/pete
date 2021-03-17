@@ -444,6 +444,7 @@ class BertForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizationM
     def generate_masked_samples(self, input_ids: torch.Tensor,
                                 generation_mask: torch.Tensor,
                                 **generation_kwargs):
+        # Note: currently assuming mask size of 1
         num_samples = generation_mask.shape[0]
         num_features = input_ids.shape[1]
 
@@ -459,42 +460,41 @@ class BertForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizationM
         eff_aux_data = {k: generation_kwargs[k].repeat((self.batch_size, 1)).to(self.device)
                         for k in ["token_type_ids", "attention_mask"]}
 
-        mask_size = 1
-        num_batches = (num_samples + self.batch_size - 1) // self.batch_size
-        num_total_chunks = (num_features + mask_size - 1) // mask_size
-
+        _generation_mask = generation_mask.to(self.device)
+        inds_masked_examples = torch.arange(num_samples, device=self.device)[torch.any(_generation_mask, dim=1)]
+        num_masked_chunks = torch.sum(_generation_mask[inds_masked_examples], dim=1)
+        inds_masked_examples = inds_masked_examples[torch.argsort(-num_masked_chunks)]
+        num_batches = (inds_masked_examples.shape[0] + self.batch_size - 1) // self.batch_size
         for idx_batch in range(num_batches):
             s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
+            curr_indices = inds_masked_examples[s_b: e_b]
+            curr_batch_size = curr_indices.shape[0]
 
-            curr_inputs = eff_input_ids[s_b: e_b]
+            curr_inputs = eff_input_ids[curr_indices].to(self.device)
             orig_tokens = curr_inputs.clone()
-            curr_masked = generation_mask[s_b: e_b]
-
-            curr_batch_size = curr_inputs.shape[0]
-            _batch_indexer = torch.arange(curr_batch_size)
+            curr_masked = _generation_mask[curr_indices]
+            # Chunks where at least one example needs to have new token value generated
+            inds_masked_chunks = torch.arange(num_features, device=self.device)[torch.any(curr_masked, dim=0)]
 
             # Move left to right by a sliding window of width `mask_size`
-            for idx_masked_chunk in range(num_total_chunks):
-                s_c, e_c = idx_masked_chunk * mask_size, (idx_masked_chunk + 1) * mask_size
+            for idx_chunk in inds_masked_chunks:
+                s_c, e_c = idx_chunk, (idx_chunk + 1)
                 is_feature_masked = curr_masked[:, s_c: e_c]
-                curr_mask_size = is_feature_masked.shape[1]
-
-                if not torch.any(is_feature_masked):
-                    continue
 
                 curr_inputs[:, s_c: e_c][is_feature_masked] = self.tokenizer.mask_token_id
                 curr_aux_data = {k: v[: curr_batch_size] for k, v in eff_aux_data.items()}
 
-                logits = self.generator(input_ids=curr_inputs.to(self.device), **curr_aux_data)["logits"]
-                for pos in range(curr_mask_size):
-                    curr_logits = logits[:, s_c + pos, :]
-                    for curr_filter in self.filters:
-                        curr_logits = curr_filter(curr_logits, orig_values=orig_tokens[:, s_c + pos])
+                logits = self.generator(input_ids=curr_inputs, **curr_aux_data)["logits"]
+                curr_logits = logits[:, s_c, :]
+                for curr_filter in self.filters:
+                    curr_logits = curr_filter(curr_logits, orig_values=orig_tokens[:, s_c])
 
-                    probas = torch.softmax(curr_logits, dim=-1)
-                    preds = torch.multinomial(probas, num_samples=1)[:, 0].cpu()
+                probas = torch.softmax(curr_logits, dim=-1)
+                preds = torch.multinomial(probas, num_samples=1)[:, 0]
 
-                    curr_inputs[is_feature_masked[:, pos], s_c + pos] = preds[is_feature_masked[:, pos]]
+                curr_inputs[is_feature_masked[:, 0], s_c] = preds[is_feature_masked[:, 0]]
+
+            eff_input_ids[curr_indices] = curr_inputs.cpu()
 
         return eff_input_ids
 
