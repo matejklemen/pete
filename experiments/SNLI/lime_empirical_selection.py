@@ -37,6 +37,12 @@ if __name__ == "__main__":
         curr_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)-5.5s]  %(message)s"))
         logger.addHandler(curr_handler)
 
+    # Display used experiment settings on stdout and save to file
+    for k, v in vars(args).items():
+        v_str = str(v)
+        v_str = f"...{v_str[-(50-3):]}" if len(v_str) > 50 else v_str
+        logging.info(f"|{k:30s}|{v_str:50s}|")
+
     model = InterpretableBertForSequenceClassification(tokenizer_name=args.model_dir,
                                                        model_name=args.model_dir,
                                                        batch_size=args.model_batch_size,
