@@ -18,7 +18,7 @@ from explain_nlp.modeling.modeling_transformers import InterpretableBertForSeque
 from explain_nlp.visualizations.highlight import highlight_plot
 
 if __name__ == "__main__":
-    args = methods_parser.parse_args(["ime"])
+    args = methods_parser.parse_args()
     args = runtime_parse_args(args)
     DEVICE = torch.device("cpu") if args.use_cpu else torch.device("cuda")
     compute_accurately = args.method_class == "ime" and args.experiment_type == "accurate_importances"
