@@ -20,7 +20,7 @@ def exponential_kernel(dists: torch.Tensor, kernel_width: float):
 class LIMEExplainer:
     def __init__(self, model: InterpretableModel, kernel_width=25.0,
                  return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 return_metrics: Optional[bool] = True):
+                 return_metrics: Optional[bool] = False):
         self.model = model
         self.kernel_width = kernel_width
 
@@ -172,7 +172,7 @@ class LIMEExplainer:
 class LIMEMaskedLMExplainer(LIMEExplainer):
     def __init__(self, model: InterpretableModel, generator: SampleGenerator, kernel_width=25.0,
                  return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 return_metrics: Optional[bool] = True):
+                 return_metrics: Optional[bool] = False):
         super().__init__(model=model, kernel_width=kernel_width,
                          return_samples=return_samples, return_scores=return_scores, return_metrics=return_metrics)
         self.generator = generator
