@@ -166,6 +166,7 @@ class IMEExplainer:
 
     def explain(self, instance: Union[torch.Tensor, List], label: Optional[int] = 0, perturbable_mask: Optional[torch.Tensor] = None,
                 min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None,
+                exact_samples_per_feature: Optional[torch.Tensor] = None,
                 custom_features: Optional[List[List[int]]] = None,
                 **modeling_kwargs):
         """ Explain a prediction for given instance.
@@ -175,12 +176,14 @@ class IMEExplainer:
         instance:
             Instance that is being explained. Shape: [1, num_features].
         label: int
-            Predicted label for instance. Leave at 0 if prediction is a regression score.
+            Predicted label for instance.
         perturbable_mask:
             Mask, specifying features that can be perturbed. If not given, all features of instance are assumed to be
             perturbable. Shape: [1, num_features].
         min_samples_per_feature:
             Minimum samples to be taken for each perturbable feature to estimate variance of importance.
+        exact_samples_per_feature:
+            Specific number of samples to take per feature. Shape: [1, num_features + num_additional]
         max_samples:
             Maximum samples to be taken combined across all perturbable features. This gets overriden if
             `confidence_interval` and `max_abs_error` are also provided at instantiation.
@@ -245,6 +248,7 @@ class IMEExplainer:
 
         importance_means = torch.zeros(num_features + num_additional, dtype=torch.float32)
         importance_vars = torch.zeros(num_features + num_additional, dtype=torch.float32)
+        # assign 1 sample even to unperturbable feats in order not to have division by zero (changed to 0 at the end)
         samples_per_feature = torch.ones(num_features + num_additional, dtype=torch.long)
 
         empty_metadata = {}
@@ -254,14 +258,28 @@ class IMEExplainer:
             empty_metadata["scores"] = []
         feature_debug_data = [deepcopy(empty_metadata) for _ in range(num_features + num_additional)]
 
-        eff_max_samples = max_samples if max_samples is not None else (num_used * min_samples_per_feature)
-        assert min_samples_per_feature >= 2  # otherwise variance isn't defined
-        assert eff_max_samples >= num_used * min_samples_per_feature
+        if exact_samples_per_feature is not None:
+            if torch.any(exact_samples_per_feature[0, used_inds] == 1):
+                logging.warning(f"Taking a single sample to estimate the importance of some feature will result in the "
+                                f"variance not being defined. To avoid this, use at least 2 samples for estimation.")
 
-        samples_per_feature[used_inds] = min_samples_per_feature
-        taken_samples = num_used * min_samples_per_feature  # cumulative sum
+            used_inds = torch.tensor(used_inds)[exact_samples_per_feature[0, used_inds] > 0].tolist()
+            eff_max_samples = int(torch.sum(exact_samples_per_feature[0, used_inds]))
+            samples_per_feature[used_inds] = exact_samples_per_feature[0, used_inds]
+        else:
+            if max_samples is not None:
+                samples_per_feature[used_inds] = min_samples_per_feature
+                eff_max_samples = max_samples
+            else:
+                samples_per_feature[used_inds] = min_samples_per_feature
+                eff_max_samples = num_used * min_samples_per_feature
 
-        # Initial pass: every feature will use at least `min_samples_per_feature` samples
+            assert min_samples_per_feature >= 2  # otherwise variance isn't defined
+            assert eff_max_samples >= num_used * min_samples_per_feature
+
+        taken_samples = torch.sum(samples_per_feature[used_inds])  # cumulative sum
+
+        # Initial pass: either estimate variance or take exact number samples as provided by user
         for idx_feature in used_inds:
             res = self.estimate_feature_importance(inds_group[idx_feature],
                                                    feature_groups=feature_groups,
@@ -278,7 +296,7 @@ class IMEExplainer:
             if self.return_scores:
                 feature_debug_data[idx_feature]["scores"].append(res["scores"])
 
-        if self.error_constraint_given:
+        if self.error_constraint_given and exact_samples_per_feature is None:
             # Calculate required samples to satisfy constraint, making sure that if "too many" samples were already
             # taken for some feature (min_samples_per_feature > required_samples_per_feature[i]), that does not count
             # towards lowering the total amount of required samples
@@ -352,6 +370,7 @@ class IMEExplainer:
 
     def explain_text(self, text_data: Union[str, Tuple[str, ...]], label: Optional[int] = 0,
                      min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None,
+                     exact_samples_per_feature: Optional[torch.Tensor] = None,
                      pretokenized_text_data: Optional[Union[List[str], Tuple[List[str], ...]]] = None,
                      custom_features: Optional[List[List[int]]] = None):
         # Convert instance being interpreted to representation of interpreted model
@@ -360,6 +379,7 @@ class IMEExplainer:
 
         res = self.explain(model_instance["input_ids"], label, perturbable_mask=model_instance["perturbable_mask"],
                            min_samples_per_feature=min_samples_per_feature, max_samples=max_samples,
+                           exact_samples_per_feature=exact_samples_per_feature,
                            custom_features=custom_features,
                            **model_instance["aux_data"])
         res["input"] = self.model.convert_ids_to_tokens(model_instance["input_ids"])[0]
