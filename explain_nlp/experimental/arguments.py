@@ -41,7 +41,7 @@ general_parser.add_argument("--threshold", type=float, default=0.1)
 general_parser.add_argument("--unique_dropout", type=float, default=0.0)
 
 methods_parser = argparse.ArgumentParser()
-subparsers = methods_parser.add_subparsers(dest="method_class", required=True)
+subparsers = methods_parser.add_subparsers(dest="method_class")
 
 """ Specific arguments for IME """
 ime_parser = subparsers.add_parser("ime", parents=[general_parser])
