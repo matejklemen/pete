@@ -136,30 +136,37 @@ if __name__ == "__main__":
                                       label=predicted_label, num_samples=num_taken_samples,
                                       explanation_length=args.explanation_length,
                                       custom_features=curr_features)
-            t2 = time()
         else:
+            # Run method in order to obtain an estimate of the feature variance
             res = method.explain_text(input_pair, pretokenized_text_data=pretokenized_example,
                                       label=predicted_label, min_samples_per_feature=num_taken_samples,
                                       custom_features=curr_features)
-            t2 = time()
+
+            # Estimate the number of samples that need to be taken to satisfy constraints:
+            # in case less samples are required than were already taken, we take `max(2, <num. required samples>)`
+            # as the required number of samples for that feature
+            required_samples_per_feature = estimate_feature_samples(res["var"] * res["num_samples"],
+                                                                    alpha=(1 - args.confidence_interval),
+                                                                    max_abs_error=args.max_abs_error).long()
+            need_additional = required_samples_per_feature > res["num_samples"]
+            need_less = torch.logical_and(res["num_samples"] == num_taken_samples,
+                                          required_samples_per_feature <= res["num_samples"])
+            res["num_samples"][need_additional] = required_samples_per_feature[need_additional]
+            res["num_samples"][need_less] = torch.max(required_samples_per_feature[need_less], torch.tensor(2))
+            taken_or_estimated_samples = int(torch.sum(res["num_samples"]))
+
+            # Run method second time in order to obtain accurate importances, making use of batched computation
+            if compute_accurately:
+                res = method.explain_text(input_pair, pretokenized_text_data=pretokenized_example,
+                                          label=predicted_label, custom_features=curr_features,
+                                          exact_samples_per_feature=res["num_samples"].unsqueeze(0))
 
             side_results["variances"] = res["var"].tolist()
             side_results["num_samples"] = res["num_samples"].tolist()
-
-            if compute_accurately:
-                taken_or_estimated_samples = res['taken_samples']
-            else:
-                required_samples_per_feature = estimate_feature_samples(res["var"] * res["num_samples"],
-                                                                        alpha=(1 - args.confidence_interval),
-                                                                        max_abs_error=args.max_abs_error)
-                required_samples_per_feature -= res["num_samples"]
-                taken_or_estimated_samples = int(
-                    res["taken_samples"] + torch.sum(required_samples_per_feature[required_samples_per_feature > 0])
-                )
-
-            logging.info(f"[{args.method}] {'taken' if compute_accurately else '(estimated) required'} "
+            logging.info(f"[{args.method}] {'Taken' if compute_accurately else '(Estimated) required'} "
                          f"samples: {taken_or_estimated_samples}")
 
+        t2 = time()
         logging.info(f"[{args.method}] Time taken: {t2 - t1:.2f}s")
         sequence_tokens = res["input"]
 
