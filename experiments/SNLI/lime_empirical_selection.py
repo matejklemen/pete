@@ -86,7 +86,7 @@ if __name__ == "__main__":
             ts = time()
             res = method.explain_text(text_data=input_pair, label=predicted_label,
                                       num_samples=args.num_samples, explanation_length=args.explanation_length)
-            curr_selected = torch.flatten(torch.nonzero(res["importance"])).tolist()
+            curr_selected = torch.flatten(torch.nonzero(res["importance"], as_tuple=False)).tolist()
             selected_features.append(curr_selected)
             num_total_features = int(res["importance"].shape[0])
             te = time()
