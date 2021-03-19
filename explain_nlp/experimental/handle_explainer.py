@@ -45,7 +45,8 @@ def load_explainer(**kwargs):
         elif method == "lime_lm":
             method_type = MethodType.LIME_LM
             method = LIMEMaskedLMExplainer(model=model, generator=kwargs["generator"], kernel_width=kwargs["kernel_width"],
-                                           return_samples=return_generated_samples, return_scores=return_model_scores)
+                                           return_samples=return_generated_samples, return_scores=return_model_scores,
+                                           is_aligned_vocabulary=kwargs["is_aligned_vocabulary"])
         else:
             raise NotImplementedError(f"Unsupported method: '{method}'")
 

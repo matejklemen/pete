@@ -39,6 +39,7 @@ general_parser.add_argument("--top_p", type=float, default=0.95)
 general_parser.add_argument("--top_k", type=int, default=3)
 general_parser.add_argument("--threshold", type=float, default=0.1)
 general_parser.add_argument("--unique_dropout", type=float, default=0.0)
+general_parser.add_argument("--is_aligned_vocabulary", action="store_true")
 
 methods_parser = argparse.ArgumentParser()
 subparsers = methods_parser.add_subparsers(dest="method_class")
@@ -51,7 +52,7 @@ ime_parser.add_argument("--method", type=str, default="ime",
                         choices=["ime", "ime_mlm", "ime_dependent_mlm", "ime_hybrid"])
 ime_parser.add_argument("--min_samples_per_feature", type=int, default=10,
                         help="Minimum number of samples that get created for each feature for initial variance estimation")
-ime_parser.add_argument("--confidence_interval", type=float, default=0.99)
+ime_parser.add_argument("--confidence_interval", type=float, default=0.95)
 ime_parser.add_argument("--max_abs_error", type=float, default=0.01)
 ime_parser.add_argument("--train_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_train.txt")
 ime_parser.add_argument("--num_generated_samples", type=int, default=100,
