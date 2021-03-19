@@ -15,6 +15,7 @@ from explain_nlp.experimental.handle_explainer import load_explainer
 from explain_nlp.experimental.handle_generator import load_generator
 from explain_nlp.methods.lime import LIMEMaskedLMExplainer, LIMEExplainer
 from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
+from explain_nlp.utils.metrics import fidelity
 
 lime_parser.add_argument("--num_repeats", type=int, default=10)
 
@@ -60,12 +61,14 @@ if __name__ == "__main__":
         json.dump(vars(args), fp=f_config, indent=4)
 
     selected_features_per_example = []
+    example_fidelities = []
     start_from = 0
-    if os.path.exists(os.path.join(experiment_dir, "selected_features_per_sample.json")):
-        with open(os.path.join(experiment_dir, "selected_features_per_sample.json"), "r", encoding="utf-8") as f:
+    if os.path.exists(os.path.join(experiment_dir, "experiment_data.json")):
+        with open(os.path.join(experiment_dir, "experiment_data.json"), "r", encoding="utf-8") as f:
             existing_data = json.load(f)
 
         selected_features_per_example = existing_data["selected_features_per_example"]
+        example_fidelities = existing_data["fidelities"]
         start_from = len(selected_features_per_example)
         logging.info(f"Loaded existing experiment data - continuing from example#{start_from}")
 
@@ -82,21 +85,38 @@ if __name__ == "__main__":
         num_total_features = None
 
         selected_features = []
+        fidelities = {"surrogate": [], "mean_regressor": [], "median_regressor": []}
         for idx_rep in range(args.num_repeats):
             ts = time()
             res = method.explain_text(text_data=input_pair, label=predicted_label,
                                       num_samples=args.num_samples, explanation_length=args.explanation_length)
+
+            fidelities["surrogate"].append(fidelity(model_scores=res["pred_model"],
+                                                    surrogate_scores=res["pred_surrogate"]))
+            fidelities["mean_regressor"].append(fidelity(model_scores=res["pred_model"],
+                                                         surrogate_scores=res["pred_mean"]))
+            fidelities["median_regressor"].append(fidelity(model_scores=res["pred_model"],
+                                                           surrogate_scores=res["pred_median"]))
+
             curr_selected = torch.flatten(torch.nonzero(res["importance"], as_tuple=False)).tolist()
             selected_features.append(curr_selected)
             num_total_features = int(res["importance"].shape[0])
             te = time()
-            logging.info(f"\t[Rep#{idx_rep}] Time taken: {te - ts: .4f}s")
+            logging.info(f"\t[Rep#{idx_rep}] Fidelities: "
+                         f"surrogate={fidelities['surrogate'][-1]: .2f}, "
+                         f"mean_reg: {fidelities['mean_regressor'][-1]: .2f}, "
+                         f"median_reg: {fidelities['median_regressor'][-1]: .2f} (time taken: {te - ts: .2f}s)")
 
         counter = np.zeros(num_total_features)
         for curr_selected in selected_features:
             counter[curr_selected] += 1
 
         selected_features_per_example.append(int(np.sum(counter > 0)))
+        example_fidelities.append({
+            "surrogate": {"mean": np.mean(fidelities['surrogate']), "sd": np.std(fidelities['surrogate'])},
+            "mean_regressor": {"mean": np.mean(fidelities['mean_regressor']), "sd": np.std(fidelities['mean_regressor'])},
+            "median_regressor": {"median": np.mean(fidelities['median_regressor']), "sd": np.std(fidelities['median_regressor'])}
+        })
 
         plt.title(f"Ex.#{idx_example}: Empirical selection frequency (/{args.num_repeats} reps) "
                   f"of K={args.explanation_length}-sparse LIME")
@@ -113,11 +133,12 @@ if __name__ == "__main__":
         plt.clf()
 
         logging.info(f"Saving updated data")
-        with open(os.path.join(experiment_dir, "selected_features_per_sample.json"), "w", encoding="utf-8") as f:
+        with open(os.path.join(experiment_dir, "experiment_data.json"), "w", encoding="utf-8") as f:
             json.dump({
                 "selected_features_per_example": selected_features_per_example,
                 "mean_selected_features": np.mean(selected_features_per_example),
-                "sd_selected_features": np.std(selected_features_per_example)
+                "sd_selected_features": np.std(selected_features_per_example),
+                "fidelities": example_fidelities
             }, fp=f, indent=4)
 
     logging.info(f"[FINAL RESULTS] Selected features per example: "
