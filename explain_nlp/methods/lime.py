@@ -107,10 +107,14 @@ class LIMEExplainer:
 
         pred_probas = self.model.score(samples, **modeling_kwargs)
 
+        np_indicators = feature_indicators.numpy()
+        np_probas = pred_probas.numpy()
+        np_weights = weights.numpy()
+
         feature_selector = Ridge(alpha=0.01, fit_intercept=True)
-        feature_selector.fit(X=feature_indicators.numpy(),
-                             y=pred_probas[:, label].numpy(),
-                             sample_weight=weights.numpy())
+        feature_selector.fit(X=np_indicators,
+                             y=np_probas[:, label],
+                             sample_weight=np_weights)
         coefs = feature_selector.coef_
 
         sort_indices = np.argsort(-np.abs(coefs))
@@ -118,9 +122,9 @@ class LIMEExplainer:
 
         explanation = torch.zeros(num_features + num_additional)
         explanation_model = Ridge(alpha=1.0, fit_intercept=True)
-        explanation_model.fit(X=feature_indicators[:, used_features].numpy(),
-                              y=pred_probas[:, label].numpy(),
-                              sample_weight=weights.numpy())
+        explanation_model.fit(X=np_indicators[:, used_features],
+                              y=np_probas[:, label],
+                              sample_weight=np_weights)
         explanation[used_features] = torch.tensor(explanation_model.coef_)
 
         results = {
@@ -136,16 +140,10 @@ class LIMEExplainer:
             results["scores"] = pred_probas[:, label].tolist()
 
         if self.return_metrics:
-            results["dense_mae"] = mean_absolute_error(y_true=pred_probas[:, label].numpy(),
-                                                       y_pred=feature_selector.predict(feature_indicators.numpy()),
-                                                       sample_weight=weights.numpy())
-            results["sparse_mae"] = mean_absolute_error(y_true=pred_probas[:, label].numpy(),
-                                                        y_pred=explanation_model.predict(feature_indicators[:, used_features].numpy()),
-                                                        sample_weight=weights.numpy())
-            results["random_mae"] = mean_absolute_error(y_true=pred_probas[:, label].numpy(),
-                                                        y_pred=np.repeat(np.mean(pred_probas[:, label].numpy()),
-                                                                         (num_samples,)),
-                                                        sample_weight=weights.numpy())
+            results["pred_model"] = np_probas[0, label]
+            results["pred_surrogate"] = explanation_model.predict(np_indicators[0: 1, used_features])[0]
+            results["pred_mean"] = np.mean(np_probas)
+            results["pred_median"] = np.median(np_probas)
 
         if custom_features is not None:
             results["custom_features"] = feature_groups
@@ -172,11 +170,13 @@ class LIMEExplainer:
 class LIMEMaskedLMExplainer(LIMEExplainer):
     def __init__(self, model: InterpretableModel, generator: SampleGenerator, kernel_width=25.0,
                  return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 return_metrics: Optional[bool] = False):
+                 return_metrics: Optional[bool] = False, is_aligned_vocabulary: Optional[bool] = False):
         super().__init__(model=model, kernel_width=kernel_width,
                          return_samples=return_samples, return_scores=return_scores, return_metrics=return_metrics)
         self.generator = generator
         self.generator.filters = [filter_factory("unique")] + self.generator.filters
+
+        self.is_aligned_vocabulary = is_aligned_vocabulary
 
     def generate_neighbourhood(self, samples: torch.Tensor, removal_mask, **generation_kwargs):
         # TODO: control labels!
@@ -190,6 +190,20 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
 
     def transform_to_generator(self, input_ids, perturbable_mask, **modeling_kwargs):
         """ Maps the POSITIONS of perturbable indices in model instance to perturbable indices in generator instance."""
+        if self.is_aligned_vocabulary:
+            num_features = input_ids.shape[1]
+            perturbable_mask = perturbable_mask[0]
+            perturbable_inds = torch.arange(num_features)[perturbable_mask]
+
+            return {
+                "instance_generator": {
+                    "input_ids": input_ids,
+                    "perturbable_mask": perturbable_mask,
+                    "aux_data": modeling_kwargs
+                },
+                "mapping": {pos: [int(i)] for pos, i in enumerate(perturbable_inds)}
+            }
+
         instance_tokens = self.model.from_internal(input_ids, return_tokens=True, **modeling_kwargs)
         try:
             instance_generator = self.generator.to_internal(instance_tokens, is_split_into_units=True,
@@ -313,10 +327,14 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
 
         pred_probas = self.model.score(samples, **modeling_kwargs)
 
+        np_indicators = feature_indicators.numpy()
+        np_probas = pred_probas.numpy()
+        np_weights = weights.numpy()
+
         feature_selector = Ridge(alpha=0.01, fit_intercept=True)
-        feature_selector.fit(X=feature_indicators.numpy(),
-                             y=pred_probas[:, label].numpy(),
-                             sample_weight=weights.numpy())
+        feature_selector.fit(X=np_indicators,
+                             y=np_probas[:, label],
+                             sample_weight=np_weights)
         coefs = feature_selector.coef_
 
         sort_indices = np.argsort(-np.abs(coefs))
@@ -324,9 +342,9 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
 
         explanation = torch.zeros(num_features + num_additional)
         explanation_model = Ridge(alpha=1.0, fit_intercept=True)
-        explanation_model.fit(X=feature_indicators[:, used_features].numpy(),
-                              y=pred_probas[:, label].numpy(),
-                              sample_weight=weights.numpy())
+        explanation_model.fit(X=np_indicators[:, used_features],
+                              y=np_probas[:, label],
+                              sample_weight=np_weights)
         explanation[used_features] = torch.tensor(explanation_model.coef_)
 
         results = {
@@ -342,16 +360,10 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
             results["scores"] = pred_probas[:, label].tolist()
 
         if self.return_metrics:
-            results["dense_mae"] = mean_absolute_error(y_true=pred_probas[:, label].numpy(),
-                                                       y_pred=feature_selector.predict(feature_indicators.numpy()),
-                                                       sample_weight=weights.numpy())
-            results["sparse_mae"] = mean_absolute_error(y_true=pred_probas[:, label].numpy(),
-                                                        y_pred=explanation_model.predict(feature_indicators[:, used_features].numpy()),
-                                                        sample_weight=weights.numpy())
-            results["random_mae"] = mean_absolute_error(y_true=pred_probas[:, label].numpy(),
-                                                        y_pred=np.repeat(np.mean(pred_probas[:, label].numpy()),
-                                                                         (num_samples,)),
-                                                        sample_weight=weights.numpy())
+            results["pred_model"] = np_probas[0, label]
+            results["pred_surrogate"] = explanation_model.predict(np_indicators[0: 1, used_features])[0]
+            results["pred_mean"] = np.mean(np_probas)
+            results["pred_median"] = np.median(np_probas)
 
         if custom_features is not None:
             results["custom_features"] = feature_groups
