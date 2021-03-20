@@ -1,3 +1,5 @@
+from typing import List
+
 import torch
 
 
@@ -16,7 +18,8 @@ def top_k_decoding(logits: torch.Tensor, top_k: int):
     return top_i[torch.arange(logits.shape[0]), torch.flatten(selected)].unsqueeze(1)
 
 
-def filter_factory(strategy="top_p", top_p=0.9, top_k=5, threshold=0.1):
+def filter_factory(strategy="top_p", top_p=0.9, top_k=5, threshold=0.1,
+                   allowed_values: List[torch.Tensor] = None):
     if strategy is None:
         # no-op, used to simplify code
         def strategy_fn(logits, **strategy_kwargs):
@@ -32,6 +35,11 @@ def filter_factory(strategy="top_p", top_p=0.9, top_k=5, threshold=0.1):
     elif strategy == "unique":
         def strategy_fn(logits, orig_values, **strategy_kwargs):
             return filter_unique(logits, orig_values=orig_values)
+    elif strategy == "allowed":
+        assert allowed_values is not None
+
+        def strategy_fn(logits, curr_position, **strategy_kwargs):
+            return filter_allowed(logits, allowed_values=allowed_values[curr_position])
     else:
         raise NotImplementedError(f"Unrecognized strategy: '{strategy}'")
 
@@ -70,7 +78,7 @@ def top_k_filtering(logits, top_k, **kwargs):
 
 
 def filter_unique(logits, orig_values, **kwargs):
-    """ Makes original input values unsamplable.
+    """ Makes original values unsamplable.
     Args:
         logits:
             Predicted logits for token at `position`. Shape: [batch_size, vocab_size]
@@ -78,6 +86,22 @@ def filter_unique(logits, orig_values, **kwargs):
             Values present in the original input. Shape: [batch_size]
     """
     logits[torch.arange(orig_values.shape[0]), orig_values] = -float("inf")
+    return logits
+
+
+def filter_allowed(logits, allowed_values, **kwargs):
+    """ Makes all but allowed values unsamplable.
+
+    Args:
+        logits:
+            Predicted logits for token at `position`. Shape: [batch_size, vocab_size]
+        allowed_values:
+            Values that should remain possible to sample. Shape: [num_allowed_values]
+    """
+    unsamplable_mask = torch.ones(logits.shape[1], dtype=torch.bool)
+    unsamplable_mask[allowed_values] = False
+
+    logits[:, unsamplable_mask] = -float("inf")
     return logits
 
 
