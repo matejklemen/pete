@@ -499,6 +499,54 @@ class BertForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizationM
         return eff_input_ids
 
 
+class SimplifiedBertForMaskedLMGenerator(BertForMaskedLMGenerator):
+    """ BERT MLM generator that generates different parts of the same reference example for all samples"""
+    @torch.no_grad()
+    def generate_masked_samples(self, input_ids: torch.Tensor,
+                                generation_mask: torch.Tensor,
+                                **generation_kwargs):
+        # Note: currently assuming mask size of 1
+        num_samples = generation_mask.shape[0]
+        num_features = input_ids.shape[1]
+
+        if input_ids.shape[0] != 1 and input_ids.shape[0] != num_samples:
+            raise ValueError(f"input_ids ({input_ids.shape[0]} examples) can't be broadcasted to shape of "
+                             f"generation mask ({generation_mask.shape[0]} examples)")
+
+        eff_input_ids = input_ids
+        if input_ids.shape[0] == 1:
+            eff_input_ids = input_ids.repeat((num_samples, 1))
+
+        # Note: currently assuming generation additional data is same for all samples
+        eff_aux_data = {k: generation_kwargs[k].to(self.device)
+                        for k in ["token_type_ids", "attention_mask"]}
+
+        _generation_mask = generation_mask.to(self.device)
+        inds_masked_features = torch.arange(num_features, device=self.device)[torch.any(_generation_mask, dim=0)]
+        # Shuffle the order as there is no real correct generation order in MLM (+ it adds some variance)
+        # inds_masked_features = inds_masked_features[torch.randperm(inds_masked_features.shape[0], device=self.device)]
+
+        orig_tokens = input_ids[[0]].clone()
+        input_ids = input_ids[[0]].to(self.device)
+        for curr_position in inds_masked_features:
+            input_ids[0, curr_position] = self.mask_token_id
+            is_masked = _generation_mask[:, curr_position]
+
+            res = self.generator(input_ids=input_ids, **eff_aux_data)
+            curr_logits = res["logits"][:, curr_position]   # [batch_size=1, vocab_size]
+
+            for curr_filter in self.filters:
+                curr_logits = curr_filter(curr_logits, orig_values=orig_tokens[:, curr_position])
+
+            probas = torch.softmax(curr_logits, dim=-1)
+            preds = torch.multinomial(probas, num_samples=1)[0, 0]
+
+            eff_input_ids[is_masked, curr_position] = preds
+            input_ids[0, curr_position] = preds
+
+        return eff_input_ids.cpu()
+
+
 class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
     def __init__(self, tokenizer_name, model_name, control_labels: List[str], max_seq_len,
                  batch_size=8, device="cuda", strategy="greedy", top_p=0.9, top_k=5, threshold=0.1,

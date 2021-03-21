@@ -26,8 +26,8 @@ general_parser.add_argument("--model_max_seq_len", type=int, default=41)
 general_parser.add_argument("--model_max_words", type=int, default=39)
 general_parser.add_argument("--model_batch_size", type=int, default=2)
 
-general_parser.add_argument("--generator_type", type=str, default="bert_mlm",
-                            choices=["bert_mlm", "bert_cmlm", "gpt_lm", "gpt_clm", "cblstm_lm"])
+general_parser.add_argument("--generator_type", type=str, default="bert_simplified_mlm",
+                            choices=["bert_mlm", "bert_simplified_mlm", "bert_cmlm", "gpt_lm", "gpt_clm", "cblstm_lm"])
 general_parser.add_argument("--generator_dir", type=str,
                             help="Path or handle of model to be used as a language modeling generator",
                             default="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm")
