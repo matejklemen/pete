@@ -501,6 +501,17 @@ class BertForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizationM
 
 class SimplifiedBertForMaskedLMGenerator(BertForMaskedLMGenerator):
     """ BERT MLM generator that generates different parts of the same reference example for all samples"""
+
+    def __init__(self, tokenizer_name, model_name, max_seq_len, num_references=1, batch_size=8, device="cuda",
+                 strategy="top_k", top_p=0.9, top_k=5, threshold=0.1,
+                 monte_carlo_dropout: Optional[bool] = False,
+                 allowed_values: Optional[List[torch.Tensor]] = None):
+        super().__init__(tokenizer_name=tokenizer_name, model_name=model_name,
+                         max_seq_len=max_seq_len, batch_size=batch_size, device=device,
+                         strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold,
+                         monte_carlo_dropout=monte_carlo_dropout, allowed_values=allowed_values)
+        self.num_references = num_references
+
     @torch.no_grad()
     def generate_masked_samples(self, input_ids: torch.Tensor,
                                 generation_mask: torch.Tensor,
@@ -517,34 +528,35 @@ class SimplifiedBertForMaskedLMGenerator(BertForMaskedLMGenerator):
         if input_ids.shape[0] == 1:
             eff_input_ids = input_ids.repeat((num_samples, 1))
 
+        inds_masked_features = torch.arange(num_features)[torch.any(generation_mask, dim=0)]
+        # Shuffle the order as there is no real correct generation order in MLM (+ it adds some variance)
+        inds_masked_features = inds_masked_features[torch.randperm(inds_masked_features.shape[0], device=self.device)]
+
+        orig_tokens = input_ids[[0]].repeat((self.num_references, 1)).to(self.device)
+        input_ids = orig_tokens.clone()
         # Note: currently assuming generation additional data is same for all samples
-        eff_aux_data = {k: generation_kwargs[k].to(self.device)
+        eff_aux_data = {k: generation_kwargs[k].repeat((self.num_references, 1)).to(self.device)
                         for k in ["token_type_ids", "attention_mask"]}
 
-        _generation_mask = generation_mask.to(self.device)
-        inds_masked_features = torch.arange(num_features, device=self.device)[torch.any(_generation_mask, dim=0)]
-        # Shuffle the order as there is no real correct generation order in MLM (+ it adds some variance)
-        # inds_masked_features = inds_masked_features[torch.randperm(inds_masked_features.shape[0], device=self.device)]
-
-        orig_tokens = input_ids[[0]].clone()
-        input_ids = input_ids[[0]].to(self.device)
         for curr_position in inds_masked_features:
-            input_ids[0, curr_position] = self.mask_token_id
-            is_masked = _generation_mask[:, curr_position]
-
+            input_ids[:, curr_position] = self.mask_token_id
             res = self.generator(input_ids=input_ids, **eff_aux_data)
-            curr_logits = res["logits"][:, curr_position]   # [batch_size=1, vocab_size]
+            curr_logits = res["logits"][:, curr_position]   # [batch_size, vocab_size]
 
             for curr_filter in self.filters:
                 curr_logits = curr_filter(curr_logits, orig_values=orig_tokens[:, curr_position])
 
             probas = torch.softmax(curr_logits, dim=-1)
-            preds = torch.multinomial(probas, num_samples=1)[0, 0]
+            preds = torch.multinomial(probas, num_samples=1)[:, 0]
 
-            eff_input_ids[is_masked, curr_position] = preds
-            input_ids[0, curr_position] = preds
+            input_ids[:, curr_position] = preds
 
-        return eff_input_ids.cpu()
+            num_masked = torch.sum(generation_mask[:, curr_position])
+            assignment_inds = torch.randint(self.num_references, (int(num_masked),))
+            eff_input_ids[generation_mask[:, curr_position], curr_position] = \
+                input_ids[assignment_inds, curr_position].cpu()
+
+        return eff_input_ids
 
 
 class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
@@ -830,9 +842,9 @@ class RobertaForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizati
 if __name__ == "__main__":
     NUM_SAMPLES = 10
     GENERATOR_HANDLE = "/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm"
-    generator = BertForMaskedLMGenerator(tokenizer_name=GENERATOR_HANDLE, model_name=GENERATOR_HANDLE,
-                                         batch_size=10, max_seq_len=41,
-                                         device="cpu", strategy=["unique", "top_k"], top_k=3)
+    generator = SimplifiedBertForMaskedLMGenerator(tokenizer_name=GENERATOR_HANDLE, model_name=GENERATOR_HANDLE,
+                                                   batch_size=10, max_seq_len=41,
+                                                   device="cpu", strategy=["unique", "top_k"], top_k=3)
 
     ex = ("A shirtless man skateboards on a ledge", "A man without a shirt")
     pretokenized_ex = (ex[0].split(" "), ex[1].split(" "))
