@@ -505,12 +505,14 @@ class SimplifiedBertForMaskedLMGenerator(BertForMaskedLMGenerator):
     def __init__(self, tokenizer_name, model_name, max_seq_len, num_references=1, batch_size=8, device="cuda",
                  strategy="top_k", top_p=0.9, top_k=5, threshold=0.1,
                  monte_carlo_dropout: Optional[bool] = False,
-                 allowed_values: Optional[List[torch.Tensor]] = None):
+                 allowed_values: Optional[List[torch.Tensor]] = None,
+                 shuffle_generation_order: Optional[bool] = False):
         super().__init__(tokenizer_name=tokenizer_name, model_name=model_name,
                          max_seq_len=max_seq_len, batch_size=batch_size, device=device,
                          strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold,
                          monte_carlo_dropout=monte_carlo_dropout, allowed_values=allowed_values)
         self.num_references = num_references
+        self.shuffle_generation_order = shuffle_generation_order
 
     @torch.no_grad()
     def generate_masked_samples(self, input_ids: torch.Tensor,
@@ -530,7 +532,8 @@ class SimplifiedBertForMaskedLMGenerator(BertForMaskedLMGenerator):
 
         inds_masked_features = torch.arange(num_features)[torch.any(generation_mask, dim=0)]
         # Shuffle the order as there is no real correct generation order in MLM (+ it adds some variance)
-        inds_masked_features = inds_masked_features[torch.randperm(inds_masked_features.shape[0], device=self.device)]
+        if self.shuffle_generation_order:
+            inds_masked_features = inds_masked_features[torch.randperm(inds_masked_features.shape[0], device=self.device)]
 
         orig_tokens = input_ids[[0]].repeat((self.num_references, 1)).to(self.device)
         input_ids = orig_tokens.clone()
