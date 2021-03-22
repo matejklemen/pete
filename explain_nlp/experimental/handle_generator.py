@@ -35,7 +35,8 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                                        strategy=args.strategy,
                                                        top_p=args.top_p,
                                                        top_k=args.top_k,
-                                                       threshold=args.threshold)
+                                                       threshold=args.threshold,
+                                                       shuffle_generation_order=args.shuffle_generation_order)
     elif args.generator_type == "bert_cmlm":
         generator = BertForControlledMaskedLMGenerator(tokenizer_name=args.generator_dir,
                                                        model_name=args.generator_dir,

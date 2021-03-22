@@ -10,14 +10,18 @@ import numpy as np
 import torch
 
 from explain_nlp.experimental.arguments import lime_parser
-from explain_nlp.experimental.data import load_nli, LABEL_TO_IDX
+from explain_nlp.experimental.data import load_nli, LABEL_TO_IDX, IDX_TO_LABEL
 from explain_nlp.experimental.handle_explainer import load_explainer
 from explain_nlp.experimental.handle_generator import load_generator
 from explain_nlp.methods.lime import LIMEMaskedLMExplainer, LIMEExplainer
 from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
 from explain_nlp.utils.metrics import fidelity
+from explain_nlp.visualizations.highlight import highlight_plot
 
 lime_parser.add_argument("--num_repeats", type=int, default=10)
+lime_parser.add_argument("--shuffle_generation_order", action="store_true",
+                         help="Whether to increase generation variance by shuffling the order "
+                              "(if the generator allows it)")
 
 if __name__ == "__main__":
     args = lime_parser.parse_args()
@@ -29,6 +33,8 @@ if __name__ == "__main__":
 
     if not os.path.exists(experiment_dir):
         os.makedirs(experiment_dir)
+        os.makedirs(os.path.join(experiment_dir, "plots"))
+        os.makedirs(os.path.join(experiment_dir, "explanations"))
 
     # Set up logging to file and stdout
     logger = logging.getLogger()
@@ -60,16 +66,14 @@ if __name__ == "__main__":
     with open(os.path.join(experiment_dir, "experiment_config.json"), "w") as f_config:
         json.dump(vars(args), fp=f_config, indent=4)
 
-    selected_features_per_example = []
-    example_fidelities = []
+    experiment_data = []
     start_from = 0
     if os.path.exists(os.path.join(experiment_dir, "experiment_data.json")):
         with open(os.path.join(experiment_dir, "experiment_data.json"), "r", encoding="utf-8") as f:
             existing_data = json.load(f)
 
-        selected_features_per_example = existing_data["selected_features_per_example"]
-        example_fidelities = existing_data["fidelities"]
-        start_from = len(selected_features_per_example)
+        experiment_data = existing_data["examples"]
+        start_from = len(experiment_data)
         logging.info(f"Loaded existing experiment data - continuing from example#{start_from}")
 
     df_test = load_nli(args.test_path)
@@ -80,43 +84,72 @@ if __name__ == "__main__":
         probas = model.score(input_ids=encoded_example["input_ids"].to(DEVICE),
                              **{k: v.to(DEVICE) for k, v in encoded_example["aux_data"].items()})
         predicted_label = int(torch.argmax(probas))
-        actual_label = int(df_test.iloc[[idx_example]]["gold_label"].apply(lambda label_str: LABEL_TO_IDX["snli"][label_str]))
+        actual_label = int(LABEL_TO_IDX["snli"][df_test.iloc[idx_example]["gold_label"]])
 
         num_total_features = None
+        reps_data = []
 
-        selected_features = []
-        fidelities = {"surrogate": [], "mean_regressor": [], "median_regressor": []}
+        # Track importances of best and worst (according to fidelity) explanations
+        best_fidelity, worst_fidelity = -float("inf"), float("inf")
+        best_res, worst_res = None, None
         for idx_rep in range(args.num_repeats):
             ts = time()
             res = method.explain_text(text_data=input_pair, label=predicted_label,
                                       num_samples=args.num_samples, explanation_length=args.explanation_length)
-
-            fidelities["surrogate"].append(fidelity(model_scores=res["pred_model"],
-                                                    surrogate_scores=res["pred_surrogate"]))
-            fidelities["mean_regressor"].append(fidelity(model_scores=res["pred_model"],
-                                                         surrogate_scores=res["pred_mean"]))
-            fidelities["median_regressor"].append(fidelity(model_scores=res["pred_model"],
-                                                           surrogate_scores=res["pred_median"]))
-
-            curr_selected = torch.flatten(torch.nonzero(res["importance"], as_tuple=False)).tolist()
-            selected_features.append(curr_selected)
-            num_total_features = int(res["importance"].shape[0])
             te = time()
-            logging.info(f"\t[Rep#{idx_rep}] Fidelities: "
-                         f"surrogate={fidelities['surrogate'][-1]: .2f}, "
-                         f"mean_reg: {fidelities['mean_regressor'][-1]: .2f}, "
-                         f"median_reg: {fidelities['median_regressor'][-1]: .2f} (time taken: {te - ts: .2f}s)")
+            logging.info(f"\n[Rep#{idx_rep}] (time taken={te - ts: .2f}s)")
+            curr_selected = torch.flatten(torch.nonzero(res["importance"], as_tuple=False)).tolist()
+            num_total_features = int(res["importance"].shape[0])
+
+            curr_surrogate_fidelity = fidelity(model_scores=res["pred_model"], surrogate_scores=res["pred_surrogate"])
+            if curr_surrogate_fidelity < worst_fidelity:
+                worst_fidelity = curr_surrogate_fidelity
+                worst_res = res
+            if curr_surrogate_fidelity > best_fidelity:
+                best_fidelity = curr_surrogate_fidelity
+                best_res = res
+
+            reps_data.append({
+                "selected_features": curr_selected,
+                "fidelities": {
+                    "surrogate": curr_surrogate_fidelity,
+                    "mean_regressor": fidelity(model_scores=res["pred_model"], surrogate_scores=res["pred_mean"]),
+                    "median_regressor": fidelity(model_scores=res["pred_model"], surrogate_scores=res["pred_median"])
+                },
+                "time_taken": te - ts
+            })
+
+        # Store visualization of best and worst (according to fidelity) explanations
+        highlight_plot([best_res["input"]], importances=[best_res["importance"].tolist()],
+                       pred_labels=[IDX_TO_LABEL["snli"][predicted_label]],
+                       actual_labels=[IDX_TO_LABEL["snli"][actual_label]],
+                       path=os.path.join(experiment_dir, "explanations", f"ex{idx_example}_best_explanation.html"))
+        highlight_plot([worst_res["input"]], importances=[worst_res["importance"].tolist()],
+                       pred_labels=[IDX_TO_LABEL["snli"][predicted_label]],
+                       actual_labels=[IDX_TO_LABEL["snli"][actual_label]],
+                       path=os.path.join(experiment_dir, "explanations", f"ex{idx_example}_worst_explanation.html"))
 
         counter = np.zeros(num_total_features)
-        for curr_selected in selected_features:
-            counter[curr_selected] += 1
+        for curr_rep in reps_data:
+            counter[curr_rep["selected_features"]] += 1
 
-        selected_features_per_example.append(int(np.sum(counter > 0)))
-        example_fidelities.append({
-            "surrogate": {"mean": np.mean(fidelities['surrogate']), "sd": np.std(fidelities['surrogate'])},
-            "mean_regressor": {"mean": np.mean(fidelities['mean_regressor']), "sd": np.std(fidelities['mean_regressor'])},
-            "median_regressor": {"median": np.mean(fidelities['median_regressor']), "sd": np.std(fidelities['median_regressor'])}
-        })
+        example_data = {
+            "reps": reps_data,
+            "aggregate": {
+                "fidelities": {
+                    model_key: {
+                        "mean": np.mean([curr_rep['fidelities'][model_key] for curr_rep in reps_data]),
+                        "sd": np.std([curr_rep['fidelities'][model_key] for curr_rep in reps_data]),
+                        "best": np.max([curr_rep['fidelities'][model_key] for curr_rep in reps_data]),
+                        "worst": np.min([curr_rep['fidelities'][model_key] for curr_rep in reps_data])
+                    } for model_key in ["surrogate", "mean_regressor", "median_regressor"]
+                },
+                "num_unique_selected_features": int(np.sum(counter > 0))
+            }
+        }
+        experiment_data.append(example_data)
+        logging.info("Aggregate: ")
+        logging.info(example_data["aggregate"])
 
         plt.title(f"Ex.#{idx_example}: Empirical selection frequency (/{args.num_repeats} reps) "
                   f"of K={args.explanation_length}-sparse LIME")
@@ -129,18 +162,23 @@ if __name__ == "__main__":
         plt.xticks(np.arange(num_total_features))
         plt.margins(x=0)
 
-        plt.savefig(os.path.join(experiment_dir, f"ex{idx_example}.png"))
+        plt.savefig(os.path.join(experiment_dir, "plots", f"ex{idx_example}_num_selected.png"))
         plt.clf()
 
         logging.info(f"Saving updated data")
         with open(os.path.join(experiment_dir, "experiment_data.json"), "w", encoding="utf-8") as f:
             json.dump({
-                "selected_features_per_example": selected_features_per_example,
-                "mean_selected_features": np.mean(selected_features_per_example),
-                "sd_selected_features": np.std(selected_features_per_example),
-                "fidelities": example_fidelities
+                "examples": experiment_data,
+                "aggregate": {
+                    "fidelities": {
+                        model_key: {
+                            "mean": np.mean([curr_ex['aggregate']['fidelities'][model_key]['mean'] for curr_ex in experiment_data]),
+                            "sd": np.std([curr_ex['aggregate']['fidelities'][model_key]['mean'] for curr_ex in experiment_data])
+                        } for model_key in ["surrogate", "mean_regressor", "median_regressor"]
+                    },
+                    "num_unique_selected_features": {
+                        "mean": np.mean([curr_ex['aggregate']['num_unique_selected_features'] for curr_ex in experiment_data]),
+                        "sd": np.std([curr_ex['aggregate']['num_unique_selected_features'] for curr_ex in experiment_data])
+                    }
+                }
             }, fp=f, indent=4)
-
-    logging.info(f"[FINAL RESULTS] Selected features per example: "
-                 f"mean={np.mean(selected_features_per_example)}, "
-                 f"sd={np.std(selected_features_per_example)}")
