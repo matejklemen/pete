@@ -562,19 +562,98 @@ class SimplifiedBertForMaskedLMGenerator(BertForMaskedLMGenerator):
         return eff_input_ids
 
 
+class SimplifiedBertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
+    """ BERT controlled MLM generator that generates different parts of the same reference example for all samples"""
+    def __init__(self, tokenizer_name, model_name, control_labels: List[str], max_seq_len, num_references=1,
+                 batch_size=8, device="cuda", strategy="greedy", top_p=0.9, top_k=5, threshold=0.1,
+                 label_weights: Optional[List] = None, monte_carlo_dropout: Optional[bool] = False,
+                 shuffle_generation_order: Optional[bool] = False):
+        super().__init__(tokenizer_name=tokenizer_name, model_name=model_name,
+                         max_seq_len=max_seq_len, batch_size=batch_size, device=device,
+                         strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold,
+                         monte_carlo_dropout=monte_carlo_dropout)
+
+        assert all(curr_control in self.tokenizer.all_special_tokens for curr_control in control_labels)
+        self.control_labels = torch.tensor(self.tokenizer.encode(control_labels, add_special_tokens=False,
+                                                                 is_split_into_words=True))
+        self.control_labels_str = control_labels
+
+        self.label_weights = label_weights
+        if self.label_weights is None:
+            self.label_weights = [1.0] * len(self.control_labels)
+        self.label_weights = torch.tensor(self.label_weights)
+        self.label_weights /= torch.sum(self.label_weights)
+
+        self.num_references = 10  # num_references
+        self.shuffle_generation_order = shuffle_generation_order
+
+    @torch.no_grad()
+    def generate_masked_samples(self, input_ids: torch.Tensor,
+                                generation_mask: torch.Tensor,
+                                **generation_kwargs):
+        num_samples = generation_mask.shape[0]
+        num_features = input_ids.shape[1]
+        orig_tokens = input_ids[[0]].repeat((self.num_references, 1)).to(self.device)
+
+        ref_input_ids = extend_tensor(input_ids[[0]]).repeat((self.num_references, 1)).to(self.device)
+        ref_generation_mask = extend_tensor(torch.any(generation_mask, dim=0).unsqueeze(0))
+
+        eff_aux_data = {k: generation_kwargs[k].repeat((self.num_references, 1)).to(self.device)
+                        for k in ["token_type_ids", "attention_mask"]}
+        eff_aux_data = {k: extend_tensor(v) for k, v in eff_aux_data.items()}
+        # Control labels are attendable
+        eff_aux_data["attention_mask"][:, 1] = 1
+
+        samples = input_ids[[0]].repeat((num_samples, 1))
+
+        encoded_control_labels = self.control_labels[torch.randint(len(self.control_labels), (self.num_references,))]
+        ref_input_ids[:, 1] = torch.tensor(encoded_control_labels)
+
+        inds_masked = torch.arange(num_features)[torch.any(generation_mask, dim=0)]
+        ref_inds_masked = torch.arange(ref_generation_mask.shape[1])[torch.any(ref_generation_mask, dim=0)]
+        assert inds_masked.shape[0] == ref_inds_masked.shape[0]
+
+        # Shuffle the order as there is no real correct generation order in MLM (+ it adds some variance)
+        if self.shuffle_generation_order:
+            shuffled_order = torch.randperm(inds_masked.shape[0])
+            inds_masked = inds_masked[shuffled_order]
+            ref_inds_masked = ref_inds_masked[shuffled_order]
+
+        inds_masked = inds_masked.to(self.device)
+        ref_inds_masked = ref_inds_masked.to(self.device)
+
+        for pos, ref_pos in zip(inds_masked, ref_inds_masked):
+            ref_input_ids[:, ref_pos] = self.mask_token_id
+
+            res = self.generator(input_ids=ref_input_ids, **eff_aux_data)
+            curr_logits = res["logits"][:, ref_pos]   # [batch_size, vocab_size]
+
+            for curr_filter in self.filters:
+                curr_logits = curr_filter(curr_logits, orig_values=orig_tokens[:, pos])
+
+            probas = torch.softmax(curr_logits, dim=-1)
+            preds = torch.multinomial(probas, num_samples=1)[:, 0]
+            ref_input_ids[:, ref_pos] = preds
+
+            num_masked = torch.sum(generation_mask[:, pos])
+            assignment_inds = torch.randint(self.num_references, (int(num_masked),))
+            samples[generation_mask[:, pos], pos] = ref_input_ids[assignment_inds, ref_pos].cpu()
+
+        return samples
+
+
 class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
     def __init__(self, tokenizer_name, model_name, control_labels: List[str], max_seq_len,
                  batch_size=8, device="cuda", strategy="greedy", top_p=0.9, top_k=5, threshold=0.1,
-                 label_weights: Optional[List] = None, unique_dropout: Optional[float] = 0.0,
-                 generate_cover: Optional[bool] = False):
+                 label_weights: Optional[List] = None, unique_dropout: Optional[float] = 0.0):
         super().__init__(tokenizer_name=tokenizer_name, model_name=model_name,
                          batch_size=batch_size, max_seq_len=max_seq_len, device=device,
-                         strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold,
-                         generate_cover=generate_cover)
+                         strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
         self.unique_dropout = unique_dropout
 
         assert all(curr_control in self.tokenizer.all_special_tokens for curr_control in control_labels)
-        self.control_labels = torch.tensor(self.tokenizer.encode(control_labels, add_special_tokens=False))
+        self.control_labels = torch.tensor(self.tokenizer.encode(control_labels, add_special_tokens=False,
+                                                                 is_split_into_words=True))
         self.control_labels_str = control_labels
 
         self.label_weights = label_weights
@@ -586,10 +665,6 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
     @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
                  num_samples: Optional[int], **aux_data):
-        if self.generate_cover:
-            print("Warning: generate_cover=True, meaning the 'num_samples' argument is ignored in favour of number "
-                  "of samples, determined by cover")
-
         # Make room for control label at start of sequence (at pos. 1)
         extended_input_ids = extend_tensor(input_ids).repeat((num_samples, 1))
         extended_pert_mask = extend_tensor(perturbable_mask)
@@ -671,7 +746,8 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         eff_generation_mask[:, 1] = False
 
         control_labels = generation_kwargs["control_labels"]
-        encoded_control_labels = self.tokenizer.encode(control_labels, add_special_tokens=False)
+        encoded_control_labels = self.tokenizer.encode(control_labels, add_special_tokens=False,
+                                                       is_split_into_words=True)
         eff_input_ids[:, 1] = torch.tensor(encoded_control_labels)
 
         all_examples = super().generate_masked_samples(input_ids=eff_input_ids,

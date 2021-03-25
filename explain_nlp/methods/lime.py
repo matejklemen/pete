@@ -179,9 +179,16 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
         self.is_aligned_vocabulary = is_aligned_vocabulary
 
     def generate_neighbourhood(self, samples: torch.Tensor, removal_mask, **generation_kwargs):
-        # TODO: control labels!
+        num_samples = removal_mask.shape[0]
+        if hasattr(self.generator, "label_weights"):
+            randomly_selected_label = torch.multinomial(self.generator.label_weights, num_samples=num_samples, replacement=True)
+            randomly_selected_label = [self.generator.control_labels_str[i] for i in randomly_selected_label]
+        else:
+            randomly_selected_label = [None] * num_samples
+
         generated_examples = self.generator.generate_masked_samples(samples,
                                                                     generation_mask=removal_mask,
+                                                                    control_labels=randomly_selected_label,
                                                                     **generation_kwargs)
         text_examples = self.generator.from_internal(generated_examples, **generation_kwargs)
         model_examples = self.model.to_internal(text_examples)
@@ -372,7 +379,8 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
 
 
 if __name__ == "__main__":
-    from explain_nlp.generation.generation_transformers import BertForMaskedLMGenerator
+    from explain_nlp.generation.generation_transformers import BertForMaskedLMGenerator, \
+        SimplifiedBertForMaskedLMGenerator, BertForControlledMaskedLMGenerator, SimplifiedBertForControlledMaskedLMGenerator
     from explain_nlp.visualizations.highlight import highlight_plot
     from explain_nlp.visualizations.internal import visualize_lime_internals
 
@@ -383,13 +391,10 @@ if __name__ == "__main__":
         max_seq_len=41,
         device="cpu"
     )
-    # generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
-    #                                      model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
-    #                                      max_seq_len=41,
-    #                                      batch_size=8,
-    #                                      device="cpu",
-    #                                      strategy="top_p",
-    #                                      top_p=0.95)
+    generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
+                                         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
+                                         max_seq_len=41, batch_size=8, device="cpu",
+                                         strategy="top_k", top_k=3)
 
     explainer = LIMEExplainer(model, return_samples=True, return_scores=True)
     # explainer = LIMEMaskedLMExplainer(model, generator=generator, return_samples=True, return_scores=True)
