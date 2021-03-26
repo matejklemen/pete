@@ -64,6 +64,10 @@ def visualize_lime_internals(sequence_tokens: List[str], token_mask, probabiliti
         sort_inds = _argsort_bin(_token_mask)
     elif sort_key == "probabilities":
         sort_inds = np.argsort(_probabilities)
+    elif sort_key == "nnz":
+        sort_inds = np.argsort(np.sum(_token_mask, axis=1))
+    elif sort_key is not None:
+        raise ValueError(f"Unrecognized sort key '{sort_key}'")
     else:
         sort_inds = np.arange(num_samples)
 
