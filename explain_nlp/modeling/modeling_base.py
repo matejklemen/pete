@@ -35,13 +35,12 @@ class InterpretableModel:
         used as help for data reconstruction (e.g. attention mask)."""
         raise NotImplementedError
 
-    def to_internal(self, text_data: List[Union[str, Tuple[str, ...]]],
-                    pretokenized_text_data: Optional[Union[
-                        List[List[str]],
-                        List[Tuple[List[str], ...]]
-                    ]] = None) -> Dict:
-        """ Convert from text to internal model representation. Make sure to include 'perturbable_mask' in the
-        returned dictionary."""
+    def to_internal(self, text_data: Union[List[str], List[Tuple[str, ...]],
+                                           List[List[str]], List[Tuple[List[str], ...]]],
+                    is_split_into_units: Optional[bool] = False,
+                    allow_truncation: Optional[bool] = True) -> Dict:
+        """ Convert from text to internal generator representation.
+        `allow_truncation` specifies whether overflowing tokens (past max_seq_len) are allowed to be dropped. """
         raise NotImplementedError
 
     def tokenize(self, str_sequence: str) -> List[str]:
@@ -54,11 +53,6 @@ class InterpretableModel:
 
     def decode_token(self, token: int) -> str:
         """ Turn a single token from its internal representation to string"""
-        raise NotImplementedError
-
-    def convert_ids_to_tokens(self, ids: torch.Tensor) -> List[List[str]]:
-        # TODO: remove?
-        """ Convert integer-encoded tokens to str-encoded tokens, but keep them split."""
         raise NotImplementedError
 
     def score(self, input_ids: torch.Tensor, **aux_data):

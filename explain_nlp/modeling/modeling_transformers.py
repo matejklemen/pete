@@ -4,10 +4,10 @@ import torch
 from transformers import BertTokenizer, BertTokenizerFast, BertForMaskedLM, BertForSequenceClassification
 
 from explain_nlp.modeling.modeling_base import InterpretableModel
-from explain_nlp.utils.tokenization_utils import BertAlignedTokenizationMixin
+from explain_nlp.utils.tokenization_utils import TransformersAlignedTokenizationMixin
 
 
-class InterpretableBertBase(InterpretableModel, BertAlignedTokenizationMixin):
+class InterpretableBertBase(InterpretableModel, TransformersAlignedTokenizationMixin):
     tokenizer: BertTokenizerFast
 
     @property
@@ -85,124 +85,14 @@ class InterpretableBertBase(InterpretableModel, BertAlignedTokenizationMixin):
 
         return decoded_data
 
-    def from_internal_precise(self, encoded_data, skip_special_tokens=True):
-        converted = {
-            "decoded_data": [],
-            "is_continuation": []
-        }
-        for idx_example in range(encoded_data.shape[0]):
-            curr_example = encoded_data[idx_example]
-            sep_tokens = torch.nonzero(curr_example == self.tokenizer.sep_token_id, as_tuple=False)
-            end = int(sep_tokens[-1])
-
-            processed_example, is_continuation = [], []
-            for el in curr_example:
-                if skip_special_tokens and el.item() in self.special_token_ids:
-                    processed_example.append("")
-                    is_continuation.append(False)
-                    continue
-
-                str_tok = self.tokenizer.convert_ids_to_tokens(el.item())
-                if str_tok.startswith("##"):
-                    processed_example.append(str_tok[2:])
-                    is_continuation.append(True)
-                else:
-                    processed_example.append(str_tok)
-                    is_continuation.append(False)
-
-            # Multiple sequences present: [CLS] <seq1> [SEP] <seq2> [SEP] -> (<seq1>, <seq2>)
-            if sep_tokens.shape[0] >= 2:
-                bnd = int(sep_tokens[0])
-                converted["decoded_data"].append((processed_example[1: bnd],
-                                                    processed_example[bnd + 1: end]))
-                converted["is_continuation"].append((is_continuation[1: bnd],
-                                                     is_continuation[bnd + 1: end]))
-            else:
-                converted["decoded_data"].append(processed_example[1: end])
-                converted["is_continuation"].append(is_continuation[1: end])
-
-        return converted
-
-    def to_internal(self,
-                    text_data: Optional[List[Union[str, Tuple[str, ...]]]] = None,
-                    pretokenized_text_data: Optional[Union[
-                        List[List[str]],
-                        List[Tuple[List[str], ...]]
-                    ]] = None):
-        """ Convert text into model's representation. If `pretokenized_text_data` is given, the word IDs for each
-        subword will be given inside ["aux_data"]["alignment_ids"] (id=-1 if it's an unperturbable token)"""
-        if pretokenized_text_data is not None:
-            res = {
-                "input_ids": [], "perturbable_mask": [],
-                "aux_data": {"token_type_ids": [], "attention_mask": [], "alignment_ids": []}
-            }
-
-            for curr_example_or_pair in pretokenized_text_data:
-                curr_res = self.tokenize_aligned(curr_example_or_pair)
-
-                res["input_ids"].append(curr_res["input_ids"])
-                res["perturbable_mask"].append(curr_res["perturbable_mask"])
-                res["aux_data"]["token_type_ids"].append(curr_res["aux_data"]["token_type_ids"])
-                res["aux_data"]["attention_mask"].append(curr_res["aux_data"]["attention_mask"])
-                res["aux_data"]["alignment_ids"].append(curr_res["aux_data"]["alignment_ids"])
-
-            res["input_ids"] = torch.cat(res["input_ids"])
-            res["perturbable_mask"] = torch.cat(res["perturbable_mask"])
-            res["aux_data"]["token_type_ids"] = torch.cat(res["aux_data"]["token_type_ids"])
-            res["aux_data"]["attention_mask"] = torch.cat(res["aux_data"]["attention_mask"])
-            res["aux_data"]["alignment_ids"] = torch.tensor(res["aux_data"]["alignment_ids"])
-        elif text_data is not None:
-            res = self.tokenizer.batch_encode_plus(text_data, return_special_tokens_mask=True, return_tensors="pt",
-                                                   padding="max_length", max_length=self.max_seq_len,
-                                                   truncation="longest_first")
-            res = {
-                "input_ids": res["input_ids"],
-                "perturbable_mask": torch.logical_not(res["special_tokens_mask"]),
-                "aux_data": {
-                    "token_type_ids": res["token_type_ids"],
-                    "attention_mask": res["attention_mask"]
-                }
-            }
-        else:
-            raise ValueError("One of 'text_data' or 'pretokenized_text_data' must be given")
-
-        return res
-
-    def words_to_internal(self, pretokenized_text_data: List[Union[List[str], Tuple[List[str], ...]]]) -> Dict:
-        """ Convert examples into model's representation, keeping the word boundaries intact.
-
-        Args:
-        -----
-        text_data:
-            Pre-tokenized examples or example pairs
-        """
-        ret_dict = {
-            "words": [],  # text data, augmented with any additional control tokens (used to align importances)
-            "input_ids": [],  # list of encoded token subwords for each example/example pair; type: List[List[List[int]]
-            # word-level annotations
-            "perturbable_mask": [],
-            "aux_data": {"token_type_ids": [], "attention_mask": []}
-        }
-
-        for curr_example_or_pair in pretokenized_text_data:
-            res = self.tokenize_aligned(curr_example_or_pair,
-                                        return_raw=True,
-                                        group_words=True)
-
-            ret_dict["words"].append(res["words"])
-            ret_dict["input_ids"].append(res["input_ids"])
-            ret_dict["perturbable_mask"].append(res["perturbable_mask"])
-            ret_dict["aux_data"]["token_type_ids"].append(res["aux_data"]["token_type_ids"])
-            ret_dict["aux_data"]["attention_mask"].append(res["aux_data"]["attention_mask"])
-
-        ret_dict["perturbable_mask"] = torch.cat(ret_dict["perturbable_mask"])
-        ret_dict["aux_data"]["token_type_ids"] = torch.cat(ret_dict["aux_data"]["token_type_ids"])
-        ret_dict["aux_data"]["attention_mask"] = torch.cat(ret_dict["aux_data"]["attention_mask"])
-
-        return ret_dict
-
-    def convert_ids_to_tokens(self, ids):
-        return [self.tokenizer.convert_ids_to_tokens(curr_ids) for curr_ids in ids.tolist()]
+    def to_internal(self, text_data: Union[List[str], List[Tuple[str, ...]],
+                                           List[List[str]], List[Tuple[List[str], ...]]],
+                    is_split_into_units: Optional[bool] = False,
+                    allow_truncation: Optional[bool] = True):
+        truncation_strategy = "longest_first" if allow_truncation else "do_not_truncate"
+        return self.encode_aligned(text_data,
+                                   is_split_into_units=is_split_into_units,
+                                   truncation_strategy=truncation_strategy)
 
     @torch.no_grad()
     def score(self, input_ids: torch.Tensor, **kwargs):
@@ -227,6 +117,8 @@ class InterpretableBertForMaskedLM(InterpretableBertBase):
         self.tokenizer = BertTokenizer.from_pretrained(tokenizer_name)
         self.model = BertForMaskedLM.from_pretrained(model_name).to(self.device)
         self.model.eval()
+
+        self.aux_data_keys = ["token_type_ids", "attention_mask"]
 
     @torch.no_grad()
     def score(self, input_ids: torch.Tensor, **kwargs):
@@ -281,6 +173,8 @@ class InterpretableBertForSequenceClassification(InterpretableBertBase):
         self.tokenizer = BertTokenizerFast.from_pretrained(tokenizer_name)
         self.model = BertForSequenceClassification.from_pretrained(model_name, return_dict=True).to(self.device)
         self.model.eval()
+
+        self.aux_data_keys = ["token_type_ids", "attention_mask"]
 
     @torch.no_grad()
     def score(self, input_ids: torch.Tensor, **kwargs):
