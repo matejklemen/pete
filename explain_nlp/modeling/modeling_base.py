@@ -27,10 +27,8 @@ class InterpretableModel:
     def special_token_ids(self):
         raise NotImplementedError
 
-    def from_internal(self, encoded_data: torch.Tensor,
-                      skip_special_tokens: bool = True,
-                      take_as_single_sequence: bool = False,
-                      **kwargs) -> List[Union[str, Tuple[str, ...]]]:
+    def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False,
+                      return_tokens=False, **kwargs) -> List[Union[str, Tuple[str, ...]]]:
         """ Convert from internal model representation to text. `kwargs` contains miscellaneous data that can be
         used as help for data reconstruction (e.g. attention mask)."""
         raise NotImplementedError
@@ -41,18 +39,6 @@ class InterpretableModel:
                     allow_truncation: Optional[bool] = True) -> Dict:
         """ Convert from text to internal generator representation.
         `allow_truncation` specifies whether overflowing tokens (past max_seq_len) are allowed to be dropped. """
-        raise NotImplementedError
-
-    def tokenize(self, str_sequence: str) -> List[str]:
-        """ Convert a sequence into its tokens."""
-        raise NotImplementedError
-
-    def encode_token(self, token: str) -> int:
-        """ Turn a single token into its internal representation. """
-        raise NotImplementedError
-
-    def decode_token(self, token: int) -> str:
-        """ Turn a single token from its internal representation to string"""
         raise NotImplementedError
 
     def score(self, input_ids: torch.Tensor, **aux_data):
