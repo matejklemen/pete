@@ -5,6 +5,16 @@ import torch
 
 # TODO: TokenizerBase in some utils package? tokenization methods are likely gonna be same/similar in model and generator
 class InterpretableModel:
+    def __init__(self, max_seq_len: int, batch_size: int = 8, device: str = "cuda"):
+        self.batch_size = batch_size
+        self.max_seq_len = max_seq_len
+
+        assert device in ["cpu", "cuda"]
+        if device == "cuda" and not torch.cuda.is_available():
+            raise ValueError("Device is set to 'cuda', but no CUDA device could be found. If you want to run the model "
+                             "on CPU, set device to 'cpu'")
+        self.device = torch.device(device)
+
     @property
     def mask_token(self) -> str:
         """ String form of token that is used to indicate that a certain unit is to be perturbed. """
