@@ -822,10 +822,10 @@ class RobertaForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizati
 
         if return_tokens:
             def decoding_fn(input_ids, **decode_kwargs):
-                return [self.tokenizer.decode(curr_id, **decode_kwargs) for curr_id in input_ids]
+                return [self.tokenizer.decode(curr_id, **decode_kwargs).strip() for curr_id in input_ids]
         else:
             def decoding_fn(input_ids, **decode_kwargs):
-                return self.tokenizer.decode(input_ids, **decode_kwargs)
+                return list(map(lambda curr_tok: curr_tok.strip(), self.tokenizer.decode(input_ids, **decode_kwargs)))
 
         decoded_data = []
         for idx_example in range(num_ex):
