@@ -29,7 +29,7 @@ def load_squadv2_quackie(path, sample_size=None):
 
 if __name__ == "__main__":
     # TODO: enable IME as well
-    args = methods_parser.parse_args(["lime"])
+    args = methods_parser.parse_args()
     args = runtime_parse_args(args)
 
     if not os.path.exists(os.path.join(args.experiment_dir, "explanations")):
@@ -154,7 +154,7 @@ if __name__ == "__main__":
                        pred_labels=["answerable"],
                        actual_labels=["answerable"],
                        custom_features=[curr_features],
-                       path=os.path.join(args.experiment_dir, "explanations", f"ex{idx_ex}.html"))
+                       path=os.path.join(args.experiment_dir, "explanations", f"ex{str(idx_ex).zfill(4)}.html"))
 
         if len(results["id"]) >= 2:
             results["aggregate"] = {
