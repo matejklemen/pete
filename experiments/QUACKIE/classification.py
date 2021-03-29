@@ -142,7 +142,6 @@ if __name__ == "__main__":
         idx_best_gt = np.argmax([iou_score(y_true=np.eye(1, num_sents, k=curr_gt, dtype=np.int32)[0],
                                            y_pred=pred_binary) for curr_gt in gt_sents])
         best_gt = np.eye(1, num_sents, k=gt_sents[idx_best_gt], dtype=np.int32)[0]
-        logging.info(f"Predicted: {ordering[0]}\n")
 
         results["pred_sent"].append(int(ordering[0]))
         results["gt_sent"].append(int(idx_best_gt))
