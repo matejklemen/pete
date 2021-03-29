@@ -36,7 +36,7 @@ class TransformersAlignedTokenizationMixin:
         if is_split_into_units:
             all_word_ids = []
             for idx_example in range(num_examples):
-                idx_seq, word_ids = 0, []
+                word_ids = []
                 if isinstance(text_data[idx_example], tuple):
                     cumulative_len = [0]
                     for i, curr in enumerate(text_data[idx_example]):
@@ -44,16 +44,15 @@ class TransformersAlignedTokenizationMixin:
                 else:
                     cumulative_len = [0, len(text_data[idx_example])]
 
-                for curr_id, curr_word_id in zip(res["input_ids"][idx_example], res.word_ids(batch_index=idx_example)):
-                    # Special tokens that are not present in the input (e.g. CLS, SEP, PAD)
-                    if curr_word_id is None:
-                        word_ids.append(-1)
-                        idx_seq += 1
-                    # Special tokens that are present in the input, but are not actual words (e.g. control signal)
-                    elif int(curr_id) in self.additional_special_token_ids:
+                for curr_id, curr_word_id, curr_seq_id in zip(res["input_ids"][idx_example],
+                                                              res.word_ids(batch_index=idx_example),
+                                                              res.sequence_ids(batch_index=idx_example)):
+                    # Special tokens that are not present in the input (e.g. CLS, SEP, PAD) OR
+                    #  special tokens that are present in the input, but are not actual words (e.g. control signal)
+                    if curr_word_id is None or int(curr_id) in self.additional_special_token_ids:
                         word_ids.append(-1)
                     else:
-                        word_ids.append(cumulative_len[idx_seq - 1] + curr_word_id)
+                        word_ids.append(cumulative_len[curr_seq_id] + curr_word_id)
 
                 all_word_ids.append(word_ids)
 
