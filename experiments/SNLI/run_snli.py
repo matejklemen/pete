@@ -38,7 +38,6 @@ if __name__ == "__main__":
                                                        model_name=args.model_dir,
                                                        batch_size=args.model_batch_size,
                                                        max_seq_len=args.model_max_seq_len,
-                                                       max_words=args.model_max_words,
                                                        device="cpu" if args.use_cpu else "cuda")
     model_description = {"type": "bert", "max_seq_len": args.model_max_seq_len, "handle": args.model_dir}
     generator, gen_description = load_generator(args,

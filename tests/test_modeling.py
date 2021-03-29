@@ -9,7 +9,6 @@ class TestModeling(unittest.TestCase):
                                                                 model_name="bert-base-uncased",
                                                                 batch_size=4,
                                                                 max_seq_len=16,
-                                                                max_words=10,
                                                                 device="cpu")
 
     def test_bert_word_alignment(self):
