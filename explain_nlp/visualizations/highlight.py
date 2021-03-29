@@ -4,6 +4,7 @@ from typing import List, Optional, Mapping
 import numpy as np
 from explain_nlp.experimental.core import MethodData
 from explain_nlp.methods.utils import incremental_mean, incremental_var
+import html
 
 
 def base_visualization(body_html: str, head_js="", body_js="", path=None):
@@ -157,7 +158,7 @@ def highlight_plot(sequences: List[List[str]],
                 if is_multiunit[idx_tok]:
                     tok_parts.append(f"<span class='unit-id'>#{token_to_importance[idx_tok]}</span>")
 
-            tok_parts.append(str(curr_tok))
+            tok_parts.append(html.escape(str(curr_tok)))
 
             if is_end[idx_tok]:
                 tok_parts.append(f"</span>")
