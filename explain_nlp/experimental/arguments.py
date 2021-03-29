@@ -64,7 +64,7 @@ lime_parser.add_argument("--method", type=str, default="lime",
                          choices=["lime", "lime_lm"])
 lime_parser.add_argument("--num_samples", type=int, default=10,
                          help="Number of samples to take when generating neighbourhood")
-lime_parser.add_argument("--explanation_length", type=int, default=5)
+lime_parser.add_argument("--explanation_length", type=int, default=None)
 lime_parser.add_argument("--kernel_width", type=float, default=25.0)
 
 
