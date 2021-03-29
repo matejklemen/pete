@@ -36,7 +36,7 @@ if __name__ == "__main__":
         os.makedirs(os.path.join(args.experiment_dir, "explanations"))
 
     DEVICE = torch.device("cpu") if args.use_cpu else torch.device("cuda")
-    data = load_squadv2_quackie("quackie_squadv2.csv", sample_size=3)
+    data = load_squadv2_quackie("quackie_squadv2.csv")
     num_examples = data.shape[0]
     nlp = stanza.Pipeline("en", processors="tokenize", use_gpu=(not args.use_cpu))
 
