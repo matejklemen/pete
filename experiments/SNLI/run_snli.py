@@ -6,7 +6,7 @@ from time import time
 import stanza
 import torch
 
-from explain_nlp.experimental.arguments import methods_parser, runtime_parse_args
+from explain_nlp.experimental.arguments import methods_parser, runtime_parse_args, log_arguments
 from explain_nlp.experimental.core import MethodData
 from explain_nlp.experimental.data import load_nli, TransformerSeqPairDataset, LABEL_TO_IDX, IDX_TO_LABEL
 from explain_nlp.experimental.handle_explainer import load_explainer
@@ -30,6 +30,8 @@ if __name__ == "__main__":
                          logging.FileHandler(os.path.join(args.experiment_dir, "experiment.log"))]:
         curr_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)-5.5s]  %(message)s"))
         logger.addHandler(curr_handler)
+
+    log_arguments(args)
 
     nlp = stanza.Pipeline(lang="en", processors="tokenize", use_gpu=not args.use_cpu, tokenize_no_ssplit=True)
     pretokenized_test_data = None
@@ -106,16 +108,17 @@ if __name__ == "__main__":
     logging.info(f"Running computation from example#{start_from} (inclusive) to example#{until} (exclusive)")
     for idx_example, input_pair in enumerate(df_test.iloc[start_from: until][["sentence1", "sentence2"]].values.tolist(),
                                              start=start_from):
-        if args.custom_features is not None:
-            encoded_example = model.to_internal(pretokenized_text_data=[pretokenized_test_data[idx_example]])
-        else:
-            encoded_example = model.to_internal(text_data=[input_pair])
+        curr_example = df_test.iloc[idx_example]
+
+        encoded_example = model.to_internal(
+            text_data=[pretokenized_test_data[idx_example] if args.custom_features is not None else input_pair],
+            is_split_into_units=args.custom_features is not None
+        )
 
         probas = model.score(input_ids=encoded_example["input_ids"].to(DEVICE),
                              **{k: v.to(DEVICE) for k, v in encoded_example["aux_data"].items()})
         predicted_label = int(torch.argmax(probas))
-        actual_label = int(df_test.iloc[[idx_example]]["gold_label"].apply(
-                                                        lambda label_str: LABEL_TO_IDX["snli"][label_str]))
+        actual_label = int(LABEL_TO_IDX["snli"][curr_example["gold_label"]])
 
         pretokenized_example, curr_features = None, None
         if args.custom_features is not None:
@@ -123,8 +126,7 @@ if __name__ == "__main__":
             word_ids = encoded_example["aux_data"]["alignment_ids"][0].tolist()
             curr_features = handle_features(args.custom_features,
                                             word_ids=word_ids,
-                                            raw_example=(df_test.iloc[idx_example]["sentence1"],
-                                                         df_test.iloc[idx_example]["sentence2"]),
+                                            raw_example=tuple(input_pair),
                                             pipe=nlp)
             pretokenized_example = pretokenized_test_data[idx_example]
 

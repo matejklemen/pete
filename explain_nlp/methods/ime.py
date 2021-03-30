@@ -1,5 +1,5 @@
 import itertools
-from typing import Optional, Union, Tuple, List
+from typing import Optional, Union, Tuple, List, Dict
 
 import torch
 from copy import deepcopy
@@ -168,7 +168,7 @@ class IMEExplainer:
                 min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None,
                 exact_samples_per_feature: Optional[torch.Tensor] = None,
                 custom_features: Optional[List[List[int]]] = None,
-                **modeling_kwargs):
+                **modeling_kwargs) -> Dict:
         """ Explain a prediction for given instance.
 
         Args:
@@ -374,15 +374,19 @@ class IMEExplainer:
                      pretokenized_text_data: Optional[Union[List[str], Tuple[List[str], ...]]] = None,
                      custom_features: Optional[List[List[int]]] = None):
         # Convert instance being interpreted to representation of interpreted model
-        model_instance = self.model.to_internal([text_data],
-                                                pretokenized_text_data=[pretokenized_text_data] if pretokenized_text_data is not None else None)
+        is_split_into_units = pretokenized_text_data is not None
+        model_instance = self.model.to_internal([pretokenized_text_data if is_split_into_units else text_data],
+                                                is_split_into_units=is_split_into_units)
 
         res = self.explain(model_instance["input_ids"], label, perturbable_mask=model_instance["perturbable_mask"],
                            min_samples_per_feature=min_samples_per_feature, max_samples=max_samples,
                            exact_samples_per_feature=exact_samples_per_feature,
                            custom_features=custom_features,
                            **model_instance["aux_data"])
-        res["input"] = self.model.convert_ids_to_tokens(model_instance["input_ids"])[0]
+        res["input"] = self.model.from_internal(model_instance["input_ids"],
+                                                take_as_single_sequence=True,
+                                                skip_special_tokens=False,
+                                                return_tokens=True)[0]
 
         return res
 
