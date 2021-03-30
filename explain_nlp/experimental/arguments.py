@@ -42,10 +42,11 @@ general_parser.add_argument("--unique_dropout", type=float, default=0.0)
 general_parser.add_argument("--is_aligned_vocabulary", action="store_true")
 
 # TODO: this is only required for QUACKIE experiments, does not need to be in general parser
-general_parser.add_argument("--aggregation_strategy", choices=["word_sum", "word_max", "sentence"],
+general_parser.add_argument("--aggregation_strategy", choices=["subword_sum", "subword_max", "sentence"],
                             help="Specifies how to obtain sentence scores from words in QUACKIE experiments: "
                                  "by summing word importance, taking the max word importance or by using sentences as "
-                                 "primary explanation units")
+                                 "primary explanation units",
+                            default="sentence")
 
 methods_parser = argparse.ArgumentParser()
 subparsers = methods_parser.add_subparsers(dest="method_class")

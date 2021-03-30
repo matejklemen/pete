@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 from ast import literal_eval
+from time import time
 from typing import Union, List, Optional, Tuple
 
 import pandas as pd
@@ -103,7 +104,6 @@ if __name__ == "__main__":
 
     logging.info(f"Running computation from example#{start_from} (inclusive) to example#{until} (exclusive)")
     for idx_ex in range(start_from, until):
-        logging.info(f"Example#{idx_ex}...")
         curr_example = data.iloc[idx_ex]
         results["id"].append(curr_example["id"])
 
@@ -129,15 +129,28 @@ if __name__ == "__main__":
         num_sents = len(sent_features) - 1
         sent_features = sent_features[:-1]
 
-        curr_features = sent_features # TODO: if args.aggregation_strategy == "sentence" else word_ids
-
         # We know the label is positive because the preprocessing script only keeps answers that are both
         # answerable as per ground truth annotation and as per model prediction
         predicted_label, actual_label = 1, 1
+        t1 = time()
         res = method.explain_text(text_data=example_words, label=predicted_label,
-                                  pretokenized_text_data=example_words, custom_features=curr_features,
+                                  pretokenized_text_data=example_words,
+                                  custom_features=(sent_features if args.aggregation_strategy == "sentence" else None),
                                   num_samples=args.num_samples, explanation_length=args.explanation_length)
-        sent_importances = res["importance"][-num_sents:].numpy()
+        t2 = time()
+        logging.info(f"Example#{idx_ex}: Explanation took {t2 - t1: .2f}s to compute")
+
+        if args.aggregation_strategy == "sentence":
+            sent_importances = res["importance"][-num_sents:].numpy()
+        elif args.aggregation_strategy == "subword_sum":
+            sent_importances = np.array([float(torch.sum(res["importance"][curr_sent_features]))
+                                         for curr_sent_features in sent_features])
+        elif args.aggregation_strategy == "subword_max":
+            sent_importances = np.array([float(torch.max(res["importance"][curr_sent_features]))
+                                         for curr_sent_features in sent_features])
+        else:
+            raise NotImplementedError(f"Unknown strategy: '{args.aggregation_strategy}'")
+
         ordering = np.argsort(-sent_importances)
 
         pred_binary = np.zeros(num_sents, dtype=np.int32)
@@ -157,7 +170,7 @@ if __name__ == "__main__":
         highlight_plot([res["input"]], importances=[res["importance"].tolist()],
                        pred_labels=["answerable"],
                        actual_labels=["answerable"],
-                       custom_features=[curr_features],
+                       custom_features=([sent_features] if args.aggregation_strategy == "sentence" else None),
                        path=os.path.join(args.experiment_dir, "explanations", f"ex{str(idx_ex).zfill(4)}.html"))
 
         if len(results["id"]) >= 2:
