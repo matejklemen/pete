@@ -66,7 +66,7 @@ def hpd_score(sentence_ordering: np.ndarray, gt: np.ndarray):
 
 
 def snr_score(sentence_scores: np.ndarray, gt: np.ndarray):
-    """ Compute signal to noise ratio for a single sentence.
+    """ Compute signal to noise ratio.
 
     Args:
         sentence_scores:
@@ -83,8 +83,16 @@ def snr_score(sentence_scores: np.ndarray, gt: np.ndarray):
         raise ValueError(f"Exactly one ground truth sentence is allowed "
                          f"(`gt` contains {len(correct_score)} nonzero elements)")
 
-    numerator = np.square(float(correct_score) - np.mean(incorrect_scores))
-    denominator = np.square(np.std(incorrect_scores))
+    # If there is only one possible sentence, there are no incorrect scores which we need to take mean and sd of
+    if len(incorrect_scores) == 0:
+        incorrect_mean = 0.0
+        incorrect_sd = 1.0
+    else:
+        incorrect_mean = np.mean(incorrect_scores)
+        incorrect_sd = np.std(incorrect_scores)
+
+    numerator = np.square(float(correct_score) - incorrect_mean)
+    denominator = np.square(incorrect_sd)
     if denominator == 0.0:
         warnings.warn("Encountered zero deviation for incorrect sentence scores. "
                       "Setting denominator (sq. deviation) to 1.0 to avoid division by zero")

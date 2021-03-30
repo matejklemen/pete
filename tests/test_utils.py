@@ -137,3 +137,8 @@ class TestUtils(unittest.TestCase):
 
         with self.assertWarns(UserWarning):
             np.testing.assert_allclose(snr_score(uniform_noise_scores, gt=gt_vector), 0.04)
+
+        # ill-defined case: no noise scores, convention: set mean to 0 and std to 1
+        single_sent_score = np.array([3.0])
+        gt_vector = np.array([1], dtype=np.int32)
+        np.testing.assert_allclose(snr_score(single_sent_score, gt=gt_vector), 9.0)
