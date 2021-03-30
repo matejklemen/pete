@@ -41,6 +41,12 @@ general_parser.add_argument("--threshold", type=float, default=0.1)
 general_parser.add_argument("--unique_dropout", type=float, default=0.0)
 general_parser.add_argument("--is_aligned_vocabulary", action="store_true")
 
+# TODO: this is only required for QUACKIE experiments, does not need to be in general parser
+general_parser.add_argument("--aggregation_strategy", choices=["word_sum", "word_max", "sentence"],
+                            help="Specifies how to obtain sentence scores from words in QUACKIE experiments: "
+                                 "by summing word importance, taking the max word importance or by using sentences as "
+                                 "primary explanation units")
+
 methods_parser = argparse.ArgumentParser()
 subparsers = methods_parser.add_subparsers(dest="method_class")
 
@@ -90,13 +96,14 @@ def runtime_parse_args(args):
         os.makedirs(args.experiment_dir)
         logging.info("Created experiment directory '{args.experiment_dir}'")
 
-    # Display used experiment settings on stdout and save to file
-    for k, v in vars(args).items():
-        v_str = str(v)
-        v_str = f"...{v_str[-(50-3):]}" if len(v_str) > 50 else v_str
-        logging.info(f"|{k:30s}|{v_str:50s}|")
-
     with open(os.path.join(args.experiment_dir, "experiment_config.json"), "w") as f:
         json.dump(vars(args), fp=f, indent=4)
 
     return args
+
+
+def log_arguments(args):
+    for k, v in vars(args).items():
+        v_str = str(v)
+        v_str = f"...{v_str[-(50-3):]}" if len(v_str) > 50 else v_str
+        logging.info(f"|{k:30s}|{v_str:50s}|")
