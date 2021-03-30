@@ -11,7 +11,7 @@ import stanza
 import torch
 import numpy as np
 
-from explain_nlp.experimental.arguments import methods_parser, runtime_parse_args
+from explain_nlp.experimental.arguments import methods_parser, runtime_parse_args, log_arguments
 from explain_nlp.experimental.handle_explainer import load_explainer
 from explain_nlp.experimental.handle_features import handle_features
 from explain_nlp.experimental.handle_generator import load_generator
@@ -36,7 +36,7 @@ if __name__ == "__main__":
         os.makedirs(os.path.join(args.experiment_dir, "explanations"))
 
     DEVICE = torch.device("cpu") if args.use_cpu else torch.device("cuda")
-    data = load_squadv2_quackie("quackie_squadv2.csv")
+    data = load_squadv2_quackie(args.test_path)
     num_examples = data.shape[0]
     nlp = stanza.Pipeline("en", processors="tokenize", use_gpu=(not args.use_cpu))
 
@@ -47,6 +47,8 @@ if __name__ == "__main__":
                          logging.FileHandler(os.path.join(args.experiment_dir, "experiment.log"))]:
         curr_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)-5.5s]  %(message)s"))
         logger.addHandler(curr_handler)
+
+    log_arguments(args)
 
     # Make the tokens belonging to question unperturbable as we are not interested in importance of question
     def custom_to_internal(self, text_data: Union[List[str], List[Tuple[str, ...]],
@@ -120,12 +122,14 @@ if __name__ == "__main__":
 
         encoded_example = model.to_internal(text_data=[example_words], is_split_into_units=True)
         word_ids = encoded_example["aux_data"]["alignment_ids"][0]
-        curr_features = handle_features("sentences", word_ids=word_ids,
+        sent_features = handle_features("sentences", word_ids=word_ids,
                                         raw_example=(context, question),
                                         pipe=nlp)
         # Last sentence is the question (if tokenized properly), which we don't want the importance for
-        num_sents = len(curr_features) - 1
-        curr_features = curr_features[:-1]
+        num_sents = len(sent_features) - 1
+        sent_features = sent_features[:-1]
+
+        curr_features = sent_features # TODO: if args.aggregation_strategy == "sentence" else word_ids
 
         # We know the label is positive because the preprocessing script only keeps answers that are both
         # answerable as per ground truth annotation and as per model prediction
