@@ -130,7 +130,7 @@ class TestUtils(unittest.TestCase):
 
         np.testing.assert_allclose(snr_score(general_scores, gt=gt_vector), 2.6199, atol=10e-4)
 
-        # ill-defined cases: deviation of noise scores is zero, resulting in division by zero
+        # edge case: deviation of noise scores is zero, resulting in division by zero
         # convention: set denominator to one in that case
         with self.assertWarns(UserWarning):
             np.testing.assert_allclose(snr_score(uniform_scores, gt=gt_vector), 0.0)
@@ -138,7 +138,14 @@ class TestUtils(unittest.TestCase):
         with self.assertWarns(UserWarning):
             np.testing.assert_allclose(snr_score(uniform_noise_scores, gt=gt_vector), 0.04)
 
-        # ill-defined case: no noise scores, convention: set mean to 0 and std to 1
+        # edge case: no noise scores, convention: set mean to 0 and sd to 1
         single_sent_score = np.array([3.0])
         gt_vector = np.array([1], dtype=np.int32)
         np.testing.assert_allclose(snr_score(single_sent_score, gt=gt_vector), 9.0)
+
+        # edge case: single noise score in addition to the correct score, deviation could be problematic
+        # convention: sd of a single value = 0.0
+        single_noise_score = np.array([3.0, 1.0])
+        gt_vector = np.array([1, 0], dtype=np.int32)
+        with self.assertWarns(UserWarning):
+            np.testing.assert_allclose(snr_score(single_noise_score, gt=gt_vector), 4.0)
