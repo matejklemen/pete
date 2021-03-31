@@ -584,7 +584,7 @@ class SimplifiedBertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         self.label_weights = torch.tensor(self.label_weights)
         self.label_weights /= torch.sum(self.label_weights)
 
-        self.num_references = 10  # num_references
+        self.num_references = num_references
         self.shuffle_generation_order = shuffle_generation_order
 
     @torch.no_grad()
@@ -928,8 +928,10 @@ if __name__ == "__main__":
     ex = ("A shirtless man skateboards on a ledge", "A man without a shirt")
     pretokenized_ex = (ex[0].split(" "), ex[1].split(" "))
     encoded = generator.to_internal([pretokenized_ex], is_split_into_units=True)
+    mask = torch.logical_and(torch.randint(2, (NUM_SAMPLES, encoded["input_ids"].shape[1])),
+                             encoded["perturbable_mask"].repeat((NUM_SAMPLES, 1)))
     generated = generator.generate_masked_samples(encoded["input_ids"],
-                                                  generation_mask=encoded["perturbable_mask"].repeat((NUM_SAMPLES, 1)),
+                                                  generation_mask=mask,
                                                   **encoded["aux_data"])
 
     for curr_ex in generator.from_internal(generated, skip_special_tokens=False, **encoded["aux_data"]):
