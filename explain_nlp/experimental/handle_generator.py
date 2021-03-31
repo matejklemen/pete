@@ -2,7 +2,8 @@ from typing import List, Optional
 
 from explain_nlp.generation.generation_lstm import ContextualBiLSTMLMGenerator, LSTMConditionallyIndependentGenerator
 from explain_nlp.generation.generation_transformers import BertForMaskedLMGenerator, GPTLMGenerator, \
-    GPTControlledLMGenerator, BertForControlledMaskedLMGenerator, SimplifiedBertForMaskedLMGenerator
+    GPTControlledLMGenerator, BertForControlledMaskedLMGenerator, SimplifiedBertForMaskedLMGenerator, \
+    RobertaForMaskedLMGenerator
 
 
 def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
@@ -26,6 +27,16 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                              top_p=args.top_p,
                                              top_k=args.top_k,
                                              threshold=args.threshold)
+    elif args.generator_type == "roberta_mlm":
+        generator = RobertaForMaskedLMGenerator(tokenizer_name=args.generator_dir,
+                                                model_name=args.generator_dir,
+                                                batch_size=args.generator_batch_size,
+                                                max_seq_len=args.generator_max_seq_len,
+                                                device="cpu" if args.use_cpu else "cuda",
+                                                strategy=args.strategy,
+                                                top_p=args.top_p,
+                                                top_k=args.top_k,
+                                                threshold=args.threshold)
     elif args.generator_type == "bert_simplified_mlm":
         generator = SimplifiedBertForMaskedLMGenerator(tokenizer_name=args.generator_dir,
                                                        model_name=args.generator_dir,
