@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import time
+import warnings
 
 """ Parser that has common arguments for methods. `add_help=False` because otherwise flags overlap """
 general_parser = argparse.ArgumentParser(add_help=False)
@@ -80,7 +81,7 @@ def runtime_parse_args(args):
     if args.method not in ["ime", "lime"]:
         assert args.generator_dir is not None
         if not os.path.exists(args.generator_dir):
-            raise ValueError(f"--generator_dir does not point to a valid directory: '{args.generator_dir}'")
+            warnings.warn(f"--generator_dir does not point to a valid directory: '{args.generator_dir}'")
 
     assert args.save_every_n_examples > 0
 
