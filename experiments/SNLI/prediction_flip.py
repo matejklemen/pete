@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import sys
+from collections import Counter
 from time import time
 from typing import List
 
@@ -159,7 +160,8 @@ if __name__ == "__main__":
         asc_ordering = torch.argsort(valid_importances)
 
         # worst case: have to remove all features and the decision still doesn't flip
-        num_removals_to_flip, removed = int(valid_importances.shape[0]), None
+        num_removals_to_flip = int(valid_importances.shape[0])
+        removed = list(itertools.chain(*[features[_i] for _i in desc_ordering]))
         flipped_label, flipped_proba = None, None
 
         for (curr_ordering, order_type) in zip([desc_ordering, asc_ordering],
@@ -203,9 +205,7 @@ if __name__ == "__main__":
                 "mean": float(torch.mean(torch.tensor(results["frac_removals_to_flip"]))),
                 "sd": float(torch.std(torch.tensor(results["frac_removals_to_flip"])))
             },
-            "label_after": {k: v.tolist() for k, v in zip(["label", "count"],
-                                                          torch.unique(torch.tensor(results["label_after"]),
-                                                                       return_counts=True))}
+            "label_after": dict(Counter(results["label_after"]))
         }
 
         highlight_plot([res["input"]], importances=[res["importance"].tolist()],
