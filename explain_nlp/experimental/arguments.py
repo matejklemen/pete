@@ -48,6 +48,8 @@ general_parser.add_argument("--aggregation_strategy", choices=["subword_sum", "s
                                  "by summing word importance, taking the max word importance or by using sentences as "
                                  "primary explanation units",
                             default="sentence")
+# TODO: this is only required for simplified models
+general_parser.add_argument("--num_references", type=int, default=10)
 
 methods_parser = argparse.ArgumentParser()
 subparsers = methods_parser.add_subparsers(dest="method_class")

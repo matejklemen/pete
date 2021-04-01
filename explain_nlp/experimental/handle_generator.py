@@ -3,7 +3,7 @@ from typing import List, Optional
 from explain_nlp.generation.generation_lstm import ContextualBiLSTMLMGenerator, LSTMConditionallyIndependentGenerator
 from explain_nlp.generation.generation_transformers import BertForMaskedLMGenerator, GPTLMGenerator, \
     GPTControlledLMGenerator, BertForControlledMaskedLMGenerator, SimplifiedBertForMaskedLMGenerator, \
-    RobertaForMaskedLMGenerator
+    RobertaForMaskedLMGenerator, SimplifiedBertForControlledMaskedLMGenerator
 
 
 def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
@@ -46,7 +46,21 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                                        strategy=args.strategy,
                                                        top_p=args.top_p,
                                                        top_k=args.top_k,
-                                                       threshold=args.threshold)
+                                                       threshold=args.threshold,
+                                                       num_references=args.num_references)
+    elif args.generator_type == "bert_simplified_cmlm":
+        generator = SimplifiedBertForControlledMaskedLMGenerator(tokenizer_name=args.generator_dir,
+                                                                 model_name=args.generator_dir,
+                                                                 batch_size=args.generator_batch_size,
+                                                                 max_seq_len=args.generator_max_seq_len,
+                                                                 device="cpu" if args.use_cpu else "cuda",
+                                                                 strategy=args.strategy,
+                                                                 top_p=args.top_p,
+                                                                 top_k=args.top_k,
+                                                                 threshold=args.threshold,
+                                                                 label_weights=kwargs.get("label_weights", None),
+                                                                 control_labels=clm_labels,
+                                                                 num_references=args.num_references)
     elif args.generator_type == "bert_cmlm":
         generator = BertForControlledMaskedLMGenerator(tokenizer_name=args.generator_dir,
                                                        model_name=args.generator_dir,
