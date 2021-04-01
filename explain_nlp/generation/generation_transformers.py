@@ -598,9 +598,9 @@ class SimplifiedBertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         ref_input_ids = extend_tensor(input_ids[[0]]).repeat((self.num_references, 1)).to(self.device)
         ref_generation_mask = extend_tensor(torch.any(generation_mask, dim=0).unsqueeze(0))
 
-        eff_aux_data = {k: generation_kwargs[k].repeat((self.num_references, 1)).to(self.device)
+        eff_aux_data = {k: generation_kwargs[k].repeat((self.num_references, 1))
                         for k in ["token_type_ids", "attention_mask"]}
-        eff_aux_data = {k: extend_tensor(v) for k, v in eff_aux_data.items()}
+        eff_aux_data = {k: extend_tensor(v).to(self.device) for k, v in eff_aux_data.items()}
         # Control labels are attendable
         eff_aux_data["attention_mask"][:, 1] = 1
 
