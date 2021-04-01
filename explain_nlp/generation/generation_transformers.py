@@ -607,7 +607,7 @@ class SimplifiedBertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         samples = input_ids[[0]].repeat((num_samples, 1))
 
         encoded_control_labels = self.control_labels[torch.randint(len(self.control_labels), (self.num_references,))]
-        ref_input_ids[:, 1] = torch.tensor(encoded_control_labels)
+        ref_input_ids[:, 1] = encoded_control_labels
 
         inds_masked = torch.arange(num_features)[torch.any(generation_mask, dim=0)]
         ref_inds_masked = torch.arange(ref_generation_mask.shape[1])[torch.any(ref_generation_mask, dim=0)]
