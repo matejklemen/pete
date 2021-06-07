@@ -11,7 +11,8 @@ LABEL_TO_IDX = {
     "semeval5": {0: 0, 1: 1},  # no-op, labels are pre-encoded
     "24sata": {0: 0, 1: 1},  # no-op, labels are pre-encoded
     "imdb": {0: 0, 1: 1},  # no-op, labels are pre-encoded
-    "qqp": {0: 0, 1: 1}  # no-op, labels are pre-encoded
+    "qqp": {0: 0, 1: 1},  # no-op, labels are pre-encoded
+    "sst-2": {0: 0, 1: 1},  # no-op, labels are pre-encoded
 }
 IDX_TO_LABEL = {dataset: {i: lbl for lbl, i in label_mapping.items()}
                 for dataset, label_mapping in LABEL_TO_IDX.items()}
@@ -20,6 +21,7 @@ IDX_TO_LABEL["imsypp"] = {0: "clean", 1: "hateful"}
 IDX_TO_LABEL["24sata"] = {0: "clean", 1: "hateful"}
 IDX_TO_LABEL["imdb"] = {0: "negative", 1: "positive"}
 IDX_TO_LABEL["qqp"] = {0: "different", 1: "duplicate"}
+IDX_TO_LABEL["sst-2"] = {0: "negative", 1: "positive"}
 
 
 class TransformerSeqPairDataset(Dataset):
@@ -117,6 +119,10 @@ def load_imdb(file_path, sample_size=None):
     df["review"] = df["review"].apply(lambda s: s.replace("<br />", ""))
 
     return df
+
+
+def load_sst2(file_path, sample_size=None):
+    return pd.read_csv(file_path, sep="\t", nrows=sample_size, header=0)
 
 
 def load_qqp(file_path, sample_size=None):
