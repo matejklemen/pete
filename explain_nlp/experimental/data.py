@@ -56,23 +56,22 @@ class TransformerSeqPairDataset(Dataset):
 
 
 class TransformerSeqDataset(Dataset):
-    def __init__(self, sequences: Iterable[str], labels, tokenizer, max_seq_len=128):
-        self.input_ids = []
-        self.segments = []
-        self.attn_masks = []
-        self.special_tokens_masks = []
-        self.labels = []
+    def __init__(self, input_ids, token_type_ids, attention_mask, special_tokens_mask, labels, max_seq_len: int = 41):
+        self.input_ids = input_ids
+        self.segments = token_type_ids
+        self.attn_masks = attention_mask
+        self.special_tokens_masks = special_tokens_mask
+        self.labels = labels
         self.max_seq_len = max_seq_len
 
-        processed = tokenizer.batch_encode_plus(sequences, return_tensors="pt", max_length=max_seq_len,
-                                                padding="max_length", truncation="longest_first",
-                                                return_special_tokens_mask=True)
-
-        self.input_ids = processed["input_ids"]
-        self.segments = processed["token_type_ids"]
-        self.attn_masks = processed["attention_mask"]
-        self.special_tokens_masks = processed["special_tokens_mask"]
-        self.labels = torch.tensor(labels)
+    @staticmethod
+    def build(sequences: Iterable[str], labels: Iterable[int],
+              tokenizer, max_seq_len: int = 41):
+        dataset_dict = tokenizer.batch_encode_plus(sequences, max_length=max_seq_len,
+                                                   padding="max_length", truncation="longest_first",
+                                                   return_special_tokens_mask=True, return_tensors="pt")
+        dataset_dict["labels"] = torch.tensor(labels)
+        return TransformerSeqDataset(**dataset_dict)
 
     def __getitem__(self, idx):
         return {
