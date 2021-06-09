@@ -10,17 +10,18 @@ from explain_nlp.experimental.arguments import methods_parser, runtime_parse_arg
 from explain_nlp.experimental.core import MethodData
 from explain_nlp.experimental.data import load_nli, TransformerSeqPairDataset, LABEL_TO_IDX, IDX_TO_LABEL
 from explain_nlp.experimental.handle_explainer import load_explainer
-from explain_nlp.experimental.handle_features import handle_features
 from explain_nlp.experimental.handle_generator import load_generator
+from explain_nlp.methods.custom_units import WordExplainer, SentenceExplainer, DependencyTreeExplainer
 from explain_nlp.methods.hybrid import create_uniform_weights
 from explain_nlp.methods.utils import estimate_feature_samples
 from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
 from explain_nlp.visualizations.highlight import highlight_plot
 
+STANZA_BATCH_SIZE = 1024
+
 if __name__ == "__main__":
     args = methods_parser.parse_args()
     args = runtime_parse_args(args)
-    DEVICE = torch.device("cpu") if args.use_cpu else torch.device("cuda")
     compute_accurately = args.method_class == "ime" and args.experiment_type == "accurate_importances"
 
     # Set up logging to file and stdout
@@ -47,9 +48,10 @@ if __name__ == "__main__":
 
     df_test = load_nli(args.test_path)
     if args.custom_features is not None:
+        logging.info("Tokenizing test examples with Stanza")
         pretokenized_test_data = []
-        for idx_subset in range((df_test.shape[0] + 1024 - 1) // 1024):
-            s, e = idx_subset * 1024, (1 + idx_subset) * 1024
+        for idx_subset in range((df_test.shape[0] + STANZA_BATCH_SIZE - 1) // STANZA_BATCH_SIZE):
+            s, e = idx_subset * STANZA_BATCH_SIZE, (1 + idx_subset) * STANZA_BATCH_SIZE
             for s0, s1 in zip(nlp("\n\n".join(df_test["sentence1"].iloc[s: e].values)).sentences,
                               nlp("\n\n".join(df_test["sentence2"].iloc[s: e].values)).sentences):
                 pretokenized_test_data.append((
@@ -100,48 +102,44 @@ if __name__ == "__main__":
 
     if args.custom_features is not None:
         # Reload pipeline if depparse features are used (not done from the start as this would slow down tokenization)
-        if args.custom_features.startswith("depparse"):
+        if args.custom_features.startswith("dependency_parsing"):
             nlp = stanza.Pipeline(lang="en", processors="tokenize,lemma,pos,depparse")
         else:
             nlp = stanza.Pipeline(lang="en", processors="tokenize")
+
+        if args.custom_features == "words":
+            method = WordExplainer(method, stanza_pipeline=nlp)
+        elif args.custom_features == "sentences":
+            method = SentenceExplainer(method, stanza_pipeline=nlp)
+        elif args.custom_features == "dependency_parsing":
+            method = DependencyTreeExplainer(method, stanza_pipeline=nlp)
 
     logging.info(f"Running computation from example#{start_from} (inclusive) to example#{until} (exclusive)")
     for idx_example, input_pair in enumerate(df_test.iloc[start_from: until][["sentence1", "sentence2"]].values.tolist(),
                                              start=start_from):
         curr_example = df_test.iloc[idx_example]
+        tup_input_pair = tuple(input_pair)
 
         encoded_example = model.to_internal(
-            text_data=[pretokenized_test_data[idx_example] if args.custom_features is not None else input_pair],
+            text_data=[pretokenized_test_data[idx_example] if args.custom_features is not None else tup_input_pair],
             is_split_into_units=args.custom_features is not None
         )
 
-        probas = model.score(input_ids=encoded_example["input_ids"].to(DEVICE),
-                             **{k: v.to(DEVICE) for k, v in encoded_example["aux_data"].items()})
+        probas = model.score(input_ids=encoded_example["input_ids"],
+                             **{k: encoded_example["aux_data"][k] for k in ["token_type_ids", "attention_mask"]})
         predicted_label = int(torch.argmax(probas))
         actual_label = int(LABEL_TO_IDX["snli"][curr_example["gold_label"]])
-
-        pretokenized_example, curr_features = None, None
-        if args.custom_features is not None:
-            # Obtain word IDs for subwords in all cases as the custom features are usually obtained from words
-            word_ids = encoded_example["aux_data"]["alignment_ids"][0].tolist()
-            curr_features = handle_features(args.custom_features,
-                                            word_ids=word_ids,
-                                            raw_example=tuple(input_pair),
-                                            pipe=nlp)
-            pretokenized_example = pretokenized_test_data[idx_example]
 
         side_results = {}
         t1 = time()
         if args.method_class == "lime":
-            res = method.explain_text(input_pair, pretokenized_text_data=pretokenized_example,
-                                      label=predicted_label, num_samples=num_taken_samples,
-                                      explanation_length=args.explanation_length,
-                                      custom_features=curr_features)
+            res = method.explain_text(tup_input_pair, label=predicted_label,
+                                      num_samples=num_taken_samples,
+                                      explanation_length=args.explanation_length)
         else:
             # Run method in order to obtain an estimate of the feature variance
-            res = method.explain_text(input_pair, pretokenized_text_data=pretokenized_example,
-                                      label=predicted_label, min_samples_per_feature=num_taken_samples,
-                                      custom_features=curr_features)
+            res = method.explain_text(tup_input_pair, label=predicted_label,
+                                      min_samples_per_feature=num_taken_samples)
 
             # Estimate the number of samples that need to be taken to satisfy constraints:
             # in case less samples are required than were already taken, we take `max(2, <num. required samples>)`
@@ -150,16 +148,15 @@ if __name__ == "__main__":
                                                                     alpha=(1 - args.confidence_interval),
                                                                     max_abs_error=args.max_abs_error).long()
             need_additional = required_samples_per_feature > res["num_samples"]
-            need_less = torch.logical_and(res["num_samples"] == num_taken_samples,
-                                          required_samples_per_feature <= res["num_samples"])
+            need_less = torch.logical_and(torch.eq(res["num_samples"], num_taken_samples),
+                                          torch.le(required_samples_per_feature, res["num_samples"]))
             res["num_samples"][need_additional] = required_samples_per_feature[need_additional]
             res["num_samples"][need_less] = torch.max(required_samples_per_feature[need_less], torch.tensor(2))
             taken_or_estimated_samples = int(torch.sum(res["num_samples"]))
 
             # Run method second time in order to obtain accurate importances, making use of batched computation
             if compute_accurately:
-                res = method.explain_text(input_pair, pretokenized_text_data=pretokenized_example,
-                                          label=predicted_label, custom_features=curr_features,
+                res = method.explain_text(tup_input_pair, label=predicted_label,
                                           exact_samples_per_feature=res["num_samples"].unsqueeze(0))
 
             side_results["variances"] = res["var"].tolist()
@@ -181,7 +178,8 @@ if __name__ == "__main__":
                                                            take_as_single_sequence=True))
 
         method_data.add_example(sequence=sequence_tokens, label=predicted_label, probas=probas[0].tolist(),
-                                actual_label=actual_label, custom_features=curr_features,
+                                actual_label=actual_label,
+                                custom_features=res.get("custom_features", None),
                                 importances=res["importance"].tolist(),
                                 num_estimated_samples=res["taken_samples"], time_taken=(t2 - t1),
                                 samples=gen_samples,
