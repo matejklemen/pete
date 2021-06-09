@@ -72,6 +72,7 @@ class LIMEExplainer:
 
             for _, idx_feature in torch.nonzero(free_features, as_tuple=False):
                 free_features[0, idx_feature] = False
+                custom_features.append([idx_feature])
                 feature_groups.append([idx_feature])
                 num_additional += 1
 
@@ -301,6 +302,7 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
 
             for _, idx_feature in torch.nonzero(free_features, as_tuple=False):
                 free_features[0, idx_feature] = False
+                custom_features.append([idx_feature])
                 feature_groups.append([idx_feature])
                 generator_groups.append(mapping[perturbable_position[idx_feature]])
                 num_additional += 1
@@ -377,7 +379,7 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
             results["pred_median"] = np.median(np_probas)
 
         if custom_features is not None:
-            results["custom_features"] = feature_groups
+            results["custom_features"] = custom_features
 
         return results
 
@@ -395,13 +397,15 @@ if __name__ == "__main__":
         max_seq_len=41,
         device="cpu"
     )
-    # generator = SimplifiedBertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
-    #                                                model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
-    #                                                max_seq_len=41, batch_size=8, device="cpu",
-    #                                                strategy="top_k", top_k=3)
+    # generator = SimplifiedBertForControlledMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
+    #                                                          model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
+    #                                                          max_seq_len=41, batch_size=10, device="cpu",
+    #                                                          strategy="top_k", top_k=5, num_references=3,
+    #                                                          control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"])
 
     explainer = LIMEExplainer(model, return_samples=True, return_scores=True)
-    # explainer = LIMEMaskedLMExplainer(model, generator=generator, return_samples=True, return_scores=True)
+    # explainer = LIMEMaskedLMExplainer(model, generator=generator, return_samples=True, return_scores=True,
+    #                                   kernel_width=1.0, is_aligned_vocabulary=True)
 
     seq = ("A shirtless man skateboards on a ledge.", "A man without a shirt.")
     EXPLAINED_LABEL = 0
@@ -415,7 +419,6 @@ if __name__ == "__main__":
                              height_per_token=0.2,
                              ylabel="Probability (entailment)",
                              sort_key="token_mask")
-
     highlight_plot([res["input"]],
                    importances=[res["importance"].tolist()],
                    pred_labels=["entailment"],

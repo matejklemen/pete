@@ -157,14 +157,24 @@ class IMEExplainer:
         return results
 
     def get_generator_mapping(self, input_ids, perturbable_mask, **modeling_kwargs):
-        """ Maps the POSITIONS of perturbable indices in model instance to perturbable indices in generator instance."""
+        """ Maps the shifted[1] positions of perturbable model features to positions of perturbable generator
+        features.
+
+        For example, If the model input corresponds to ["[CLS]", "unbelieveable"] and the generator input to
+        ["<BOS>", "<BOS>", "un", "be", "lieve", "able"], the mapping would be {0: [2, 3, 4, 5]}.
+
+
+        [1] Positions are shifted so that they start counting from the first PERTURBABLE feature instead of any feature.
+        For example, "I" in ["[CLS]", "I", "am", ...] would have position 0 because [CLS] is unperturbable.
+        """
         num_features = input_ids.shape[1]
         perturbable_mask = perturbable_mask[0]
 
         perturbable_inds = torch.arange(num_features)[perturbable_mask]
         return {pos: [int(i)] for pos, i in enumerate(perturbable_inds)}
 
-    def explain(self, instance: Union[torch.Tensor, List], label: Optional[int] = 0, perturbable_mask: Optional[torch.Tensor] = None,
+    def explain(self, instance: Union[torch.Tensor, List], label: Optional[int] = 0,
+                perturbable_mask: Optional[torch.Tensor] = None,
                 min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None,
                 exact_samples_per_feature: Optional[torch.Tensor] = None,
                 custom_features: Optional[List[List[int]]] = None,
@@ -222,6 +232,7 @@ class IMEExplainer:
             cover_count = torch.zeros(num_features)
             free_features = eff_perturbable_mask.clone()
             feature_groups = []
+
             for curr_group in custom_features:
                 if not torch.all(eff_perturbable_mask[0, curr_group]):
                     raise ValueError(f"At least one of the features in group {curr_group} is not perturbable")
@@ -238,6 +249,7 @@ class IMEExplainer:
 
             for _, idx_feature in torch.nonzero(free_features, as_tuple=False):
                 free_features[0, idx_feature] = False
+                custom_features.append([idx_feature])
                 feature_groups.append(mapping[perturbable_position[idx_feature]])
                 num_additional += 1
 
@@ -364,7 +376,7 @@ class IMEExplainer:
                                  for feature_data in feature_debug_data]
 
         if custom_features is not None:
-            results["custom_features"] = feature_groups
+            results["custom_features"] = custom_features
 
         return results
 
