@@ -56,6 +56,10 @@ class InterpretableBertBase(InterpretableModel, TransformersAlignedTokenizationM
                 decoded_ids = []
                 for curr_id in input_ids:
                     str_token = self.tokenizer.decode(curr_id, **decode_kwargs)
+                    # Happens if trying to decode special token with skip_special_tokens=True
+                    if not str_token:
+                        continue
+
                     decoded_ids.append(str_token[2:] if str_token.startswith("##") else str_token)
                 return decoded_ids
         else:
@@ -222,7 +226,17 @@ class InterpretableRobertaBase(InterpretableModel, TransformersAlignedTokenizati
 
         if return_tokens:
             def decoding_fn(input_ids, **decode_kwargs):
-                return [self.tokenizer.decode(curr_id, **decode_kwargs).strip() for curr_id in input_ids]
+                decoded_ids = []
+                for curr_id in input_ids:
+                    str_token = self.tokenizer.decode(curr_id, **decode_kwargs).strip()
+                    # Happens if trying to decode special token with skip_special_tokens=True
+                    if not str_token:
+                        continue
+
+                    decoded_ids.append(str_token)
+
+                return decoded_ids
+
         else:
             def decoding_fn(input_ids, **decode_kwargs):
                 return list(map(lambda curr_tok: curr_tok.strip(), self.tokenizer.decode(input_ids, **decode_kwargs)))

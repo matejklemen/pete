@@ -38,7 +38,8 @@ class InterpretableModel:
         raise NotImplementedError
 
     def from_internal(self, encoded_data, skip_special_tokens: bool = True, take_as_single_sequence: bool = False,
-                      return_tokens=False, **kwargs) -> List[Union[str, Tuple[str, ...]]]:
+                      return_tokens=False, **kwargs) -> List[Union[str, Tuple[str, ...],
+                                                                   List[str], Tuple[List[str], ...]]]:
         """ Convert from internal model representation to text. `kwargs` contains miscellaneous data that can be
         used as help for data reconstruction (e.g. attention mask)."""
         raise NotImplementedError
