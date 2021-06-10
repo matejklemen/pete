@@ -14,8 +14,8 @@ general_parser.add_argument("--start_from", type=int, default=None, help="From w
 general_parser.add_argument("--until", type=int, default=None, help="Until which example to do computation")
 general_parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU")
 
-general_parser.add_argument("--custom_features", type=str, default=None,
-                            choices=[None, "words", "sentences", "depparse_simple", "depparse_depth"])
+general_parser.add_argument("--custom_features", type=str, default="words",
+                            choices=[None, "words", "sentences", "dependency_parsing"])
 general_parser.add_argument("--return_generated_samples", action="store_true")
 general_parser.add_argument("--return_model_scores", action="store_true")
 general_parser.add_argument("--test_path", type=str,
