@@ -13,28 +13,37 @@ def load_explainer(**kwargs):
     return_generated_samples = kwargs["return_generated_samples"]
 
     if method_class == "ime":
+        sample_constraints = {}
+        if kwargs["experiment_type"] == "accurate_importances":
+            sample_constraints["confidence_interval"] = kwargs["confidence_interval"]
+            sample_constraints["max_abs_error"] = kwargs["max_abs_error"]
+
         if method == "ime":
             method_type = MethodType.IME
             method = IMEExplainer(sample_data=kwargs["used_sample_data"], model=model,
                                   return_scores=return_model_scores, return_num_samples=True,
-                                  return_samples=return_generated_samples, return_variance=True)
+                                  return_samples=return_generated_samples, return_variance=True,
+                                  **sample_constraints)
         elif method == "ime_mlm":
             method_type = MethodType.INDEPENDENT_IME_MLM
             method = IMEMaskedLMExplainer(model=model, generator=kwargs["generator"],
                                           num_generated_samples=kwargs["num_generated_samples"],
                                           return_scores=return_model_scores, return_num_samples=True,
-                                          return_samples=return_generated_samples, return_variance=True)
+                                          return_samples=return_generated_samples, return_variance=True,
+                                          **sample_constraints)
         elif method == "ime_dependent_mlm":
             method_type = MethodType.DEPENDENT_IME_MLM
             method = DependentIMEMaskedLMExplainer(model=model, generator=kwargs["generator"],
                                                    return_scores=return_model_scores, return_num_samples=True,
-                                                   return_samples=return_generated_samples, return_variance=True)
+                                                   return_samples=return_generated_samples, return_variance=True,
+                                                   **sample_constraints)
         elif method == "ime_hybrid":
             method_type = MethodType.DEPENDENT_IME_MLM
             method = HybridIMEExplainer(model=model, generator=kwargs["generator"],
                                         gen_sample_data=kwargs["used_sample_data"], data_weights=kwargs["data_weights"],
                                         return_scores=return_model_scores, return_num_samples=True,
-                                        return_samples=return_generated_samples, return_variance=True)
+                                        return_samples=return_generated_samples, return_variance=True,
+                                        **sample_constraints)
         else:
             raise NotImplementedError(f"Unsupported method: '{method}'")
     else:
