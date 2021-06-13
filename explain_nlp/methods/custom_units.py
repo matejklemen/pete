@@ -15,16 +15,10 @@ def criterion_abs_sum(new_importance, previous_importances):
     return abs(new_importance) > abs(sum(previous_importances))
 
 
-class WordExplainer:
-    def __init__(self, explainer: Union[LIMEExplainer, IMEExplainer], stanza_pipeline: stanza.Pipeline,
-                 return_steps=False):
-        self.explainer = explainer
-        self.stanza_pipe = stanza_pipeline
-        self.return_steps = return_steps
+class StanzaExplainer:
+    stanza_pipe: stanza.Pipeline
 
-    def explain_text(self, text_data: Union[str, Tuple[str, ...]],
-                     **explainer_kwargs) -> Union[Dict, List]:
-        assert "custom_features" not in explainer_kwargs
+    def word_tokenize(self, text_data: Union[str, Tuple[str, ...]]):
         is_pair = isinstance(text_data, tuple)
 
         if is_pair:
@@ -35,6 +29,21 @@ class WordExplainer:
         else:
             pretokenized_example = [word.text for sent in self.stanza_pipe(text_data).sentences
                                     for word in sent.words]
+
+        return pretokenized_example
+
+
+class WordExplainer(StanzaExplainer):
+    def __init__(self, explainer: Union[LIMEExplainer, IMEExplainer], stanza_pipeline: stanza.Pipeline,
+                 return_steps=False):
+        self.explainer = explainer
+        self.stanza_pipe = stanza_pipeline
+        self.return_steps = return_steps
+
+    def explain_text(self, text_data: Union[str, Tuple[str, ...]],
+                     **explainer_kwargs) -> Union[Dict, List]:
+        assert "custom_features" not in explainer_kwargs
+        pretokenized_example = self.word_tokenize(text_data)
 
         encoded_input = self.explainer.model.to_internal([pretokenized_example], is_split_into_units=True)
         word_ids = encoded_input["aux_data"]["alignment_ids"][0]
@@ -48,7 +57,7 @@ class WordExplainer:
         return [res] if self.return_steps else res
 
 
-class SentenceExplainer:
+class SentenceExplainer(StanzaExplainer):
     def __init__(self, explainer: Union[LIMEExplainer, IMEExplainer], stanza_pipeline: stanza.Pipeline,
                  return_steps=False):
         self.explainer = explainer
@@ -58,16 +67,7 @@ class SentenceExplainer:
     def explain_text(self, text_data: Union[str, Tuple[str, ...]],
                      **explainer_kwargs) -> Union[Dict, List]:
         assert "custom_features" not in explainer_kwargs
-        is_pair = isinstance(text_data, tuple)
-
-        if is_pair:
-            pretokenized_example = (
-                [word.text for sent in self.stanza_pipe(text_data[0]).sentences for word in sent.words],
-                [word.text for sent in self.stanza_pipe(text_data[1]).sentences for word in sent.words]
-            )
-        else:
-            pretokenized_example = [word.text for sent in self.stanza_pipe(text_data).sentences
-                                    for word in sent.words]
+        pretokenized_example = self.word_tokenize(text_data)
 
         encoded_input = self.explainer.model.to_internal([pretokenized_example], is_split_into_units=True)
         features = stanza_word_features(text_data, pipe=self.stanza_pipe, do_depparse=False)
@@ -84,7 +84,7 @@ class SentenceExplainer:
         return [res] if self.return_steps else res
 
 
-class DependencyTreeExplainer:
+class DependencyTreeExplainer(StanzaExplainer):
     def __init__(self, explainer: Union[LIMEExplainer, IMEExplainer], stanza_pipeline: stanza.Pipeline,
                  return_steps=False):
         self.explainer = explainer
@@ -93,23 +93,34 @@ class DependencyTreeExplainer:
 
         assert "depparse" in self.stanza_pipe.processors
 
+    def truncate_text(self, text_data: Union[str, Tuple[str, ...]]):
+        """ Truncates `text_data` so that when it is tokenized using the explained model's tokenizer, it's shorter than
+        its max allowed length.
+
+        Note that this is only required for DependencyTreeExplainer because in simpler explainers (word, sentence, ...)
+        we can simply ignore the overflowing tokens. Here, this could lead to an improper dependency tree
+        """
+        pretokenized_example = self.word_tokenize(text_data)
+
+        # Convert to internal (e.g. subword) representation, taking into account word boundaries
+        encoded_input = self.explainer.model.to_internal([pretokenized_example], is_split_into_units=True)
+
+        # Convert (possibly truncated) IDs back to str/tuple
+        decoded_input = self.explainer.model.from_internal(encoded_input["input_ids"],
+                                                           **encoded_input["aux_data"])
+
+        return decoded_input[0]
+
     def explain_text(self, text_data: Union[str, Tuple[str, ...]],
                      **explainer_kwargs) -> Union[Dict, List]:
         assert "custom_features" not in explainer_kwargs
-        is_pair = isinstance(text_data, tuple)
 
-        if is_pair:
-            pretokenized_example = (
-                [word.text for sent in self.stanza_pipe(text_data[0]).sentences for word in sent.words],
-                [word.text for sent in self.stanza_pipe(text_data[1]).sentences for word in sent.words]
-            )
-        else:
-            pretokenized_example = [word.text for sent in self.stanza_pipe(text_data).sentences
-                                    for word in sent.words]
+        truncated_text_data = self.truncate_text(text_data)
+        pretokenized_example = self.word_tokenize(truncated_text_data)
 
         encoded_input = self.explainer.model.to_internal([pretokenized_example], is_split_into_units=True)
-        features = stanza_word_features(text_data, pipe=self.stanza_pipe, do_depparse=True)
 
+        features = stanza_word_features(truncated_text_data, pipe=self.stanza_pipe, do_depparse=True)
         # Map root of each subtree to its children
         parent_to_children = {}
         for id_word, id_head in features["word_id_to_head_id"].items():
@@ -124,7 +135,7 @@ class DependencyTreeExplainer:
 
         word_ids = encoded_input["aux_data"]["alignment_ids"][0]
         feature_groups = extract_groups(word_ids)
-        res = self.explainer.explain_text(text_data,
+        res = self.explainer.explain_text(truncated_text_data,
                                           pretokenized_text_data=pretokenized_example,
                                           custom_features=feature_groups,
                                           **explainer_kwargs)
@@ -156,7 +167,7 @@ class DependencyTreeExplainer:
             #  (these are left in original groups so that indexing works)
             clean_feature_groups = list(filter(lambda group: len(group) > 0, new_feature_groups))
 
-            res = self.explainer.explain_text(text_data,
+            res = self.explainer.explain_text(truncated_text_data,
                                               pretokenized_text_data=pretokenized_example,
                                               custom_features=clean_feature_groups,
                                               **explainer_kwargs)
