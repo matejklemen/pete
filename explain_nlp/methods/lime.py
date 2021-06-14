@@ -3,11 +3,10 @@ from typing import Optional, Union, Tuple, List
 import numpy as np
 import torch
 from sklearn.linear_model import Ridge
-from sklearn.metrics import mean_absolute_error
 
 from explain_nlp.generation.generation_base import SampleGenerator
 from explain_nlp.methods.decoding import filter_factory
-from explain_nlp.methods.utils import sample_permutations, tensor_indexer, list_indexer
+from explain_nlp.methods.utils import sample_permutations, list_indexer, handle_custom_features
 from explain_nlp.modeling.modeling_base import InterpretableModel
 from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
 from explain_nlp.utils import EncodingException
@@ -31,7 +30,31 @@ class LIMEExplainer:
         self.return_scores = return_scores
         self.return_metrics = return_metrics
 
-        self.indexer = tensor_indexer
+        self.indexer = list_indexer
+
+    def model_to_generator(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
+                           **modeling_kwargs):
+        """ Maps the shifted[1] positions of perturbable model features to positions of perturbable generator
+        features.
+
+        For example, If the model input is `["[CLS]", "unbelieveable"]` and the generator input is
+        `["<BOS>", "<BOS>", "un", "be", "lieve", "able"]`, the mapping would be `{0: [2, 3, 4, 5]}`.
+
+
+        [1] Positions are shifted so that they start counting from the first PERTURBABLE feature instead of any feature.
+        For example, "I" in ["[CLS]", "I", "am", ...] would have position 0 because [CLS] is unperturbable.
+        """
+        num_features = input_ids.shape[1]
+        perturbable_indices = torch.arange(num_features)[perturbable_mask[0]]
+
+        return {
+            "generator_instance": {
+                "input_ids": input_ids,
+                "perturbable_mask": perturbable_mask,
+                "aux_data": modeling_kwargs
+            },
+            "mapping": {position: [int(i)] for position, i in enumerate(perturbable_indices)}
+        }
 
     def generate_neighbourhood(self, samples: torch.Tensor, removal_mask, **generation_kwargs):
         samples[removal_mask] = self.model.pad_token_id
@@ -45,38 +68,18 @@ class LIMEExplainer:
         eff_perturbable_mask = perturbable_mask if perturbable_mask is not None \
             else torch.ones((1, num_features), dtype=torch.bool)
 
-        perturbable_inds = torch.arange(num_features)[eff_perturbable_mask[0]]
+        # In LIME, generator instance is same as model instance, but in other methods, it might not be
+        conversion_data = self.model_to_generator(instance, eff_perturbable_mask, **modeling_kwargs)
+        generator_instance = conversion_data["generator_instance"]
 
-        if custom_features is None:
-            feature_groups = perturbable_inds
-            self.indexer = tensor_indexer
-
-            used_inds = perturbable_inds.tolist()
-        else:
-            self.indexer = list_indexer
-            num_additional = len(custom_features)
-
-            cover_count = torch.zeros(num_features)
-            free_features = eff_perturbable_mask.clone()
-            feature_groups = []
-            for curr_group in custom_features:
-                if not torch.all(eff_perturbable_mask[0, curr_group]):
-                    raise ValueError(f"At least one of the features in group {curr_group} is not perturbable")
-                if torch.any(cover_count[curr_group] > 0):
-                    raise ValueError(f"Custom features are not allowed to overlap (feature group {curr_group} overlaps "
-                                     f"with some other group)")
-                cover_count[curr_group] += 1
-                free_features[0, curr_group] = False
-
-                feature_groups.append(curr_group)
-
-            for _, idx_feature in torch.nonzero(free_features, as_tuple=False):
-                free_features[0, idx_feature] = False
-                custom_features.append([idx_feature])
-                feature_groups.append([idx_feature])
-                num_additional += 1
-
-            used_inds = list(range(num_features, num_features + num_additional))
+        (new_custom_features, feature_groups), used_inds = handle_custom_features(
+            custom_features=custom_features,
+            perturbable_mask=eff_perturbable_mask,
+            position_mapping=conversion_data["mapping"]
+        )
+        # If not all perturbable features are covered, new custom features can get automatically added
+        if new_custom_features is not None:
+            custom_features = new_custom_features
 
         num_used = len(used_inds)
         used_inds = torch.tensor(used_inds)
@@ -89,18 +92,20 @@ class LIMEExplainer:
                                             num_permutations=num_samples - 1)
         num_removed = torch.randint(1, num_used + 1, size=(num_samples - 1,))
 
-        samples = instance.repeat((num_samples, 1))
+        samples = generator_instance["input_ids"].repeat((num_samples, 1))
 
         feature_indicators = torch.zeros((num_samples, num_features + num_additional), dtype=torch.bool)
         feature_indicators[:, used_inds] = True  # explained instance
+
         removed_mask = torch.zeros_like(samples, dtype=torch.bool)
         for idx_sample in range(num_samples - 1):
-            curr_removed_features = self.indexer(feature_groups, permuted_inds[idx_sample, :num_removed[idx_sample]])
+            groups_to_remove = permuted_inds[idx_sample, :num_removed[idx_sample]]
+            curr_removed_features = self.indexer(feature_groups, groups_to_remove)
 
             removed_mask[idx_sample + 1, curr_removed_features] = True
-            feature_indicators[idx_sample + 1, used_inds[permuted_inds[idx_sample, :num_removed[idx_sample]]]] = False
+            feature_indicators[idx_sample + 1, used_inds[groups_to_remove]] = False
 
-        samples = self.generate_neighbourhood(samples, removal_mask=removed_mask, **modeling_kwargs)
+        samples = self.generate_neighbourhood(samples, removal_mask=removed_mask, **generator_instance["aux_data"])
 
         feature_indicators = feature_indicators.float()
         dists = 1.0 - torch.cosine_similarity(feature_indicators[[0]], feature_indicators)
@@ -175,47 +180,14 @@ class LIMEExplainer:
 class LIMEMaskedLMExplainer(LIMEExplainer):
     def __init__(self, model: InterpretableModel, generator: SampleGenerator, kernel_width=25.0,
                  return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 return_metrics: Optional[bool] = True, is_aligned_vocabulary: Optional[bool] = False):
+                 return_metrics: Optional[bool] = True):
         super().__init__(model=model, kernel_width=kernel_width,
                          return_samples=return_samples, return_scores=return_scores, return_metrics=return_metrics)
         self.generator = generator
         self.generator.filters = [filter_factory("unique")] + self.generator.filters
 
-        self.is_aligned_vocabulary = is_aligned_vocabulary
-
-    def generate_neighbourhood(self, samples: torch.Tensor, removal_mask, **generation_kwargs):
-        num_samples = removal_mask.shape[0]
-        if hasattr(self.generator, "label_weights"):
-            randomly_selected_label = torch.multinomial(self.generator.label_weights, num_samples=num_samples, replacement=True)
-            randomly_selected_label = [self.generator.control_labels_str[i] for i in randomly_selected_label]
-        else:
-            randomly_selected_label = [None] * num_samples
-
-        generated_examples = self.generator.generate_masked_samples(samples,
-                                                                    generation_mask=removal_mask,
-                                                                    control_labels=randomly_selected_label,
-                                                                    **generation_kwargs)
-        text_examples = self.generator.from_internal(generated_examples, **generation_kwargs)
-        model_examples = self.model.to_internal(text_examples)
-
-        return model_examples["input_ids"]
-
-    def transform_to_generator(self, input_ids, perturbable_mask, **modeling_kwargs):
-        """ Maps the POSITIONS of perturbable indices in model instance to perturbable indices in generator instance."""
-        if self.is_aligned_vocabulary:
-            num_features = input_ids.shape[1]
-            perturbable_mask = perturbable_mask[0]
-            perturbable_inds = torch.arange(num_features)[perturbable_mask]
-
-            return {
-                "instance_generator": {
-                    "input_ids": input_ids,
-                    "perturbable_mask": perturbable_mask,
-                    "aux_data": modeling_kwargs
-                },
-                "mapping": {pos: [int(i)] for pos, i in enumerate(perturbable_inds)}
-            }
-
+    def model_to_generator(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
+                           **modeling_kwargs):
         instance_tokens = self.model.from_internal(input_ids, return_tokens=True, **modeling_kwargs)
         try:
             instance_generator = self.generator.to_internal(instance_tokens, is_split_into_units=True,
@@ -236,157 +208,32 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
                 existing_subunits.append(idx_subunit)
                 model2generator[idx_word] = existing_subunits
 
-        ret = {
-            "instance_generator": instance_generator,
+        return {
+            "generator_instance": instance_generator,
             "mapping": model2generator
         }
 
-        return ret
-
-    def explain(self, instance: Union[torch.Tensor, List], label: Optional[int] = 0,
-                perturbable_mask: Optional[torch.Tensor] = None, num_samples: Optional[int] = 1000,
-                explanation_length: Optional[int] = None, custom_features: Optional[List[List[int]]] = None,
-                **modeling_kwargs):
-        num_features, num_additional = len(instance[0]), 0
-        eff_perturbable_mask = perturbable_mask if perturbable_mask is not None \
-            else torch.ones((1, num_features), dtype=torch.bool)
-
-        perturbable_inds = torch.arange(num_features)[eff_perturbable_mask[0]].tolist()
-        perturbable_position = {idx_pert: i for i, idx_pert in enumerate(perturbable_inds)}
-        res = self.transform_to_generator(instance, eff_perturbable_mask, **modeling_kwargs)
-        mapping = res["mapping"]
-        instance_generator = res["instance_generator"]
-
-        if custom_features is None:
-            feature_groups, generator_groups = [], []
-            has_bigger_units = False
-            for idx_feature in perturbable_inds:
-                new_feature = mapping[perturbable_position[idx_feature]]
-                has_bigger_units |= len(new_feature) > 1
-
-                feature_groups.append(idx_feature)
-                generator_groups.append(new_feature if has_bigger_units else new_feature[0])
-
-            if has_bigger_units:
-                self.indexer = list_indexer
-                feature_groups = [[group] for group in feature_groups]
-                generator_groups = [[group] if isinstance(group, int) else group for group in generator_groups]
-            else:
-                self.indexer = tensor_indexer
-                feature_groups = torch.tensor(feature_groups)
-                generator_groups = torch.tensor(generator_groups)
-
-            used_inds = perturbable_inds
+    def generate_neighbourhood(self, samples: torch.Tensor, removal_mask, **generation_kwargs):
+        num_samples = removal_mask.shape[0]
+        if hasattr(self.generator, "label_weights"):
+            randomly_selected_label = torch.multinomial(self.generator.label_weights,
+                                                        num_samples=num_samples, replacement=True)
+            randomly_selected_label = [self.generator.control_labels_str[i] for i in randomly_selected_label]
         else:
-            self.indexer = list_indexer
-            num_additional = len(custom_features)
+            randomly_selected_label = [None] * num_samples
 
-            cover_count = torch.zeros(num_features)
-            free_features = eff_perturbable_mask.clone()
-            feature_groups, generator_groups = [], []
-            for curr_group in custom_features:
-                if not torch.all(eff_perturbable_mask[0, curr_group]):
-                    raise ValueError(f"At least one of the features in group {curr_group} is not perturbable")
-                if torch.any(cover_count[curr_group] > 0):
-                    raise ValueError(f"Custom features are not allowed to overlap (feature group {curr_group} overlaps "
-                                     f"with some other group)")
-                cover_count[curr_group] += 1
-                free_features[0, curr_group] = False
+        generated_examples = self.generator.generate_masked_samples(samples,
+                                                                    generation_mask=removal_mask,
+                                                                    control_labels=randomly_selected_label,
+                                                                    **generation_kwargs)
+        text_examples = self.generator.from_internal(generated_examples, **generation_kwargs)
+        model_examples = self.model.to_internal(text_examples)
 
-                mapped_group = []
-                for idx_feature in curr_group:
-                    mapped_group.extend(mapping[perturbable_position[idx_feature]])
-
-                feature_groups.append(curr_group)
-                generator_groups.append(mapped_group)
-
-            for _, idx_feature in torch.nonzero(free_features, as_tuple=False):
-                free_features[0, idx_feature] = False
-                custom_features.append([idx_feature])
-                feature_groups.append([idx_feature])
-                generator_groups.append(mapping[perturbable_position[idx_feature]])
-                num_additional += 1
-
-            used_inds = list(range(num_features, num_features + num_additional))
-
-        num_used = len(used_inds)
-        used_inds = torch.tensor(used_inds)
-
-        eff_explanation_length = explanation_length if explanation_length is not None else num_used
-        assert eff_explanation_length <= num_used
-
-        permuted_inds = sample_permutations(upper=len(feature_groups),
-                                            indices=torch.arange(len(feature_groups)),
-                                            num_permutations=num_samples - 1)
-        num_removed = torch.randint(1, num_used + 1, size=(num_samples - 1,))
-
-        feature_indicators = torch.zeros((num_samples, num_features + num_additional), dtype=torch.bool)
-        feature_indicators[:, used_inds] = True  # explained instance
-
-        samples = instance_generator["input_ids"].repeat((num_samples, 1))
-        removed_mask = torch.zeros_like(samples, dtype=torch.bool)
-        for idx_sample in range(num_samples - 1):
-            groups_to_remove = permuted_inds[idx_sample, :num_removed[idx_sample]]
-            removed_generator_feats = self.indexer(generator_groups, groups_to_remove)
-
-            removed_mask[idx_sample + 1, removed_generator_feats] = True
-            feature_indicators[idx_sample + 1, used_inds[groups_to_remove]] = False
-
-        samples = self.generate_neighbourhood(samples, removal_mask=removed_mask, **instance_generator["aux_data"])
-
-        feature_indicators = feature_indicators.float()
-        dists = 1.0 - torch.cosine_similarity(feature_indicators[[0]], feature_indicators)
-        weights = exponential_kernel(dists, kernel_width=self.kernel_width)
-
-        pred_probas = self.model.score(samples, **modeling_kwargs)
-
-        np_indicators = feature_indicators.numpy()
-        np_probas = pred_probas.numpy()
-        np_weights = weights.numpy()
-
-        feature_selector = Ridge(alpha=0.01, fit_intercept=True)
-        feature_selector.fit(X=np_indicators,
-                             y=np_probas[:, label],
-                             sample_weight=np_weights)
-        coefs = feature_selector.coef_
-
-        sort_indices = np.argsort(-np.abs(coefs))
-        used_features = sort_indices[:eff_explanation_length]
-
-        explanation = torch.zeros(num_features + num_additional)
-        explanation_model = Ridge(alpha=1.0, fit_intercept=True)
-        explanation_model.fit(X=np_indicators[:, used_features],
-                              y=np_probas[:, label],
-                              sample_weight=np_weights)
-        explanation[used_features] = torch.tensor(explanation_model.coef_)
-
-        results = {
-            "importance": explanation,
-            "bias": torch.tensor(explanation_model.intercept_)
-        }
-
-        if self.return_samples:
-            results["samples"] = samples.tolist()
-            results["indicators"] = feature_indicators.tolist()
-
-        if self.return_scores:
-            results["scores"] = pred_probas[:, label].tolist()
-
-        if self.return_metrics:
-            results["pred_model"] = np_probas[0, label]
-            results["pred_surrogate"] = explanation_model.predict(np_indicators[0: 1, used_features])[0]
-            results["pred_mean"] = np.mean(np_probas)
-            results["pred_median"] = np.median(np_probas)
-
-        if custom_features is not None:
-            results["custom_features"] = custom_features
-
-        return results
+        return model_examples["input_ids"]
 
 
 if __name__ == "__main__":
-    from explain_nlp.generation.generation_transformers import BertForMaskedLMGenerator, \
-        SimplifiedBertForMaskedLMGenerator, BertForControlledMaskedLMGenerator, SimplifiedBertForControlledMaskedLMGenerator
+    from explain_nlp.generation.generation_transformers import SimplifiedBertForControlledMaskedLMGenerator
     from explain_nlp.visualizations.highlight import highlight_plot
     from explain_nlp.visualizations.internal import visualize_lime_internals
 
@@ -405,7 +252,7 @@ if __name__ == "__main__":
 
     explainer = LIMEExplainer(model, return_samples=True, return_scores=True)
     # explainer = LIMEMaskedLMExplainer(model, generator=generator, return_samples=True, return_scores=True,
-    #                                   kernel_width=1.0, is_aligned_vocabulary=True)
+    #                                   kernel_width=1.0)
 
     seq = ("A shirtless man skateboards on a ledge.", "A man without a shirt.")
     EXPLAINED_LABEL = 0
