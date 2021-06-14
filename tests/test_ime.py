@@ -112,8 +112,7 @@ class TestIMEExplainer(unittest.TestCase):
     def test_unperturbable_feature(self):
         """ Test that features marked as unperturbable do not take up samples """
         explainer = IMEExplainer(sample_data=self.sample_data["input_ids"], model=self.model,
-                                 return_scores=True, return_num_samples=True, return_variance=True,
-                                 return_samples=True)
+                                 return_scores=True, return_num_samples=True, return_samples=True)
         res = explainer.explain(instance=self.sample_input["input_ids"],
                                 perturbable_mask=torch.tensor([[False, True, True, False, False, False, False, False]]),
                                 min_samples_per_feature=10,
@@ -123,6 +122,18 @@ class TestIMEExplainer(unittest.TestCase):
         self.assertIs(res["samples"][0], None)
         self.assertIs(res["scores"][0], None)
         self.assertEqual(res["num_samples"][1], 10)
+
+    def test_estimate_feature_importance_no_feature_groups(self):
+        # Should pass without crashing: make sure feature groups get correctly constructed when not explicitly provided
+        explainer = IMEExplainer(sample_data=self.sample_data["input_ids"], model=self.model,
+                                 return_scores=True, return_num_samples=True, return_samples=True)
+
+        explainer.estimate_feature_importance(idx_feature=1,
+                                              instance=self.sample_input["input_ids"],
+                                              num_samples=10,
+                                              perturbable_mask=self.sample_input["perturbable_mask"],
+                                              feature_groups=None,
+                                              **self.sample_input["aux_data"])
 
     def test_exceptions_on_invalid_input(self):
         # Specified a minimum of 10 samples per features, but specified only 20 max samples in total

@@ -8,16 +8,15 @@ import logging
 
 from explain_nlp.modeling.modeling_base import InterpretableModel
 from explain_nlp.methods.utils import sample_permutations, incremental_mean, incremental_var, \
-    tensor_indexer, list_indexer, estimate_feature_samples
+    list_indexer, estimate_feature_samples, handle_custom_features
 
 
 class IMEExplainer:
     def __init__(self, sample_data: torch.Tensor, model: InterpretableModel,
                  data_weights: Optional[torch.FloatTensor] = None,
                  confidence_interval: Optional[float] = None, max_abs_error: Optional[float] = None,
-                 return_variance: Optional[bool] = False, return_num_samples: Optional[bool] = False,
-                 return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 criterion: Optional[str] = "squared_error"):
+                 return_num_samples: Optional[bool] = False, return_samples: Optional[bool] = False,
+                 return_scores: Optional[bool] = False, criterion: Optional[str] = "squared_error"):
         """ Explain instances using IME.
 
         Args:
@@ -33,8 +32,6 @@ class IMEExplainer:
             `confidence_interval` * 100% of importances should fall within `max_abs_error` of the true importance."
         max_abs_error: float
             Constraint on how accurately the computed importances should be computed (see `confidence_interval`).
-        return_variance: bool
-            Return variance of the importances.
         return_num_samples: bool
             Return number of taken samples to estimate feature importances.
         return_samples: bool
@@ -50,13 +47,12 @@ class IMEExplainer:
         self.confidence_interval = confidence_interval
         self.max_abs_error = max_abs_error
 
-        self.return_variance = return_variance
         self.return_num_samples = return_num_samples
         self.return_samples = return_samples
         self.return_scores = return_scores
 
         self.error_constraint_given = self.confidence_interval is not None and self.max_abs_error is not None
-        self.indexer = tensor_indexer
+        self.indexer = list_indexer
 
         # TODO: move to functions
         if criterion == "absolute_error":
@@ -153,8 +149,9 @@ class IMEExplainer:
                              f"does not match number of features in sampling data ({self.num_features})")
 
         if feature_groups is None:
-            eff_feature_groups = torch.arange(num_features)[perturbable_mask[0]]
-            idx_superfeature = eff_feature_groups.tolist().index(idx_feature)
+            eff_feature_groups = torch.arange(num_features)[perturbable_mask[0]].tolist()
+            idx_superfeature = eff_feature_groups.index(idx_feature)
+            eff_feature_groups = [[_i] for _i in eff_feature_groups]
         else:
             eff_feature_groups = feature_groups
             idx_superfeature = idx_feature
@@ -206,22 +203,29 @@ class IMEExplainer:
 
         return results
 
-    def get_generator_mapping(self, input_ids, perturbable_mask, **modeling_kwargs):
+    def model_to_generator(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
+                           **modeling_kwargs):
         """ Maps the shifted[1] positions of perturbable model features to positions of perturbable generator
         features.
 
-        For example, If the model input corresponds to ["[CLS]", "unbelieveable"] and the generator input to
-        ["<BOS>", "<BOS>", "un", "be", "lieve", "able"], the mapping would be {0: [2, 3, 4, 5]}.
+        For example, If the model input is `["[CLS]", "unbelieveable"]` and the generator input is
+        `["<BOS>", "<BOS>", "un", "be", "lieve", "able"]`, the mapping would be `{0: [2, 3, 4, 5]}`.
 
 
         [1] Positions are shifted so that they start counting from the first PERTURBABLE feature instead of any feature.
         For example, "I" in ["[CLS]", "I", "am", ...] would have position 0 because [CLS] is unperturbable.
         """
         num_features = input_ids.shape[1]
-        perturbable_mask = perturbable_mask[0]
+        perturbable_indices = torch.arange(num_features)[perturbable_mask[0]]
 
-        perturbable_inds = torch.arange(num_features)[perturbable_mask]
-        return {pos: [int(i)] for pos, i in enumerate(perturbable_inds)}
+        return {
+            "generator_instance": {
+                "input_ids": input_ids,
+                "perturbable_mask": perturbable_mask,
+                "aux_data": modeling_kwargs
+            },
+            "mapping": {position: [int(i)] for position, i in enumerate(perturbable_indices)}
+        }
 
     def explain(self, instance: Union[torch.Tensor, List], label: Optional[int] = 0,
                 perturbable_mask: Optional[torch.Tensor] = None,
@@ -255,57 +259,20 @@ class IMEExplainer:
         eff_perturbable_mask = perturbable_mask if perturbable_mask is not None \
             else torch.ones((1, num_features), dtype=torch.bool)
 
-        perturbable_inds = torch.arange(num_features)[eff_perturbable_mask[0]].tolist()
-        perturbable_position = {idx_pert: i for i, idx_pert in enumerate(perturbable_inds)}
-        mapping = self.get_generator_mapping(instance, eff_perturbable_mask, **modeling_kwargs)
+        # In IME, generator instance is same as model instance, but in other methods, it might not be
+        conversion_data = self.model_to_generator(instance, eff_perturbable_mask, **modeling_kwargs)
+        generator_instance = conversion_data["generator_instance"]
 
-        if custom_features is None:
-            feature_groups, has_bigger_units = [], False
-            for idx_feature in perturbable_inds:
-                new_feature = mapping[perturbable_position[idx_feature]]
-                has_bigger_units |= isinstance(new_feature, list)
+        (new_custom_features, feature_groups), used_inds = handle_custom_features(
+            custom_features=custom_features,
+            perturbable_mask=eff_perturbable_mask,
+            position_mapping=conversion_data["mapping"]
+        )
+        # If not all perturbable features are covered, new custom features can get automatically added
+        if new_custom_features is not None:
+            custom_features = new_custom_features
 
-                feature_groups.append(new_feature)
-
-            if has_bigger_units:
-                self.indexer = list_indexer
-                feature_groups = [[group] if isinstance(group, int) else group for group in feature_groups]
-            else:
-                self.indexer = tensor_indexer
-                feature_groups = torch.tensor(feature_groups)
-
-            used_inds = perturbable_inds
-        else:
-            self.indexer = list_indexer
-            num_additional = len(custom_features)
-
-            cover_count = torch.zeros(num_features)
-            free_features = eff_perturbable_mask.clone()
-            feature_groups = []
-
-            for curr_group in custom_features:
-                if not torch.all(eff_perturbable_mask[0, curr_group]):
-                    raise ValueError(f"At least one of the features in group {curr_group} is not perturbable")
-                if torch.any(cover_count[curr_group] > 0):
-                    raise ValueError(f"Custom features are not allowed to overlap (feature group {curr_group} overlaps "
-                                     f"with some other group)")
-                cover_count[curr_group] += 1
-                free_features[0, curr_group] = False
-
-                mapped_group = []
-                for idx_feature in curr_group:
-                    mapped_group.extend(mapping[perturbable_position[idx_feature]])
-                feature_groups.append(mapped_group)
-
-            for _, idx_feature in torch.nonzero(free_features, as_tuple=False):
-                free_features[0, idx_feature] = False
-                custom_features.append([idx_feature])
-                feature_groups.append(mapping[perturbable_position[idx_feature]])
-                num_additional += 1
-
-            used_inds = list(range(num_features, num_features + num_additional))
-
-        inds_group = dict(zip(used_inds, range(len(used_inds))))
+        feature_to_group_index = dict(zip(used_inds, range(len(used_inds))))
 
         importance_means = torch.zeros(num_features + num_additional, dtype=torch.float32)
         importance_vars = torch.zeros(num_features + num_additional, dtype=torch.float32)
@@ -330,12 +297,12 @@ class IMEExplainer:
 
         # Initial pass: either estimate variance or take exact number samples as provided by user
         for idx_feature in used_inds:
-            res = self.estimate_feature_importance(inds_group[idx_feature],
+            res = self.estimate_feature_importance(feature_to_group_index[idx_feature],
                                                    feature_groups=feature_groups,
-                                                   instance=instance,
+                                                   instance=generator_instance["input_ids"],
                                                    num_samples=samples_per_feature[idx_feature],
-                                                   perturbable_mask=eff_perturbable_mask,
-                                                   **modeling_kwargs)
+                                                   perturbable_mask=generator_instance["perturbable_mask"],
+                                                   **generator_instance["aux_data"])
             importance_means[idx_feature] = res["diff_mean"][label]
             importance_vars[idx_feature] = res["diff_var"][label]
 
@@ -367,7 +334,7 @@ class IMEExplainer:
             var_diffs = self.criterion(importance_vars, samples_per_feature)
             idx_feature = int(torch.argmax(var_diffs))
 
-            res = self.estimate_feature_importance(inds_group[idx_feature],
+            res = self.estimate_feature_importance(feature_to_group_index[idx_feature],
                                                    feature_groups=feature_groups,
                                                    instance=instance,
                                                    num_samples=1,
@@ -402,11 +369,9 @@ class IMEExplainer:
 
         results = {
             "importance": importance_means,
+            "var": importance_vars,
             "taken_samples": eff_max_samples
         }
-
-        if self.return_variance:
-            results["var"] = importance_vars
 
         if self.return_num_samples:
             results["num_samples"] = samples_per_feature
@@ -472,7 +437,6 @@ if __name__ == "__main__":
 
     print("Running IME")
     explainer = IMEExplainer(model=model, sample_data=sample_data,
-                             return_variance=True,
                              return_num_samples=True,
                              return_samples=True,
                              return_scores=True)

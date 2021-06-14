@@ -14,18 +14,17 @@ DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cp
 class DependentIMEMaskedLMExplainer(IMEExplainer):
     def __init__(self, model: InterpretableModel, generator: SampleGenerator,
                  confidence_interval: Optional[float] = None,  max_abs_error: Optional[float] = None,
-                 return_variance: Optional[bool] = False, return_num_samples: Optional[bool] = False,
-                 return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 criterion: Optional[str] = "squared_error"):
+                 return_num_samples: Optional[bool] = False, return_samples: Optional[bool] = False,
+                 return_scores: Optional[bool] = False, criterion: Optional[str] = "squared_error"):
         dummy_sample_data = torch.randint(5, (1, 1), dtype=torch.long)
         super().__init__(sample_data=dummy_sample_data, model=model, confidence_interval=confidence_interval,
-                         max_abs_error=max_abs_error, return_variance=return_variance,
-                         return_num_samples=return_num_samples, return_samples=return_samples,
-                         return_scores=return_scores, criterion=criterion)
+                         max_abs_error=max_abs_error, return_num_samples=return_num_samples,
+                         return_samples=return_samples, return_scores=return_scores, criterion=criterion)
 
         self.generator = generator
 
-    def get_generator_mapping(self, input_ids, perturbable_mask, **modeling_kwargs):
+    def model_to_generator(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
+                           **modeling_kwargs):
         instance_tokens = self.model.from_internal(input_ids, return_tokens=True, **modeling_kwargs)
         try:
             instance_generator = self.generator.to_internal(instance_tokens, is_split_into_units=True,
@@ -46,19 +45,48 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
                 existing_subunits.append(idx_subunit)
                 model2generator[idx_word] = existing_subunits
 
-        return model2generator
+        return {
+            "generator_instance": instance_generator,
+            "mapping": model2generator
+        }
 
     @torch.no_grad()
     def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor,
                                     num_samples: int, perturbable_mask: torch.Tensor,
                                     feature_groups: Optional[Union[torch.Tensor, List[List[int]]]] = None,
-                                    **modeling_kwargs):
+                                    **generation_kwargs):
+        """ Estimate importance of a single feature or a group of features for `instance` using `num_samples` samples,
+        where each sample corresponds to a pair of perturbations (one with estimated feature set and another
+        with estimated feature randomized).
+
+
+        IMPORTANT: `instance`, `perturbable_mask` and `**generation_kwargs` should all be data in generator's
+        representation, as opposed to how it is in IMEExplainer, where the input is actually in model's representation.
+
+        Args:
+            idx_feature:
+                Feature whose importance is estimated. If `feature_groups` is provided, `idx_feature` points to the
+                position of the estimated custom feature. For example, idx_feature=1 and feature_groups=[[1], [2]]
+                means that the importance of feature 2 is estimated
+            instance:
+                Explained instance, shape: [1, num_features].
+            num_samples:
+                Number of samples to take.
+            perturbable_mask:
+                Mask of features that can be perturbed ("modified"), shape: [1, num_features].
+            feature_groups:
+                Groups that define which features are to be taken as an atomic unit (are to be perturbed together).
+                If not provided, groups of single perturbable features are used.
+            **generation_kwargs:
+                Additional generation data (e.g. attention masks,...)
+        """
         # Note: instance is currently supposed to be of shape [1, num_features]
         num_features = int(len(instance[0]))
 
         if feature_groups is None:
-            eff_feature_groups = torch.arange(num_features)[perturbable_mask[0]]
-            idx_superfeature = eff_feature_groups.tolist().index(idx_feature)
+            eff_feature_groups = torch.arange(num_features)[perturbable_mask[0]].tolist()
+            idx_superfeature = eff_feature_groups.index(idx_feature)
+            eff_feature_groups = [[_i] for _i in eff_feature_groups]
         else:
             eff_feature_groups = feature_groups
             idx_superfeature = idx_feature
@@ -69,10 +97,6 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
         else:
             randomly_selected_label = [None] * num_samples
 
-        # TODO: get generator instance provided as argument (in place of `instance`)
-        instance_tokens = self.model.from_internal(instance, return_tokens=True, **modeling_kwargs)
-        instance_generator = self.generator.to_internal(instance_tokens, is_split_into_units=True)
-        num_gen_features = instance_generator["input_ids"].shape[1]
         est_instance_features = eff_feature_groups[idx_feature]
 
         # Permuted POSITIONS of (super)features inside `eff_feature_groups`
@@ -81,7 +105,7 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
                                       num_permutations=num_samples)
         feature_pos = torch.nonzero(indices == idx_superfeature, as_tuple=False)
 
-        is_masked = torch.zeros((2 * num_samples, num_gen_features), dtype=torch.bool)
+        is_masked = torch.zeros((2 * num_samples, num_features), dtype=torch.bool)
         for idx_sample in range(num_samples):
             curr_feature_pos = int(feature_pos[idx_sample, 1])
             changed_features = self.indexer(eff_feature_groups, indices[idx_sample, curr_feature_pos + 1:])
@@ -90,12 +114,12 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
             is_masked[2 * idx_sample: 2 * idx_sample + 2, changed_features] = True
             is_masked[2 * idx_sample + 1, est_instance_features] = True
 
-        all_examples = self.generator.generate_masked_samples(instance_generator["input_ids"],
+        all_examples = self.generator.generate_masked_samples(instance,
                                                               generation_mask=is_masked,
                                                               control_labels=randomly_selected_label,
-                                                              **instance_generator["aux_data"])
+                                                              **generation_kwargs)
 
-        text_examples = self.generator.from_internal(all_examples, **instance_generator["aux_data"])
+        text_examples = self.generator.from_internal(all_examples, **generation_kwargs)
         model_examples = self.model.to_internal(text_examples)
 
         scores = self.model.score(model_examples["input_ids"], **model_examples["aux_data"])
@@ -122,7 +146,7 @@ if __name__ == "__main__":
     from explain_nlp.generation.generation_transformers import BertForMaskedLMGenerator, RobertaForMaskedLMGenerator
     from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
 
-    model = InterpretableBertForSequenceClassification(tokenizer_name="bert-base-uncased",
+    model = InterpretableBertForSequenceClassification(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
                                                        model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
                                                        batch_size=2,
                                                        device="cpu",

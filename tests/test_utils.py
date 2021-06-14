@@ -4,11 +4,91 @@ import torch
 import numpy as np
 
 from explain_nlp.methods.utils import estimate_feature_samples, sample_permutations, \
-    incremental_mean, incremental_var
+    incremental_mean, incremental_var, handle_custom_features
 from explain_nlp.utils.metrics import iou_score, fidelity, snr_score, hpd_score
 
 
 class TestUtils(unittest.TestCase):
+    def test_custom_feature_handling(self):
+        # Use primary units (sequence), generator's representation is same as model's
+        (feats, mapped_feats), inds = handle_custom_features(
+            custom_features=None,
+            perturbable_mask=torch.tensor([[False, True, True, True, True, False]]),
+            position_mapping=None
+        )
+
+        self.assertIsNone(feats)
+        self.assertListEqual(mapped_feats, [[1], [2], [3], [4]])
+        self.assertListEqual(inds, [1, 2, 3, 4])
+
+        # Use primary units (sequence pair) with custom mapping
+        (feats, mapped_feats), inds = handle_custom_features(
+            custom_features=None,
+            perturbable_mask=torch.tensor([[False, True, True, True, True, False, True, True, True, False]]),
+            position_mapping={0: [1, 2], 1: [3], 2: [4], 3: [5, 6, 7, 8], 4: [9], 5: [10], 6: [11, 12]}
+        )
+
+        self.assertIsNone(feats)
+        self.assertListEqual(mapped_feats, [[1, 2], [3], [4], [5, 6, 7, 8], [9], [10], [11, 12]])
+        self.assertListEqual(inds, [1, 2, 3, 4, 6, 7, 8])
+
+        # Position mapping must either be omitted (None) or provided for all perturbable positions, otherwise raise err
+        self.assertRaises(KeyError,
+                          lambda: handle_custom_features(
+                              custom_features=None,
+                              perturbable_mask=torch.tensor([[True, True, True]]),
+                              position_mapping={0: [1, 2]}
+                          ))
+
+        # Use custom units, generator's representation is same as model's
+        (feats, mapped_feats), inds = handle_custom_features(
+            custom_features=[[1], [2], [3, 4]],
+            perturbable_mask=torch.tensor([[False, True, True, True, True, False]]),
+            position_mapping=None
+        )
+        self.assertListEqual(feats, [[1], [2], [3, 4]])
+        self.assertListEqual(mapped_feats, [[1], [2], [3, 4]])
+        self.assertListEqual(inds, [6, 7, 8])
+
+        # Use custom units with custom mapping
+        (feats, mapped_feats), inds = handle_custom_features(
+            custom_features=[[1], [3, 4]],
+            perturbable_mask=torch.tensor([[False, True, False, True, True, False]]),
+            position_mapping={0: [1, 2, 3, 4], 1: [5, 6], 2: [7]}
+        )
+        self.assertListEqual(feats, [[1], [3, 4]])
+        self.assertListEqual(mapped_feats, [[1, 2, 3, 4], [5, 6, 7]])
+        self.assertListEqual(inds, [6, 7])
+
+        # Use incomplete custom units with custom mapping (custom units don't cover all perturbable features):
+        # In this case, we expect a warning to be given and the missing groups to be added
+        with self.assertWarns(UserWarning):
+            (feats, mapped_feats), inds = handle_custom_features(
+                custom_features=[[1], [3, 4]],
+                perturbable_mask=torch.tensor([[False, True, True, True, True, False]]),
+                position_mapping={0: [1, 2, 3], 1: [4], 2: [5, 6], 3: [7]}
+            )
+            self.assertListEqual(feats, [[1], [3, 4], [2]])  # missing groups added to the end
+            self.assertListEqual(mapped_feats, [[1, 2, 3], [5, 6, 7], [4]])
+            self.assertListEqual(inds, [6, 7, 8])
+
+        # Cover some perturbable features with two feature groups: not allowed - raise error
+        # In this case, feature 2 is covered by groups [2] and [2, 3, 4]
+        self.assertRaises(ValueError,
+                          lambda: handle_custom_features(
+                              custom_features=[[1], [2], [2, 3, 4]],
+                              perturbable_mask=torch.tensor([[False, True, True, True, True, False]]),
+                              position_mapping={0: [1, 2, 3, 4], 1: [5, 6], 2: [7]}
+                          ))
+
+        # Cover some unperturbable feature: not allowed - raise error
+        self.assertRaises(ValueError,
+                          lambda: handle_custom_features(
+                              custom_features=[[1], [2], [3, 4], [5]],
+                              perturbable_mask=torch.tensor([[False, True, True, True, True, False]]),
+                              position_mapping=None
+                          ))
+
     def test_required_samples(self):
         alpha = 1 - 0.95  # 95% CI
 
