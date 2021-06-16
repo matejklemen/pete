@@ -461,9 +461,14 @@ class BertForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizationM
                         for k in ["token_type_ids", "attention_mask"]}
 
         _generation_mask = generation_mask.to(self.device)
+
+        # Examples that have at least one token masked
         inds_masked_examples = torch.arange(num_samples, device=self.device)[torch.any(_generation_mask, dim=1)]
+
+        # Consider examples by number of masked tokens in decreasing order
         num_masked_chunks = torch.sum(_generation_mask[inds_masked_examples], dim=1)
         inds_masked_examples = inds_masked_examples[torch.argsort(-num_masked_chunks)]
+
         num_batches = (inds_masked_examples.shape[0] + self.batch_size - 1) // self.batch_size
         for idx_batch in range(num_batches):
             s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
@@ -734,7 +739,8 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
     def generate_masked_samples(self, input_ids: torch.Tensor,
                                 generation_mask: torch.Tensor,
                                 **generation_kwargs):
-        eff_input_ids = extend_tensor(input_ids)
+        num_samples = generation_mask.shape[0]
+        eff_input_ids = extend_tensor(input_ids).repeat((num_samples, 1))
         eff_generation_mask = extend_tensor(generation_mask)
 
         # Note: currently assuming generation additional data is same for all samples
@@ -753,6 +759,7 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
         all_examples = super().generate_masked_samples(input_ids=eff_input_ids,
                                                        generation_mask=eff_generation_mask,
                                                        **eff_aux_data)
+
         valid_tokens = torch.ones(eff_input_ids.shape[1], dtype=torch.bool)
         valid_tokens[1] = False
 
