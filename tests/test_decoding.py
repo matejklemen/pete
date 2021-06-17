@@ -2,7 +2,7 @@ import unittest
 import torch
 import numpy as np
 
-from explain_nlp.methods.decoding import top_p_filtering, filter_unique, filter_allowed
+from explain_nlp.generation.decoding import top_p_filtering, filter_unique, filter_allowed
 
 
 class TestDecoding(unittest.TestCase):

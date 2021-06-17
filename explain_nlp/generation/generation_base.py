@@ -2,7 +2,7 @@ from typing import List, Union, Tuple, Dict, Optional
 
 import torch
 
-from explain_nlp.methods.decoding import filter_factory
+from explain_nlp.generation.decoding import filter_factory
 
 
 class SampleGenerator:

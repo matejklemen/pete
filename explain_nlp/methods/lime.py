@@ -4,12 +4,9 @@ import numpy as np
 import torch
 from sklearn.linear_model import Ridge
 
-from explain_nlp.generation.generation_base import SampleGenerator
-from explain_nlp.methods.decoding import filter_factory
 from explain_nlp.methods.utils import sample_permutations, list_indexer, handle_custom_features
 from explain_nlp.modeling.modeling_base import InterpretableModel
 from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
-from explain_nlp.utils import EncodingException
 
 
 def exponential_kernel(dists: torch.Tensor, kernel_width: float):
@@ -17,9 +14,9 @@ def exponential_kernel(dists: torch.Tensor, kernel_width: float):
 
 
 class LIMEExplainer:
-    def __init__(self, model: InterpretableModel, kernel_width=25.0,
+    def __init__(self, model: InterpretableModel, kernel_width=1.0,
                  return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 return_metrics: Optional[bool] = True):
+                 return_metrics: Optional[bool] = True, shared_vocabulary: Optional[bool] = False):
         self.model = model
         self.kernel_width = kernel_width
 
@@ -29,6 +26,7 @@ class LIMEExplainer:
         self.return_samples = return_samples
         self.return_scores = return_scores
         self.return_metrics = return_metrics
+        self.shared_vocabulary = shared_vocabulary
 
         self.indexer = list_indexer
 
@@ -68,8 +66,11 @@ class LIMEExplainer:
         eff_perturbable_mask = perturbable_mask if perturbable_mask is not None \
             else torch.ones((1, num_features), dtype=torch.bool)
 
-        # In LIME, generator instance is same as model instance, but in other methods, it might not be
-        conversion_data = self.model_to_generator(instance, eff_perturbable_mask, **modeling_kwargs)
+        # In LIME and LIME+LM where model and generator use same vocabulary, no conversion of data is needed
+        if self.shared_vocabulary:
+            conversion_data = LIMEExplainer.model_to_generator(self, instance, eff_perturbable_mask, **modeling_kwargs)
+        else:
+            conversion_data = self.model_to_generator(instance, eff_perturbable_mask, **modeling_kwargs)
         generator_instance = conversion_data["generator_instance"]
 
         (new_custom_features, feature_groups), used_inds = handle_custom_features(
@@ -177,63 +178,7 @@ class LIMEExplainer:
         return res
 
 
-class LIMEMaskedLMExplainer(LIMEExplainer):
-    def __init__(self, model: InterpretableModel, generator: SampleGenerator, kernel_width=25.0,
-                 return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 return_metrics: Optional[bool] = True):
-        super().__init__(model=model, kernel_width=kernel_width,
-                         return_samples=return_samples, return_scores=return_scores, return_metrics=return_metrics)
-        self.generator = generator
-        self.generator.filters = [filter_factory("unique")] + self.generator.filters
-
-    def model_to_generator(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
-                           **modeling_kwargs):
-        instance_tokens = self.model.from_internal(input_ids, return_tokens=True, **modeling_kwargs)
-        try:
-            instance_generator = self.generator.to_internal(instance_tokens, is_split_into_units=True,
-                                                            allow_truncation=False)
-        except EncodingException:
-            raise ValueError("Conversion between model instance and generator's instance could not be performed: "
-                             "the obtained generator instance is longer than allowed generator's maximum length.\n"
-                             "To fix this, either (1) increase generator's max_seq_len or (2) decrease model's "
-                             "max_seq_len.")
-
-        model2generator = {}
-        for idx_example, alignment_ids in enumerate(instance_generator["aux_data"]["alignment_ids"]):
-            for idx_subunit, idx_word in enumerate(alignment_ids):
-                if idx_word == -1:
-                    continue
-
-                existing_subunits = model2generator.get(idx_word, [])
-                existing_subunits.append(idx_subunit)
-                model2generator[idx_word] = existing_subunits
-
-        return {
-            "generator_instance": instance_generator,
-            "mapping": model2generator
-        }
-
-    def generate_neighbourhood(self, samples: torch.Tensor, removal_mask, **generation_kwargs):
-        num_samples = removal_mask.shape[0]
-        if hasattr(self.generator, "label_weights"):
-            randomly_selected_label = torch.multinomial(self.generator.label_weights,
-                                                        num_samples=num_samples, replacement=True)
-            randomly_selected_label = [self.generator.control_labels_str[i] for i in randomly_selected_label]
-        else:
-            randomly_selected_label = [None] * num_samples
-
-        generated_examples = self.generator.generate_masked_samples(samples,
-                                                                    generation_mask=removal_mask,
-                                                                    control_labels=randomly_selected_label,
-                                                                    **generation_kwargs)
-        text_examples = self.generator.from_internal(generated_examples, **generation_kwargs)
-        model_examples = self.model.to_internal(text_examples)
-
-        return model_examples["input_ids"]
-
-
 if __name__ == "__main__":
-    from explain_nlp.generation.generation_transformers import SimplifiedBertForControlledMaskedLMGenerator
     from explain_nlp.visualizations.highlight import highlight_plot
     from explain_nlp.visualizations.internal import visualize_lime_internals
 
@@ -244,20 +189,13 @@ if __name__ == "__main__":
         max_seq_len=41,
         device="cpu"
     )
-    # generator = SimplifiedBertForControlledMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
-    #                                                          model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
-    #                                                          max_seq_len=41, batch_size=10, device="cpu",
-    #                                                          strategy="top_k", top_k=5, num_references=3,
-    #                                                          control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"])
 
     explainer = LIMEExplainer(model, return_samples=True, return_scores=True)
-    # explainer = LIMEMaskedLMExplainer(model, generator=generator, return_samples=True, return_scores=True,
-    #                                   kernel_width=1.0)
 
     seq = ("A shirtless man skateboards on a ledge.", "A man without a shirt.")
     EXPLAINED_LABEL = 0
-    EXPLANATION_LENGTH = 5
-    res = explainer.explain_text(seq, label=EXPLAINED_LABEL, num_samples=100)
+    EXPLANATION_LENGTH = None
+    res = explainer.explain_text(seq, label=EXPLAINED_LABEL, num_samples=100, explanation_length=EXPLANATION_LENGTH)
 
     visualize_lime_internals(sequence_tokens=res["input"][:19],
                              token_mask=[res["indicators"][_i][:19] for _i in range(len(res["indicators"]))],

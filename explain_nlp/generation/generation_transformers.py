@@ -6,7 +6,7 @@ from transformers import OpenAIGPTLMHeadModel, BertForMaskedLM, RobertaForMasked
 from transformers import OpenAIGPTTokenizerFast, BertTokenizerFast, RobertaTokenizerFast
 
 from explain_nlp.generation.generation_base import SampleGenerator
-from explain_nlp.methods.decoding import greedy_decoding, top_p_decoding
+from explain_nlp.generation.decoding import greedy_decoding, top_p_decoding
 from explain_nlp.methods.utils import extend_tensor
 from explain_nlp.utils.tokenization_utils import TransformersAlignedTokenizationMixin
 
