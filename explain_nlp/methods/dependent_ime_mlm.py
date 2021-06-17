@@ -15,11 +15,13 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
     def __init__(self, model: InterpretableModel, generator: SampleGenerator,
                  confidence_interval: Optional[float] = None,  max_abs_error: Optional[float] = None,
                  return_num_samples: Optional[bool] = False, return_samples: Optional[bool] = False,
-                 return_scores: Optional[bool] = False, criterion: Optional[str] = "squared_error"):
+                 return_scores: Optional[bool] = False, criterion: Optional[str] = "squared_error",
+                 shared_vocabulary: Optional[bool] = False):
         dummy_sample_data = torch.randint(5, (1, 1), dtype=torch.long)
         super().__init__(sample_data=dummy_sample_data, model=model, confidence_interval=confidence_interval,
                          max_abs_error=max_abs_error, return_num_samples=return_num_samples,
-                         return_samples=return_samples, return_scores=return_scores, criterion=criterion)
+                         return_samples=return_samples, return_scores=return_scores, criterion=criterion,
+                         shared_vocabulary=shared_vocabulary)
 
         self.generator = generator
 
@@ -92,7 +94,10 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
             idx_superfeature = idx_feature
 
         if hasattr(self.generator, "label_weights"):
-            randomly_selected_label = torch.multinomial(self.generator.label_weights, num_samples=num_samples, replacement=True)
+            randomly_selected_label = torch.multinomial(self.generator.label_weights, num_samples=num_samples,
+                                                        replacement=True)
+            # A pair belonging to same sample is assigned the same label
+            randomly_selected_label = torch.stack((randomly_selected_label, randomly_selected_label)).T.flatten()
             randomly_selected_label = [self.generator.control_labels_str[i] for i in randomly_selected_label]
         else:
             randomly_selected_label = [None] * num_samples
@@ -143,7 +148,7 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
 
 
 if __name__ == "__main__":
-    from explain_nlp.generation.generation_transformers import BertForMaskedLMGenerator, RobertaForMaskedLMGenerator
+    from explain_nlp.generation.generation_transformers import BertForMaskedLMGenerator
     from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
 
     model = InterpretableBertForSequenceClassification(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
@@ -151,23 +156,24 @@ if __name__ == "__main__":
                                                        batch_size=2,
                                                        device="cpu",
                                                        max_seq_len=41)
-    generator = BertForMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
-                                         model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
-                                         batch_size=10,
-                                         max_seq_len=41,
-                                         device="cpu",
-                                         strategy="top_p",
-                                         top_p=0.95)
+
+    generator = BertForMaskedLMGenerator(
+        tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
+        model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm",
+        batch_size=10,
+        max_seq_len=41,
+        device="cpu",
+        strategy="top_p",
+        top_p=0.95
+    )
 
     explainer = DependentIMEMaskedLMExplainer(model=model,
                                               generator=generator,
                                               return_samples=True,
                                               return_scores=True,
-                                              return_variance=True,
                                               return_num_samples=True)
 
     seq = ("A shirtless man skateboards on a ledge.", "A man without a shirt")
     res = explainer.explain_text(seq, label=0, min_samples_per_feature=5)
-    print(f"Sum of importances: {sum(res['importance'])}")
     for curr_token, curr_imp, curr_var in zip(res["input"], res["importance"], res["var"]):
         print(f"{curr_token} = {curr_imp: .4f} (var: {curr_var: .4f})")
