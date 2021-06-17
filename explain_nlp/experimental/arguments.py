@@ -14,7 +14,7 @@ general_parser.add_argument("--start_from", type=int, default=None, help="From w
 general_parser.add_argument("--until", type=int, default=None, help="Until which example to do computation")
 general_parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU")
 
-general_parser.add_argument("--custom_features", type=str, default="words",
+general_parser.add_argument("--custom_features", type=str, default=None,
                             choices=[None, "words", "sentences", "dependency_parsing"])
 general_parser.add_argument("--return_generated_samples", action="store_true")
 general_parser.add_argument("--return_model_scores", action="store_true")
@@ -43,7 +43,9 @@ general_parser.add_argument("--top_p", type=float, default=0.95)
 general_parser.add_argument("--top_k", type=int, default=3)
 general_parser.add_argument("--threshold", type=float, default=0.1)
 general_parser.add_argument("--unique_dropout", type=float, default=0.0)
-general_parser.add_argument("--is_aligned_vocabulary", action="store_true")
+general_parser.add_argument("--shared_vocabulary", action="store_true",
+                            help="If set, methods assume the model and generator use same vocabulary and do not need "
+                                 "conversion between representations")
 
 # TODO: this is only required for QUACKIE experiments, does not need to be in general parser
 general_parser.add_argument("--aggregation_strategy", choices=["subword_sum", "subword_max", "sentence"],

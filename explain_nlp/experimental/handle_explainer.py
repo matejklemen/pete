@@ -1,12 +1,12 @@
 from explain_nlp.experimental.core import MethodType
-from explain_nlp.methods.dependent_ime_mlm import DependentIMEMaskedLMExplainer
-from explain_nlp.methods.hybrid import HybridIMEExplainer
 from explain_nlp.methods.ime import IMEExplainer
-from explain_nlp.methods.ime_mlm import IMEMaskedLMExplainer
-from explain_nlp.methods.lime import LIMEExplainer, LIMEMaskedLMExplainer
+from explain_nlp.methods.ime_lm import IMEInternalLMExplainer, IMEExternalLMExplainer, IMEHybridExplainer
+from explain_nlp.methods.lime import LIMEExplainer
+from explain_nlp.methods.lime_lm import LIMEMaskedLMExplainer
 
 
 def load_explainer(**kwargs):
+    """ An extremely free-for-all method that loads the desired explanation method based on experiment arguments """
     method_class, method = kwargs["method_class"], kwargs["method"]
     model = kwargs["model"]
     return_model_scores = kwargs["return_model_scores"]
@@ -20,42 +20,49 @@ def load_explainer(**kwargs):
 
         if method == "ime":
             method_type = MethodType.IME
-            method = IMEExplainer(sample_data=kwargs["used_sample_data"], model=model,
-                                  return_scores=return_model_scores, return_num_samples=True,
-                                  return_samples=return_generated_samples, return_variance=True,
-                                  **sample_constraints)
+            method = IMEExplainer(
+                sample_data=kwargs["used_sample_data"], model=model, return_scores=return_model_scores,
+                return_num_samples=True, return_samples=return_generated_samples,
+                **sample_constraints
+            )
         elif method == "ime_mlm":
             method_type = MethodType.INDEPENDENT_IME_MLM
-            method = IMEMaskedLMExplainer(model=model, generator=kwargs["generator"],
-                                          num_generated_samples=kwargs["num_generated_samples"],
-                                          return_scores=return_model_scores, return_num_samples=True,
-                                          return_samples=return_generated_samples, return_variance=True,
-                                          **sample_constraints)
+            method = IMEExternalLMExplainer(
+                model=model, generator=kwargs["generator"], num_generated_samples=kwargs["num_generated_samples"],
+                return_scores=return_model_scores, return_num_samples=True, return_samples=return_generated_samples,
+                **sample_constraints
+            )
         elif method == "ime_dependent_mlm":
             method_type = MethodType.DEPENDENT_IME_MLM
-            method = DependentIMEMaskedLMExplainer(model=model, generator=kwargs["generator"],
-                                                   return_scores=return_model_scores, return_num_samples=True,
-                                                   return_samples=return_generated_samples, return_variance=True,
-                                                   **sample_constraints)
+            method = IMEInternalLMExplainer(
+                model=model, generator=kwargs["generator"], return_scores=return_model_scores, return_num_samples=True,
+                return_samples=return_generated_samples, shared_vocabulary=kwargs["shared_vocabulary"],
+                **sample_constraints
+            )
         elif method == "ime_hybrid":
             method_type = MethodType.DEPENDENT_IME_MLM
-            method = HybridIMEExplainer(model=model, generator=kwargs["generator"],
-                                        gen_sample_data=kwargs["used_sample_data"], data_weights=kwargs["data_weights"],
-                                        return_scores=return_model_scores, return_num_samples=True,
-                                        return_samples=return_generated_samples, return_variance=True,
-                                        **sample_constraints)
+            method = IMEHybridExplainer(
+                model=model, generator=kwargs["generator"], sample_data_generator=kwargs["used_sample_data"],
+                data_weights=kwargs["data_weights"], return_scores=return_model_scores, return_num_samples=True,
+                return_samples=return_generated_samples, shared_vocabulary=kwargs["shared_vocabulary"],
+                **sample_constraints
+            )
         else:
             raise NotImplementedError(f"Unsupported method: '{method}'")
     else:
         if method == "lime":
             method_type = MethodType.LIME
-            method = LIMEExplainer(model=model, kernel_width=kwargs["kernel_width"],
-                                   return_samples=return_generated_samples, return_scores=return_model_scores)
+            method = LIMEExplainer(
+                model=model, kernel_width=kwargs["kernel_width"], return_samples=return_generated_samples,
+                return_scores=return_model_scores
+            )
         elif method == "lime_lm":
             method_type = MethodType.LIME_LM
-            method = LIMEMaskedLMExplainer(model=model, generator=kwargs["generator"], kernel_width=kwargs["kernel_width"],
-                                           return_samples=return_generated_samples, return_scores=return_model_scores,
-                                           is_aligned_vocabulary=kwargs["is_aligned_vocabulary"])
+            method = LIMEMaskedLMExplainer(
+                model=model, generator=kwargs["generator"], kernel_width=kwargs["kernel_width"],
+                return_samples=return_generated_samples, return_scores=return_model_scores,
+                shared_vocabulary=kwargs["shared_vocabulary"]
+            )
         else:
             raise NotImplementedError(f"Unsupported method: '{method}'")
 
