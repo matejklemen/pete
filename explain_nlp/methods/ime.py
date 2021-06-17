@@ -163,7 +163,7 @@ class IMEExplainer:
             eff_feature_groups = feature_groups
             idx_superfeature = idx_feature
 
-        est_instance_features = eff_feature_groups[idx_feature]
+        est_instance_features = eff_feature_groups[idx_superfeature]
 
         # Permuted POSITIONS of (super)features inside `eff_feature_groups`
         indices = sample_permutations(upper=len(eff_feature_groups),

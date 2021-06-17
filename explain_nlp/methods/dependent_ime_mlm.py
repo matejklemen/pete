@@ -100,9 +100,9 @@ class DependentIMEMaskedLMExplainer(IMEExplainer):
             randomly_selected_label = torch.stack((randomly_selected_label, randomly_selected_label)).T.flatten()
             randomly_selected_label = [self.generator.control_labels_str[i] for i in randomly_selected_label]
         else:
-            randomly_selected_label = [None] * num_samples
+            randomly_selected_label = [None] * (2 * num_samples)
 
-        est_instance_features = eff_feature_groups[idx_feature]
+        est_instance_features = eff_feature_groups[idx_superfeature]
 
         # Permuted POSITIONS of (super)features inside `eff_feature_groups`
         indices = sample_permutations(upper=len(eff_feature_groups),
