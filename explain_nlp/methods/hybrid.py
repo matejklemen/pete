@@ -19,33 +19,30 @@ def create_uniform_weights(input_ids, special_tokens_mask):
 
 
 class HybridIMEExplainer(IMEExplainer):
-    def __init__(self, gen_sample_data: torch.Tensor, model: InterpretableModel, generator: SampleGenerator,
+    def __init__(self, sample_data_generator: torch.Tensor, model: InterpretableModel, generator: SampleGenerator,
                  data_weights: Optional[torch.Tensor] = None,
                  confidence_interval: Optional[float] = None, max_abs_error: Optional[float] = None,
-                 return_variance: Optional[bool] = False, return_num_samples: Optional[bool] = False,
+                 return_num_samples: Optional[bool] = False,
                  return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 criterion: Optional[str] = "squared_error"):
-        super().__init__(sample_data=gen_sample_data, model=model, data_weights=data_weights,
+                 criterion: Optional[str] = "squared_error", shared_vocabulary: Optional[bool] = False):
+        super().__init__(sample_data=sample_data_generator, model=model, data_weights=data_weights,
                          confidence_interval=confidence_interval, max_abs_error=max_abs_error,
-                         return_variance=return_variance, return_num_samples=return_num_samples,
-                         return_samples=return_samples, return_scores=return_scores,
-                         criterion=criterion)
+                         return_num_samples=return_num_samples, return_samples=return_samples,
+                         return_scores=return_scores, criterion=criterion, shared_vocabulary=shared_vocabulary)
         self.generator = generator
         self.feature_varies = None
 
-        self.update_sample_data(gen_sample_data, data_weights=data_weights)
+        self.update_sample_data(sample_data_generator, data_weights=data_weights)
 
     def update_sample_data(self, new_data: torch.Tensor, data_weights: Optional[torch.FloatTensor] = None):
-        self.sample_data = new_data
-        self.weights = data_weights
-        self.num_features = new_data.shape[1]
-
+        super().update_sample_data(new_data=new_data, data_weights=data_weights)
         if self.weights is None:
             self.weights = torch.ones_like(self.sample_data, dtype=torch.float32)
 
         self.feature_varies = torch.gt(torch.sum(self.weights, dim=0), (0.0 + 1e-6))
 
-    def get_generator_mapping(self, input_ids, perturbable_mask, **modeling_kwargs):
+    def model_to_generator(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
+                           **modeling_kwargs):
         instance_tokens = self.model.from_internal(input_ids, return_tokens=True, **modeling_kwargs)
         try:
             instance_generator = self.generator.to_internal(instance_tokens, is_split_into_units=True,
@@ -66,26 +63,37 @@ class HybridIMEExplainer(IMEExplainer):
                 existing_subunits.append(idx_subunit)
                 model2generator[idx_word] = existing_subunits
 
-        return model2generator
+        return {
+            "generator_instance": instance_generator,
+            "mapping": model2generator
+        }
 
     def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor,
                                     num_samples: int, perturbable_mask: torch.Tensor,
                                     feature_groups: Optional[Union[torch.Tensor, List[List[int]]]] = None,
-                                    **modeling_kwargs):
+                                    **generation_kwargs):
+        # Note: instance is currently supposed to be of shape [1, num_features]
         num_features = int(len(instance[0]))
 
         if feature_groups is None:
-            eff_feature_groups = torch.arange(num_features)[perturbable_mask[0]]
-            idx_superfeature = eff_feature_groups.tolist().index(idx_feature)
+            eff_feature_groups = torch.arange(num_features)[perturbable_mask[0]].tolist()
+            idx_superfeature = eff_feature_groups.index(idx_feature)
+            eff_feature_groups = [[_i] for _i in eff_feature_groups]
         else:
             eff_feature_groups = feature_groups
             idx_superfeature = idx_feature
 
-        # TODO: get generator instance provided as argument (in place of `instance`)
-        instance_tokens = self.model.from_internal(instance, return_tokens=True, **modeling_kwargs)
-        instance_generator = self.generator.to_internal(instance_tokens, is_split_into_units=True)
-        num_gen_features = instance_generator["input_ids"].shape[1]
-        est_instance_features = eff_feature_groups[idx_feature]
+        if hasattr(self.generator, "label_weights"):
+            randomly_selected_label = torch.multinomial(self.generator.label_weights, num_samples=num_samples,
+                                                        replacement=True)
+            # A pair belonging to same sample is assigned the same label
+            randomly_selected_label = torch.stack((randomly_selected_label, randomly_selected_label)).T.flatten()
+            randomly_selected_label = [self.generator.control_labels_str[i] for i in randomly_selected_label]
+        else:
+            randomly_selected_label = [None] * (2 * num_samples)
+
+        est_instance_features = eff_feature_groups[idx_superfeature]
+        print([self.generator.tokenizer.decode(curr_id) for curr_id in instance[0, est_instance_features]])
 
         # Permuted POSITIONS of (super)features inside `eff_feature_groups`
         indices = sample_permutations(upper=len(eff_feature_groups),
@@ -93,25 +101,19 @@ class HybridIMEExplainer(IMEExplainer):
                                       num_permutations=num_samples)
         feature_pos = torch.nonzero(indices == idx_superfeature, as_tuple=False)
 
-        data_weights = self.weights[:, idx_feature]
+        data_weights = self.weights[:, est_instance_features]
         if data_weights.dim() > 1:
             # weight = 1 if at least one token is non-special
             data_weights = torch.gt(torch.sum(data_weights, dim=1), 0 + 1e-6).float()
 
-        if torch.any(self.feature_varies[idx_feature]):
+        if torch.any(self.feature_varies[est_instance_features]):
             rand_idx = torch.multinomial(data_weights, num_samples=num_samples, replacement=True).unsqueeze(1)
-            randomly_selected_val = self.sample_data[rand_idx, idx_feature]
+            randomly_selected_val = self.sample_data[rand_idx, est_instance_features]
         else:
-            randomly_selected_val = instance[0, idx_feature].repeat((num_samples, 1))
+            randomly_selected_val = instance[0, est_instance_features].repeat((num_samples, 1))
 
-        if hasattr(self.generator, "label_weights"):
-            randomly_selected_label = torch.multinomial(self.generator.label_weights, num_samples=num_samples, replacement=True)
-            randomly_selected_label = [self.generator.control_labels_str[i] for i in randomly_selected_label]
-        else:
-            randomly_selected_label = [None] * num_samples
-
-        is_masked = torch.zeros((2 * num_samples, num_gen_features), dtype=torch.bool)
-        samples = instance_generator["input_ids"].repeat((2 * num_samples, 1))
+        is_masked = torch.zeros((2 * num_samples, num_features), dtype=torch.bool)
+        samples = instance.repeat((2 * num_samples, 1))
         for idx_sample in range(num_samples):
             curr_feature_pos = int(feature_pos[idx_sample, 1])
             changed_features = self.indexer(eff_feature_groups, indices[idx_sample, curr_feature_pos + 1:])
@@ -124,12 +126,12 @@ class HybridIMEExplainer(IMEExplainer):
         all_examples = self.generator.generate_masked_samples(samples,
                                                               generation_mask=is_masked,
                                                               control_labels=randomly_selected_label,
-                                                              **instance_generator["aux_data"])
+                                                              **generation_kwargs)
 
-        text_examples = self.generator.from_internal(all_examples, **instance_generator["aux_data"])
+        text_examples = self.generator.from_internal(all_examples, **generation_kwargs)
         model_examples = self.model.to_internal(text_examples)
 
-        scores = self.model.score(model_examples["input_ids"], **modeling_kwargs)
+        scores = self.model.score(model_examples["input_ids"], **model_examples["aux_data"])
         scores_with = scores[::2]
         scores_without = scores[1::2]
         assert scores_with.shape[0] == scores_without.shape[0]
@@ -167,17 +169,16 @@ if __name__ == "__main__":
                                          max_seq_len=41,
                                          device="cpu",
                                          strategy="top_p",
-                                         top_p=0.95,
+                                         top_p=0.01,
                                          monte_carlo_dropout=False)
 
     df_data = load_nli("/home/matej/Documents/data/snli/snli_1.0_dev.txt")
-    data = generator.to_internal([(s1, s2) for s1, s2 in df_data[["sentence1", "sentence2"]].values])
+    data = generator.to_internal(list(zip(df_data["sentence1"].values, df_data["sentence2"].values)))
     weights = create_uniform_weights(data["input_ids"], torch.logical_not(data["perturbable_mask"]))
 
     explainer = HybridIMEExplainer(model=model, generator=generator,
-                                   gen_sample_data=data["input_ids"],
+                                   sample_data_generator=data["input_ids"],
                                    data_weights=weights,
-                                   return_variance=True,
                                    return_num_samples=True,
                                    return_samples=True,
                                    return_scores=True)
