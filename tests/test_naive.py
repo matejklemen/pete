@@ -1,9 +1,7 @@
 import unittest
 
-import numpy as np
 import torch
 
-from explain_nlp.modeling.modeling_base import DummySentiment
 from explain_nlp.methods.naive import ExactShapleyExplainer
 
 
@@ -57,18 +55,3 @@ class TestExactShapleyExplainer(unittest.TestCase):
 
         second_importance = self.explainer.estimate_feature_importance(1, instance)[label]
         self.assertEqual(float(second_importance), -0.125)
-
-    def test_sentiment(self):
-        # Same example as in examples/toy/sentiment.py, but we can only deterministically test exact Shapley values
-        model = DummySentiment()
-        labels = {"neg": 0, "pos": 1}
-        feature_values = [
-            [model.tok2id[t] for t in ["allegedly", "achingly", "amazingly", "astonishingly", "not", "very",
-                                       "surprisingly"]],
-            [model.tok2id[t] for t in ["good", "bad"]]
-        ]
-        query_sequence = "very good"
-
-        exact_explainer = ExactShapleyExplainer(model_func=model.score, feature_values=feature_values)
-        exact_res = exact_explainer.explain(model.to_internal([query_sequence])["input_ids"], label=labels["pos"])
-        np.testing.assert_array_almost_equal(exact_res["importance"].tolist(), [0.16786, 0.33214], decimal=5)
