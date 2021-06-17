@@ -649,7 +649,7 @@ class SimplifiedBertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
 
 class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
     def __init__(self, tokenizer_name, model_name, control_labels: List[str], max_seq_len,
-                 batch_size=8, device="cuda", strategy="greedy", top_p=0.9, top_k=5, threshold=0.1,
+                 batch_size=8, device="cuda", strategy="top_p", top_p=0.9, top_k=5, threshold=0.1,
                  label_weights: Optional[List] = None, unique_dropout: Optional[float] = 0.0):
         super().__init__(tokenizer_name=tokenizer_name, model_name=model_name,
                          batch_size=batch_size, max_seq_len=max_seq_len, device=device,
@@ -746,7 +746,10 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
                                 generation_mask: torch.Tensor,
                                 **generation_kwargs):
         num_samples = generation_mask.shape[0]
-        eff_input_ids = extend_tensor(input_ids).repeat((num_samples, 1))
+
+        eff_input_ids = extend_tensor(input_ids)
+        if eff_input_ids.shape[0] != num_samples:
+            eff_input_ids = eff_input_ids.repeat((num_samples, 1))
         eff_generation_mask = extend_tensor(generation_mask)
 
         # Note: currently assuming generation additional data is same for all samples
