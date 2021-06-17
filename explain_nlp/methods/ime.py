@@ -16,28 +16,34 @@ class IMEExplainer:
                  data_weights: Optional[torch.FloatTensor] = None,
                  confidence_interval: Optional[float] = None, max_abs_error: Optional[float] = None,
                  return_num_samples: Optional[bool] = False, return_samples: Optional[bool] = False,
-                 return_scores: Optional[bool] = False, criterion: Optional[str] = "squared_error"):
+                 return_scores: Optional[bool] = False, criterion: Optional[str] = "squared_error",
+                 shared_vocabulary: Optional[bool] = False):
         """ Explain instances using IME.
 
         Args:
-        -----
-        sample_data: torch.Tensor
-            Data, used to create perturbations of instances. Must have same number of features as the instance.
-        model: InterpretableModel
-            Model to be interpreted at instance level.
-        data_weights: torch.Tensor (optional)
-            Weights used for sampling data, from which masking values are taken. Must be of same shape as `sample_data`.
-        confidence_interval: float (optional)
-            Constraint on how accurately the computed importances should be computed: "approximately
-            `confidence_interval` * 100% of importances should fall within `max_abs_error` of the true importance."
-        max_abs_error: float
-            Constraint on how accurately the computed importances should be computed (see `confidence_interval`).
-        return_num_samples: bool
-            Return number of taken samples to estimate feature importances.
-        return_samples: bool
-            Return the created perturbations used to estimate feature importances.
-        return_scores: bool
-            Return the scores (e.g. probabilities) returned by model for perturbed samples.
+            sample_data:
+                Data, used to create perturbations of instances. Must have same number of features as the instance.
+            model:
+                Model to be interpreted at instance level.
+            data_weights:
+                Weights used for sampling data, from which masking values are taken. Must be of same shape as `sample_data`.
+            confidence_interval:
+                Constraint on how accurately the computed importances should be computed: "approximately
+                `confidence_interval` * 100% of importances should fall within `max_abs_error` of the true importance."
+            max_abs_error:
+                Constraint on how accurately the computed importances should be computed (see `confidence_interval`).
+            return_num_samples:
+                Return number of taken samples to estimate feature importances.
+            return_samples:
+                Return the created perturbations used to estimate feature importances.
+            return_scores:
+                Return the scores (e.g. probabilities) returned by model for perturbed samples.
+            criterion:
+                Which criterion to use when allocating the samples after initial variance estimation. Can be either
+                "absolute_error" or "squared_error".
+            shared_vocabulary:
+                Whether model and generator use the same vocabulary: setting this to True can prevent some unnecessary
+                breaking of words.
         """
         self.model = model
         self.sample_data = sample_data
@@ -53,6 +59,7 @@ class IMEExplainer:
 
         self.error_constraint_given = self.confidence_interval is not None and self.max_abs_error is not None
         self.indexer = list_indexer
+        self.shared_vocabulary = shared_vocabulary
 
         # TODO: move to functions
         if criterion == "absolute_error":
@@ -259,8 +266,11 @@ class IMEExplainer:
         eff_perturbable_mask = perturbable_mask if perturbable_mask is not None \
             else torch.ones((1, num_features), dtype=torch.bool)
 
-        # In IME, generator instance is same as model instance, but in other methods, it might not be
-        conversion_data = self.model_to_generator(instance, eff_perturbable_mask, **modeling_kwargs)
+        # In IME and IME+LM where model and generator use same vocabulary, no conversion of data is needed
+        if self.shared_vocabulary:
+            conversion_data = IMEExplainer.model_to_generator(self, instance, eff_perturbable_mask, **modeling_kwargs)
+        else:
+            conversion_data = self.model_to_generator(instance, eff_perturbable_mask, **modeling_kwargs)
         generator_instance = conversion_data["generator_instance"]
 
         (new_custom_features, feature_groups), used_inds = handle_custom_features(
