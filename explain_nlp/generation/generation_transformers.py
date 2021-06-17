@@ -669,12 +669,17 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
 
     @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
-                 num_samples: Optional[int], **aux_data):
+                 num_samples: Optional[int], **generation_kwargs):
+        # Note: currently assuming generation additional data is same for all samples
         # Make room for control label at start of sequence (at pos. 1)
         extended_input_ids = extend_tensor(input_ids).repeat((num_samples, 1))
         extended_pert_mask = extend_tensor(perturbable_mask)
-        extended_token_type_ids = extend_tensor(aux_data["token_type_ids"]).repeat((self.batch_size, 1)).to(self.device)
-        extended_attention_mask = extend_tensor(aux_data["attention_mask"]).repeat((self.batch_size, 1)).to(self.device)
+        eff_aux_data = {k: generation_kwargs[k].repeat((self.batch_size, 1)).to(self.device)
+                        for k in ["token_type_ids", "attention_mask"]}
+        eff_aux_data = {k: extend_tensor(v) for k, v in eff_aux_data.items()}
+
+        # Control labels are attendable
+        eff_aux_data["attention_mask"][:, 1] = 1
 
         # Fairly allocate generated samples according to label distribution
         selected_control_labels = []
@@ -691,7 +696,6 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
 
         selected_control_labels = torch.tensor(selected_control_labels)
         extended_input_ids[:, 1] = selected_control_labels
-        extended_attention_mask[:, 1] = 1
         perturbable_inds = torch.arange(extended_input_ids.shape[1])[extended_pert_mask[0]]
 
         if self.strategy == "greedy":
@@ -707,26 +711,28 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
             s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
             curr_input_ids = extended_input_ids[s_b: e_b]  # view
             curr_gen_order = generation_order[s_b: e_b]
+            orig_tokens = curr_input_ids.clone()
 
             curr_batch_size = curr_input_ids.shape[0]
             batch_indexer = torch.arange(curr_batch_size)
 
             for i in range(curr_gen_order.shape[1]):
                 curr_indices = curr_gen_order[:, i]
-                curr_input_ids[batch_indexer, curr_indices] = self.mask_token_id
+                curr_input_ids[batch_indexer, curr_indices] = self.tokenizer.mask_token_id
 
-                res = self.generator(input_ids=curr_input_ids.to(self.device),
-                                     token_type_ids=extended_token_type_ids[:curr_batch_size],
-                                     attention_mask=extended_attention_mask[:curr_batch_size])
+                curr_aux_data = {k: v[: curr_batch_size] for k, v in eff_aux_data.items()}
 
-                logits = res["logits"]  # [batch_size, max_seq_len, |V|]
+                logits = self.generator(input_ids=curr_input_ids.to(self.device),
+                                        **curr_aux_data)["logits"]
 
-                curr_masked_logits = logits[batch_indexer, curr_indices, :]
-                curr_masked_logits = self.filtering_strategy(curr_masked_logits)
+                curr_logits = logits[batch_indexer, curr_indices, :]
+                for curr_filter in self.filters:
+                    curr_logits = curr_filter(curr_logits, orig_values=orig_tokens[batch_indexer, curr_indices])
 
-                curr_probas = torch.softmax(curr_masked_logits, dim=-1)
-                preds = torch.multinomial(curr_probas, num_samples=1)
-                curr_input_ids[batch_indexer, curr_indices] = preds[:, 0].cpu()
+                probas = torch.softmax(curr_logits, dim=-1)
+                preds = torch.multinomial(probas, num_samples=1)[:, 0].cpu()
+
+                curr_input_ids[batch_indexer, curr_indices] = preds
 
         valid_tokens = torch.ones_like(extended_pert_mask)
         valid_tokens[0, 1] = False
