@@ -9,8 +9,8 @@ def load_explainer(**kwargs):
     """ An extremely free-for-all method that loads the desired explanation method based on experiment arguments """
     method_class, method = kwargs["method_class"], kwargs["method"]
     model = kwargs["model"]
-    return_model_scores = kwargs["return_model_scores"]
-    return_generated_samples = kwargs["return_generated_samples"]
+    return_model_scores = kwargs.get("return_model_scores", False)
+    return_generated_samples = kwargs.get("return_generated_samples", False)
 
     if method_class == "ime":
         sample_constraints = {}
