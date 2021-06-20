@@ -12,6 +12,7 @@ general_parser.add_argument("--save_every_n_examples", type=int, default=1,
                             help="Save experiment data every N examples in order to avoid losing data on longer computations")
 general_parser.add_argument("--start_from", type=int, default=None, help="From which example onwards to do computation")
 general_parser.add_argument("--until", type=int, default=None, help="Until which example to do computation")
+general_parser.add_argument("--random_seed", type=int, default=None)
 general_parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU")
 
 general_parser.add_argument("--custom_features", type=str, default=None,
@@ -24,8 +25,7 @@ general_parser.add_argument("--test_path", type=str,
 general_parser.add_argument("--model_dir", type=str,
                             default="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased")
 general_parser.add_argument("--model_max_seq_len", type=int, default=41)
-general_parser.add_argument("--model_max_words", type=int, default=39)
-general_parser.add_argument("--model_batch_size", type=int, default=2)
+general_parser.add_argument("--model_batch_size", type=int, default=8)
 
 general_parser.add_argument("--generator_type", type=str, default="bert_simplified_mlm",
                             choices=["bert_mlm", "roberta_mlm",
