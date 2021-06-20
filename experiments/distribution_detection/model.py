@@ -1,4 +1,8 @@
+import json
+import logging
 import os
+import sys
+
 import numpy as np
 from argparse import ArgumentParser
 
@@ -11,7 +15,7 @@ parser = ArgumentParser()
 parser.add_argument("--dataset", type=str, default="snli",
                     choices=["snli"])
 parser.add_argument("--mini_experiment_dir", type=str, default="debug/control")
-parser.add_argument("--discriminator_model", type=str, default="mlp",
+parser.add_argument("--discriminator_model", type=str, default="random_forest",
                     choices=["logistic_regression", "random_forest", "mlp"])
 
 parser.add_argument("--random_seed", type=int, default=None)
@@ -24,6 +28,17 @@ if __name__ == "__main__":
 
     if args.random_seed is not None:
         np.random.seed(args.random_seed)
+
+    # Set up logging to file and stdout
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    for curr_handler in [logging.StreamHandler(sys.stdout),
+                         logging.FileHandler(os.path.join(args.mini_experiment_dir, "model.log"))]:
+        curr_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)-5.5s]  %(message)s"))
+        logger.addHandler(curr_handler)
+
+    with open(os.path.join(args.mini_experiment_dir, "model_config.json"), "w", encoding="utf-8") as f:
+        json.dump(vars(args), fp=f, indent=4)
 
     sample_features = np.load(os.path.join(args.mini_experiment_dir, "sample.npy"))
     other_features = np.load(os.path.join(args.mini_experiment_dir, "other.npy"))
@@ -41,10 +56,10 @@ if __name__ == "__main__":
     dev_X, dev_y = features[dev_indices], labels[dev_indices]
     test_X, test_y = features[test_indices], labels[test_indices]
 
-    print(f"Label distribution:"
-          f"\ttrain: {np.unique(train_y, return_counts=True)}\n"
-          f"\tdev: {np.unique(dev_y, return_counts=True)}\n"
-          f"\ttest: {np.unique(test_y, return_counts=True)}")
+    logging.info(f"Label distribution:"
+                 f"\ttrain: {np.unique(train_y, return_counts=True)}\n"
+                 f"\tdev: {np.unique(dev_y, return_counts=True)}\n"
+                 f"\ttest: {np.unique(test_y, return_counts=True)}")
 
     fixed_params = {"random_state": args.random_seed}
     if args.discriminator_model == "logistic_regression":
@@ -93,11 +108,12 @@ if __name__ == "__main__":
             best_params = curr_params
             best_dev_acc = dev_acc
 
-        print(f"{curr_params} -> dev_accuracy={dev_acc:.4f}")
+        logging.info(f"{curr_params} -> dev_accuracy={dev_acc:.4f}")
 
-    print(f"Best dev settings: {best_params}, dev_accuracy={best_dev_acc:.4f}")
+    logging.info(f"Best dev settings: {best_params}, dev_accuracy={best_dev_acc:.4f}")
 
     model = model_class(**fixed_params, **best_params)
     model.fit(train_X, train_y)
     test_preds = model.predict(test_X)
-    dev_acc = accuracy_score(y_true=test_y, y_pred=test_preds)
+    test_acc = accuracy_score(y_true=test_y, y_pred=test_preds)
+    logging.info(f"Test accuracy: {test_acc:.4f}")
