@@ -7,12 +7,12 @@ import logging
 parser = ArgumentParser()
 parser.add_argument("--dataset", type=str, default="snli",
                     choices=["snli"])
+parser.add_argument("--data_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_test.txt")
 parser.add_argument("--experiment_dir", type=str, default="debug")
 parser.add_argument("--random_seed", type=int, default=None)
 
 if __name__ == "__main__":
     args = parser.parse_args()
-    data_path = "/home/matej/Documents/data/snli/snli_1.0_test.txt"
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
 
@@ -21,7 +21,7 @@ if __name__ == "__main__":
         logging.info(f"\t- {attr}={val}")
 
     if args.dataset == "snli":
-        df = load_nli(data_path)
+        df = load_nli(args.data_path)
     else:
         raise NotImplementedError(f"'{args.dataset}'")
 
