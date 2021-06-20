@@ -8,9 +8,9 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from explain_nlp.experimental.core import MethodType
 from explain_nlp.experimental.data import TransformerSeqPairDataset, LABEL_TO_IDX
 from explain_nlp.experimental.handle_explainer import load_explainer
+from explain_nlp.experimental.handle_generator import load_generator
 from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
 
 control_parser = subparsers.add_parser("control", parents=[general_parser])
@@ -84,13 +84,13 @@ if __name__ == "__main__":
         for curr_batch in tqdm(DataLoader(control_dataset, batch_size=args.model_batch_size)):
             other_embeddings.append(bert_embeddings(model, **curr_batch).cpu())
     else:
-        #   TODO: load generator
-        #   ...
+        generator, gen_description = load_generator(args,
+                                                    clm_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"])
 
         #   TODO: load explainer (all args..., set them to reasonable defaults)
         method, method_type = load_explainer(
-            method_class=args.method_class, method=args.method, model=model,
-            return_generated_samples=True, kernel_width=1.0
+            method_class=args.method_class, method=args.method, model=model, generator=generator,
+            return_generated_samples=True, kernel_width=1.0, shared_vocabulary=True
         )
 
         # These hold encoded perturbed samples, which will be embedded with model and used in distribution detection
