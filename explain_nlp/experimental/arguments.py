@@ -64,7 +64,7 @@ ime_parser = subparsers.add_parser("ime", parents=[general_parser])
 ime_parser.add_argument("--experiment_type", type=str, default="required_samples",
                         choices=["accurate_importances", "required_samples"])
 ime_parser.add_argument("--method", type=str, default="ime",
-                        choices=["ime", "ime_mlm", "ime_dependent_mlm", "ime_hybrid"])
+                        choices=["ime", "ime_elm", "ime_ilm", "ime_hybrid"])
 ime_parser.add_argument("--min_samples_per_feature", type=int, default=10,
                         help="Minimum number of samples that get created for each feature for initial variance estimation")
 ime_parser.add_argument("--confidence_interval", type=float, default=0.95)

@@ -25,14 +25,14 @@ def load_explainer(**kwargs):
                 return_num_samples=True, return_samples=return_generated_samples,
                 **sample_constraints
             )
-        elif method == "ime_mlm":
+        elif method == "ime_elm":
             method_type = MethodType.INDEPENDENT_IME_MLM
             method = IMEExternalLMExplainer(
                 model=model, generator=kwargs["generator"], num_generated_samples=kwargs["num_generated_samples"],
                 return_scores=return_model_scores, return_num_samples=True, return_samples=return_generated_samples,
                 **sample_constraints
             )
-        elif method == "ime_dependent_mlm":
+        elif method == "ime_ilm":
             method_type = MethodType.DEPENDENT_IME_MLM
             method = IMEInternalLMExplainer(
                 model=model, generator=kwargs["generator"], return_scores=return_model_scores, return_num_samples=True,
