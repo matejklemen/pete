@@ -140,9 +140,16 @@ if __name__ == "__main__":
                     torch.arange(encoded_example["input_ids"].shape[1])[encoded_example["perturbable_mask"][0]]
                 selected_feature = perturbable_indices[torch.randint(perturbable_indices.shape[0], ())].item()
 
-                res = method.explain_text(tup_input_pair, label=predicted_label,
-                                          min_samples_per_feature=2)
-                samples = res["samples"][selected_feature]
+                # NOTE: assuming aligned vocabulary
+                # TODO: double check for higher units
+                res = method.estimate_feature_importance(idx_feature=selected_feature,
+                                                         instance=encoded_example["input_ids"],
+                                                         num_samples=2,
+                                                         perturbable_mask=encoded_example["perturbable_mask"],
+                                                         feature_groups=None,
+                                                         **encoded_example["aux_data"])
+
+                samples = res["samples"]
 
             # sample[0] is by convention the original sample in LIME
             idx_selected = np.random.randint(1 if args.method_class == "lime" else 0,
