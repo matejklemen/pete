@@ -13,10 +13,11 @@ python3 run_mlm.py \
 --do_eval \
 --logging_strategy="steps" \
 --evaluation_strategy="steps" \
+--save_strategy="steps" \
 --logging_steps=1000 \
+--save_steps=1000 \
+--save_total_limit=7 \
 --per_device_train_batch_size=32 \
 --num_train_epochs=20 \
---save_strategy="steps" \
---save_total_limit=7 \
 --report_to none
 
