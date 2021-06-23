@@ -24,8 +24,8 @@ parser.add_argument("--model_save_dir", type=str, default="./imyspp_model",
 parser.add_argument("--pretrained_name_or_path", type=str, default="EMBEDDIA/crosloengual-bert",
                     help="Model to use as base for fine-tuning")
 parser.add_argument("--learning_rate", type=float, default=2e-5)
-# 95th percentile: 41, max: 81
-parser.add_argument("--max_seq_len", type=int, default=41)
+# 95th percentile: 52, 99th percentile: 58
+parser.add_argument("--max_seq_len", type=int, default=58)
 parser.add_argument("--batch_size", type=int, default=8)
 parser.add_argument("--max_epochs", type=int, default=2)
 parser.add_argument("--validate_every_n_examples", type=int, default=5_000)
@@ -62,15 +62,15 @@ if __name__ == "__main__":
                                                           num_labels=num_labels).to(DEVICE)
 
     logging.info("Constructing datasets")
-    train_set = TransformerSeqDataset(sequences=train_df["preprocessed_tweet"].values.tolist(),
-                                      labels=train_df["is_hate_speech"].values.tolist(),
-                                      tokenizer=tokenizer, max_seq_len=args.max_seq_len)
-    dev_set = TransformerSeqDataset(sequences=dev_df["preprocessed_tweet"].values.tolist(),
-                                    labels=dev_df["is_hate_speech"].values.tolist(),
-                                    tokenizer=tokenizer, max_seq_len=args.max_seq_len)
-    test_set = TransformerSeqDataset(sequences=test_df["preprocessed_tweet"].values.tolist(),
-                                     labels=test_df["is_hate_speech"].values.tolist(),
-                                     tokenizer=tokenizer, max_seq_len=args.max_seq_len)
+    train_set = TransformerSeqDataset.build(sequences=train_df["besedilo"].tolist(),
+                                            labels=train_df["vrsta"].tolist(),
+                                            tokenizer=tokenizer, max_seq_len=args.max_seq_len)
+    dev_set = TransformerSeqDataset.build(sequences=dev_df["besedilo"].tolist(),
+                                          labels=dev_df["vrsta"].tolist(),
+                                          tokenizer=tokenizer, max_seq_len=args.max_seq_len)
+    test_set = TransformerSeqDataset.build(sequences=test_df["besedilo"].tolist(),
+                                           labels=test_df["vrsta"].tolist(),
+                                           tokenizer=tokenizer, max_seq_len=args.max_seq_len)
 
     # Copy over tokenizer so that model and tokenizer can later be loaded using same handle
     tokenizer.save_pretrained(args.model_save_dir)

@@ -110,7 +110,7 @@ def load_24sata(file_path, sample_size=None):
 
 
 def load_imsypp(file_path, sample_size=None):
-    return pd.read_csv(file_path, nrows=sample_size, quoting=1)
+    return pd.read_csv(file_path, nrows=sample_size)
 
 
 def load_imdb(file_path, sample_size=None):
