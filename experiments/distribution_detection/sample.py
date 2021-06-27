@@ -1,6 +1,6 @@
 import os
 
-from explain_nlp.experimental.data import load_nli
+from explain_nlp.experimental.data import load_dataset
 from argparse import ArgumentParser
 import logging
 
@@ -20,10 +20,7 @@ if __name__ == "__main__":
     for attr, val in vars(args).items():
         logging.info(f"\t- {attr}={val}")
 
-    if args.dataset == "snli":
-        df = load_nli(args.data_path)
-    else:
-        raise NotImplementedError(f"'{args.dataset}'")
+    df = load_dataset(args.dataset, args.data_path)
 
     num_samples = df.shape[0]
     df_shuffled = df.sample(frac=1.0, random_state=args.random_seed).reset_index(drop=True)

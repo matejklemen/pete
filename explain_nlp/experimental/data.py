@@ -1,4 +1,5 @@
 from typing import Iterable
+from warnings import warn
 
 import pandas as pd
 import torch
@@ -42,6 +43,28 @@ class TransformerSeqPairDataset(Dataset):
         dataset_dict["labels"] = torch.tensor(labels)
         return TransformerSeqPairDataset(**dataset_dict)
 
+    @staticmethod
+    def build_dataset(dataset_name, df, tokenizer, max_seq_len: int = 41):
+        """ Build dataset using 'standard' column names in raw data. """
+        if dataset_name in ["snli", "mnli", "xnli"]:
+            first = df["sentence1"].tolist()
+            second = df["sentence2"].tolist()
+            labels = df["gold_label"].apply(lambda lbl: LABEL_TO_IDX["snli"][lbl]).tolist()
+        elif dataset_name == "qqp":
+            first = df["question1"].tolist()
+            second = df["question2"].tolist()
+            labels = df["is_duplicate"].tolist() if "is_duplicate" in df.columns else None
+        else:
+            raise NotImplementedError(f"Dataset '{dataset_name}' does not have a fixed preset implemented. Please use "
+                                      f"TransformerSeqDataset.build() instead")
+
+        if labels is None:
+            labels = [0] * len(first)
+            warn("Labels are not present in the provided dataframe, setting labels of all examples to 0 as a "
+                 "workaround and expecting downstream application not to use these")
+
+        return TransformerSeqPairDataset.build(first, second, labels, tokenizer=tokenizer, max_seq_len=max_seq_len)
+
     def __getitem__(self, idx):
         return {
             "input_ids": self.input_ids[idx],
@@ -72,6 +95,32 @@ class TransformerSeqDataset(Dataset):
                                                    return_special_tokens_mask=True, return_tensors="pt")
         dataset_dict["labels"] = torch.tensor(labels)
         return TransformerSeqDataset(**dataset_dict)
+
+    @staticmethod
+    def build_dataset(dataset_name, df, tokenizer, max_seq_len: int = 41):
+        """ Build dataset using 'standard' column names in raw data. """
+        if dataset_name == "sentinews":
+            sequences = df["content"].tolist()
+            labels = df["sentiment"].apply(lambda lbl: LABEL_TO_IDX["sentinews"][lbl]).tolist()
+        elif dataset_name == "imsypp":
+            sequences = df["besedilo"].tolist()
+            labels = df["vrsta"].tolist()
+        elif dataset_name == "imdb":
+            sequences = df["review"].tolist()
+            labels = df["label"].tolist()
+        elif dataset_name == "sst-2":
+            sequences = df["sentence"].tolist()
+            labels = df["label"].tolist() if "label" in df.columns else None
+        else:
+            raise NotImplementedError(f"Dataset '{dataset_name}' does not have a fixed preset implemented. Please use "
+                                      f"TransformerSeqDataset.build() instead")
+
+        if labels is None:
+            labels = [0] * len(sequences)
+            warn("Labels are not present in the provided dataframe, setting labels of all examples to 0 as a "
+                 "workaround and expecting downstream application not to use these")
+
+        return TransformerSeqDataset.build(sequences, labels, tokenizer=tokenizer, max_seq_len=max_seq_len)
 
     def __getitem__(self, idx):
         return {
@@ -136,3 +185,20 @@ def load_qqp(file_path, sample_size=None):
         df["is_duplicate"] = df["is_duplicate"].apply(lambda lbl: int(lbl))
 
     return df
+
+
+def load_dataset(dataset_name, file_path, sample_size=None):
+    """ Common loader to avoid repetitive if-else statements for selection of data loading function """
+    loaders = {
+        "qqp": load_qqp,
+        "sst2": load_sst2,
+        "imdb": load_imdb,
+        "imsypp": load_imsypp,
+        "24sata": load_24sata,
+        "semeval5": load_semeval5,
+        "snli": load_nli,
+        "mnli": load_nli,
+        "xnli": load_nli
+    }
+
+    return loaders[dataset_name.strip().lower()](file_path, sample_size)
