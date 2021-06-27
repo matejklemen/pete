@@ -74,7 +74,7 @@ def process_sentinews(train_path, dev_path, test_path, target_dir):
     with open(os.path.join(target_dir, "sentinews_test_lm_label.txt"), "w", encoding="utf-8") as f_test:
         for seq, label in test_df[["content", "sentiment"]].values:
             assert label in LABELS
-            print(f"<{label}> {seq}", file=f_test)
+            print(f"<{label.upper()}> {seq}", file=f_test)
 
 
 def process_imsypp(train_path, dev_path, test_path, target_dir):
