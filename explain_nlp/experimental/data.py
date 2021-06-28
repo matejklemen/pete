@@ -202,7 +202,7 @@ def load_dataset(dataset_name, file_path, sample_size=None):
     """ Common loader to avoid repetitive if-else statements for selection of data loading function """
     loaders = {
         "qqp": load_qqp,
-        "sst2": load_sst2,
+        "sst-2": load_sst2,
         "imdb": load_imdb,
         "imsypp": load_imsypp,
         "sentinews": load_sentinews,
