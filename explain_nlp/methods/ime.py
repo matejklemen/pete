@@ -60,6 +60,7 @@ class IMEExplainer:
         self.error_constraint_given = self.confidence_interval is not None and self.max_abs_error is not None
         self.indexer = list_indexer
         self.shared_vocabulary = shared_vocabulary
+        self.feature_varies = None
 
         # TODO: move to functions
         if criterion == "absolute_error":
@@ -70,6 +71,8 @@ class IMEExplainer:
                 lambda importance_vars, taken_samples: (importance_vars / taken_samples) - (importance_vars / (taken_samples + 1))
         else:
             raise ValueError(f"Unsupported criterion: '{criterion}'")
+
+        self.update_sample_data(self.sample_data, self.weights)
 
     @staticmethod
     def _handle_sample_constraints(num_features: int, num_additional: int, used_feature_indices: List[int],
@@ -122,7 +125,11 @@ class IMEExplainer:
     def update_sample_data(self, new_data: torch.Tensor, data_weights: Optional[torch.FloatTensor] = None):
         self.sample_data = new_data
         self.weights = data_weights
+        if self.weights is None:
+            self.weights = torch.ones_like(self.sample_data, dtype=torch.float32)
+
         self.num_features = new_data.shape[1]
+        self.feature_varies = torch.gt(torch.sum(self.weights, dim=0), (0.0 + 1e-6))
 
     @torch.no_grad()
     def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor,
@@ -173,23 +180,32 @@ class IMEExplainer:
 
         # If weights are not provided, sample uniformly
         data_weights = torch.ones(self.sample_data.shape[0], dtype=torch.float32) \
-            if self.weights is None else self.weights
-        randomly_selected = torch.multinomial(data_weights, num_samples=num_samples, replacement=True)
+            if self.weights is None else self.weights[:, est_instance_features]
+        if data_weights.dim() > 1:
+            # weight = 1 if at least one token is non-special
+            data_weights = torch.gt(torch.sum(data_weights, dim=1), 0 + 1e-6).float()
+
+        # If estimated feature does not vary in any of the examples, always "randomly" sample the explained instance
+        # which will lead to feature's importance being 0 down the line
+        if torch.any(self.feature_varies[est_instance_features]):
+            idx_randomly_selected = torch.multinomial(data_weights, num_samples=num_samples, replacement=True)
+            rand_samples = self.sample_data[idx_randomly_selected]
+        else:
+            rand_samples = instance.repeat((num_samples, 1))
 
         samples = instance.repeat((2 * num_samples, 1))
         for idx_sample in range(num_samples):
             curr_feature_pos = int(feature_pos[idx_sample, 1])
-            idx_rand = int(randomly_selected[idx_sample])
 
             # Get indices of perturbed primary units (e.g. subwords)
             changed_features = self.indexer(eff_feature_groups, indices[idx_sample, curr_feature_pos + 1:])
 
             # With feature `idx_feature` set
-            samples[2 * idx_sample, changed_features] = self.sample_data[idx_rand, changed_features]
+            samples[2 * idx_sample, changed_features] = rand_samples[idx_sample, changed_features]
 
             # With feature `idx_feature` randomized
-            samples[2 * idx_sample + 1, changed_features] = self.sample_data[idx_rand, changed_features]
-            samples[2 * idx_sample + 1, est_instance_features] = self.sample_data[idx_rand, est_instance_features]
+            samples[2 * idx_sample + 1, changed_features] = rand_samples[idx_sample, changed_features]
+            samples[2 * idx_sample + 1, est_instance_features] = rand_samples[idx_sample, est_instance_features]
 
         scores = self.model.score(samples, **modeling_kwargs)
         scores_with = scores[::2]

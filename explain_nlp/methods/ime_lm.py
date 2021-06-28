@@ -229,13 +229,6 @@ class IMEHybridExplainer(IMEExplainer):
 
         self.update_sample_data(sample_data_generator, data_weights=data_weights)
 
-    def update_sample_data(self, new_data: torch.Tensor, data_weights: Optional[torch.FloatTensor] = None):
-        super().update_sample_data(new_data=new_data, data_weights=data_weights)
-        if self.weights is None:
-            self.weights = torch.ones_like(self.sample_data, dtype=torch.float32)
-
-        self.feature_varies = torch.gt(torch.sum(self.weights, dim=0), (0.0 + 1e-6))
-
     def model_to_generator(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
                            **modeling_kwargs):
         instance_tokens = self.model.from_internal(input_ids, return_tokens=True, **modeling_kwargs)
