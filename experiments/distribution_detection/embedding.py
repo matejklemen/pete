@@ -243,7 +243,7 @@ if __name__ == "__main__":
                     torch.arange(encoded_example["input_ids"].shape[1])[encoded_example["perturbable_mask"][0]]
                 num_groups = perturbable_indices.shape[0] if feature_groups is None else len(feature_groups)
                 if feature_groups is None:
-                    selected_feature = perturbable_indices[torch.randint(num_groups, ()).item()]
+                    selected_feature = perturbable_indices[torch.randint(num_groups, ())].item()
                 else:
                     selected_feature = torch.randint(num_groups, ()).item()
 
