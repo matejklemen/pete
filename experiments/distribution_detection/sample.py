@@ -1,3 +1,4 @@
+import json
 import os
 
 from explain_nlp.experimental.data import load_dataset
@@ -5,8 +6,7 @@ from argparse import ArgumentParser
 import logging
 
 parser = ArgumentParser()
-parser.add_argument("--dataset", type=str, default="snli",
-                    choices=["snli"])
+parser.add_argument("--dataset", type=str, default="snli")
 parser.add_argument("--data_path", type=str, default="/home/matej/Documents/data/snli/snli_1.0_test.txt")
 parser.add_argument("--experiment_dir", type=str, default="debug")
 parser.add_argument("--random_seed", type=int, default=None)
@@ -16,9 +16,15 @@ if __name__ == "__main__":
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
 
+    if not os.path.exists(args.experiment_dir):
+        os.makedirs(args.experiment_dir)
+
     logging.info("Extracting samples:")
     for attr, val in vars(args).items():
         logging.info(f"\t- {attr}={val}")
+
+    with open(os.path.join(args.experiment_dir, "config.json"), "w") as f:
+        json.dump(vars(args), fp=f, indent=4)
 
     df = load_dataset(args.dataset, args.data_path)
 
