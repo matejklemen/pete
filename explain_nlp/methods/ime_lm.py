@@ -9,7 +9,6 @@ from explain_nlp.modeling.modeling_base import InterpretableModel
 from explain_nlp.utils import EncodingException
 
 
-# TODO: maybe move to util and use in IME as well?
 def create_uniform_weights(input_ids, special_tokens_mask):
     """ Creates weight matrix such that valid tokens (i.e. not special) all get weight 1.0 and the others 0.0.
         Returns matrix with shape like `input_ids`. """
@@ -34,17 +33,17 @@ class IMEExternalLMExplainer(IMEExplainer):
         self.generator = generator
         self.num_generated_samples = num_generated_samples
 
-    def explain_text(self, text_data: Union[str, Tuple[str, ...]], label: Optional[int] = 0,
-                     min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None,
-                     exact_samples_per_feature: Optional[torch.Tensor] = None,
+    def prepare_data(self, text_data: Union[str, Tuple[str, ...]], label: Optional[int] = 0,
                      pretokenized_text_data: Optional[Union[List[str], Tuple[List[str], ...]]] = None,
                      custom_features: Optional[List[List[int]]] = None):
+        """ Generates sampling data with the generator. """
         # Convert to representation of generator
         is_split_into_units = pretokenized_text_data is not None
         generator_instance = self.generator.to_internal([pretokenized_text_data if is_split_into_units else text_data],
                                                         is_split_into_units=is_split_into_units)
 
         # Generate new samples in representation of generator
+        # TODO: custom_features should be given into generator
         generator_res = self.generator.generate(input_ids=generator_instance["input_ids"],
                                                 perturbable_mask=generator_instance["perturbable_mask"],
                                                 num_samples=self.num_generated_samples,
@@ -57,7 +56,18 @@ class IMEExternalLMExplainer(IMEExplainer):
 
         # Convert from text to representation of interpreted model
         sample_data = self.model.to_internal(generated_text)
-        self.update_sample_data(sample_data["input_ids"])
+
+        data_weights = create_uniform_weights(sample_data["input_ids"],
+                                              torch.logical_not(sample_data["perturbable_mask"]))
+        self.update_sample_data(sample_data["input_ids"], data_weights=data_weights)
+
+    def explain_text(self, text_data: Union[str, Tuple[str, ...]], label: Optional[int] = 0,
+                     min_samples_per_feature: Optional[int] = 100, max_samples: Optional[int] = None,
+                     exact_samples_per_feature: Optional[torch.Tensor] = None,
+                     pretokenized_text_data: Optional[Union[List[str], Tuple[List[str], ...]]] = None,
+                     custom_features: Optional[List[List[int]]] = None):
+        self.prepare_data(text_data, label,
+                          pretokenized_text_data=pretokenized_text_data, custom_features=custom_features)
 
         return super().explain_text(text_data=text_data, label=label,
                                     min_samples_per_feature=min_samples_per_feature, max_samples=max_samples,

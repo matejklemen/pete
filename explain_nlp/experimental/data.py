@@ -24,6 +24,17 @@ IDX_TO_LABEL["imdb"] = {0: "negative", 1: "positive"}
 IDX_TO_LABEL["qqp"] = {0: "different", 1: "duplicate"}
 IDX_TO_LABEL["sst-2"] = {0: "negative", 1: "positive"}
 
+PRESET_COLNAMES = {
+    "sentinews": ["content"],
+    "imsypp": ["besedilo"],
+    "imdb": ["review"],
+    "sst-2": ["sentence"],
+    "snli": ["sentence1", "sentence2"],
+    "mnli": ["sentence1", "sentence2"],
+    "xnli": ["sentence1", "sentence2"],
+    "qqp": ["question1", "question2"]
+}
+
 
 class TransformerSeqPairDataset(Dataset):
     def __init__(self, input_ids, token_type_ids, attention_mask, special_tokens_mask, labels, max_seq_len: int = 41):
@@ -194,6 +205,7 @@ def load_dataset(dataset_name, file_path, sample_size=None):
         "sst2": load_sst2,
         "imdb": load_imdb,
         "imsypp": load_imsypp,
+        "sentinews": load_sentinews,
         "24sata": load_24sata,
         "semeval5": load_semeval5,
         "snli": load_nli,

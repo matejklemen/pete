@@ -21,7 +21,8 @@ def load_explainer(**kwargs):
         if method == "ime":
             method_type = MethodType.IME
             method = IMEExplainer(
-                sample_data=kwargs["used_sample_data"], model=model, return_scores=return_model_scores,
+                sample_data=kwargs["used_sample_data"], data_weights=kwargs.get("data_weights", None),
+                model=model, return_scores=return_model_scores,
                 return_num_samples=True, return_samples=return_generated_samples,
                 **sample_constraints
             )
