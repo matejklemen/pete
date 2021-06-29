@@ -43,6 +43,10 @@ general_parser.add_argument("--generator_dir", type=str,
                             default="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm")
 general_parser.add_argument("--generator_batch_size", type=int, default=8)
 general_parser.add_argument("--generator_max_seq_len", type=int, default=41)
+general_parser.add_argument("--strategy", type=str, default="top_p",
+                            choices=["top_k", "top_p"])
+general_parser.add_argument("--top_p", type=float, default=0.0001)  # = greedy
+general_parser.add_argument("--top_k", type=int, default=3)
 
 methods_parser = argparse.ArgumentParser()
 subparsers = methods_parser.add_subparsers(dest="method_class")
