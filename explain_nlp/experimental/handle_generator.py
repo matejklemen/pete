@@ -9,14 +9,8 @@ from explain_nlp.generation.generation_transformers import BertForMaskedLMGenera
 def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
     # base IME and LIME do not require a generator and loading it could be a waste of a lot of memory
     if args.method in ["ime", "lime"]:
-        return None, {}
+        return None
 
-    generator_description = {
-        "type": args.generator_type,
-        "max_seq_len": args.generator_max_seq_len,
-        "top_p": args.top_p,
-        "handle": args.generator_dir,
-    }
     if args.generator_type == "bert_mlm":
         generator = BertForMaskedLMGenerator(tokenizer_name=args.generator_dir,
                                              model_name=args.generator_dir,
@@ -119,4 +113,4 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
     else:
         raise NotImplementedError(f"'{args.generator_type}' is not a supported generator type")
 
-    return generator, generator_description
+    return generator
