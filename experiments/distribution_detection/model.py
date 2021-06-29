@@ -12,8 +12,6 @@ from sklearn.metrics import accuracy_score
 from sklearn.neural_network import MLPClassifier
 
 parser = ArgumentParser()
-parser.add_argument("--dataset", type=str, default="snli",
-                    choices=["snli"])
 parser.add_argument("--mini_experiment_dir", type=str, default="debug/control")
 parser.add_argument("--discriminator_model", type=str, default="random_forest",
                     choices=["logistic_regression", "random_forest", "mlp"])
