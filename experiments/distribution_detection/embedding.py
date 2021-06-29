@@ -1,3 +1,4 @@
+import argparse
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from explain_nlp.experimental.arguments import methods_parser, subparsers, general_parser
+from explain_nlp.experimental.arguments import log_arguments
 from explain_nlp.experimental.data import TransformerSeqDataset, TransformerSeqPairDataset, load_dataset, \
     IDX_TO_LABEL, PRESET_COLNAMES
 from explain_nlp.experimental.handle_explainer import load_explainer
@@ -21,6 +22,44 @@ from explain_nlp.methods.features import extract_groups
 from explain_nlp.methods.ime_lm import create_uniform_weights
 from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
 
+""" 
+    This is copypasted and trimmed from arguments in arguments.py in order to minimize redundant arguments that are 
+    stored with the experiments (it becomes really unclear what is actually being used)
+"""
+general_parser = argparse.ArgumentParser(add_help=False)
+general_parser.add_argument("--experiment_dir", type=str, default="debug_snli")
+general_parser.add_argument("--random_seed", type=int, default=None)
+general_parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU")
+general_parser.add_argument("--custom_features", type=str, default=None,
+                            choices=[None, "words", "dependency_parsing"])
+general_parser.add_argument("--model_dir", type=str,
+                            default="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/classifiers/snli_bert_uncased")
+general_parser.add_argument("--model_max_seq_len", type=int, default=41)
+general_parser.add_argument("--model_batch_size", type=int, default=8)
+
+general_parser.add_argument("--generator_type", type=str, default="bert_mlm",
+                            choices=["bert_mlm", "bert_cmlm"])
+general_parser.add_argument("--generator_dir", type=str,
+                            default="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm")
+general_parser.add_argument("--generator_batch_size", type=int, default=8)
+general_parser.add_argument("--generator_max_seq_len", type=int, default=41)
+
+methods_parser = argparse.ArgumentParser()
+subparsers = methods_parser.add_subparsers(dest="method_class")
+
+# IME
+ime_parser = subparsers.add_parser("ime", parents=[general_parser])
+ime_parser.add_argument("--method", type=str, default="ime",
+                        choices=["ime", "ime_elm", "ime_ilm", "ime_hybrid"])
+ime_parser.add_argument("--train_path", type=str,
+                        default="/home/matej/Documents/data/snli/snli_1.0_train.txt")
+
+# LIME
+lime_parser = subparsers.add_parser("lime", parents=[general_parser])
+lime_parser.add_argument("--method", type=str, default="lime",
+                         choices=["lime", "lime_lm"])
+
+# control
 control_parser = subparsers.add_parser("control", parents=[general_parser])
 control_parser.add_argument("--method", choices=["control"],
                             default="control", help="Fixed argument that is here just for consistency")
@@ -82,6 +121,7 @@ if __name__ == "__main__":
 
     with open(os.path.join(args.experiment_dir, "config.json"), "r", encoding="utf-8") as f:
         experiment_config = json.load(f)
+        dataset_name = experiment_config["dataset"]
 
     # Load sample data
     sample_path = os.path.join(args.experiment_dir, "sample.csv")
@@ -102,6 +142,7 @@ if __name__ == "__main__":
                          logging.FileHandler(os.path.join(mini_experiment_path, "experiment.log"))]:
         curr_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)-5.5s]  %(message)s"))
         logger.addHandler(curr_handler)
+    log_arguments(args)
 
     # Load interpreted model (TODO: generalize if using other model classes)
     model = InterpretableBertForSequenceClassification(
@@ -110,33 +151,34 @@ if __name__ == "__main__":
         device="cpu" if args.use_cpu else "cuda"
     )
 
-    logging.info(f"Building sample dataset (preset_config={experiment_config['dataset']}) with "
+    logging.info(f"Building sample dataset (preset_config={dataset_name}) with "
                  f"{df_sample.shape[0]} examples")
     try:
-        sample_dataset = TransformerSeqDataset.build_dataset(experiment_config["dataset"], df_sample,
+        sample_dataset = TransformerSeqDataset.build_dataset(dataset_name, df_sample,
                                                              tokenizer=model.tokenizer,
                                                              max_seq_len=args.model_max_seq_len)
     except NotImplementedError:
-        sample_dataset = TransformerSeqPairDataset.build_dataset(experiment_config["dataset"], df_sample,
+        sample_dataset = TransformerSeqPairDataset.build_dataset(dataset_name, df_sample,
                                                                  tokenizer=model.tokenizer,
                                                                  max_seq_len=args.model_max_seq_len)
 
     use_control = (args.method_class == "control")
     other_embeddings = []
+    text_data = []
     # Control group is a non-overlapping group of examples from the same set as the main sample:
     # The idea is to see how well a complex model can distinguish examples from the same (empirical) distribution
     if use_control:
         control_path = os.path.join(args.experiment_dir, "control.csv")
         df_control = pd.read_csv(control_path)
 
-        logging.info(f"Building control dataset (preset_config={experiment_config['dataset']}) with "
+        logging.info(f"Building control dataset (preset_config={dataset_name}) with "
                      f"{df_control.shape[0]} examples")
         try:
-            control_dataset = TransformerSeqDataset.build_dataset(experiment_config["dataset"], df_control,
+            control_dataset = TransformerSeqDataset.build_dataset(dataset_name, df_control,
                                                                   tokenizer=model.tokenizer,
                                                                   max_seq_len=args.model_max_seq_len)
         except NotImplementedError:
-            control_dataset = TransformerSeqPairDataset.build_dataset(experiment_config["dataset"], df_control,
+            control_dataset = TransformerSeqPairDataset.build_dataset(dataset_name, df_control,
                                                                       tokenizer=model.tokenizer,
                                                                       max_seq_len=args.model_max_seq_len)
 
@@ -145,19 +187,21 @@ if __name__ == "__main__":
             other_embeddings.append(bert_embeddings(model, **curr_batch).cpu())
     else:
         # Assumption: all used models use control labels, formatted as "<LABEL_NAME>"
-        possible_labels = IDX_TO_LABEL[experiment_config["dataset"]]
+        possible_labels = IDX_TO_LABEL[dataset_name]
         clm_labels = [f"<{label_name.upper()}>"
                       for _, label_name in sorted(possible_labels.items(), key=lambda tup: tup[0])]
-        generator, gen_description = load_generator(args, clm_labels=clm_labels)
+        generator = load_generator(args, clm_labels=clm_labels)
+        if generator is not None:
+            logging.info(f"Loaded generator ({args.generator_type})")
 
         nlp = stanza.Pipeline(lang="en", processors="tokenize", use_gpu=not args.use_cpu, tokenize_no_ssplit=True)
         pretokenized_test_data = [None for _ in range(df_sample.shape[0])]
         if args.custom_features is not None:
             logging.info(f"Tokenizing explained instances with Stanza")
-            pretokenized_test_data = stanza_tokenize(nlp, df_sample, experiment_config["dataset"])
+            pretokenized_test_data = stanza_tokenize(nlp, df_sample, dataset_name)
 
-            assert args.custom_features in ["words", "dependency_parsing"], f"In distribution detection experiment, " \
-                                                                            f"'{args.custom_features}' is unsupported"
+            assert args.custom_features in ["words"], f"In distribution detection experiment, " \
+                                                      f"'{args.custom_features}' is unsupported"
 
             if args.custom_features == "dependency_parsing":
                 nlp = stanza.Pipeline(lang="en", processors="tokenize,lemma,pos,depparse")
@@ -170,19 +214,19 @@ if __name__ == "__main__":
 
         used_sample_data, data_weights = None, None
         if args.method in {"ime", "ime_hybrid"}:
-            logging.info(f"Loading sampling data (dataset={experiment_config['dataset']})")
-            df_train = load_dataset(experiment_config["dataset"], file_path=args.train_path)
+            logging.info(f"Loading sampling data (dataset={dataset_name})")
+            df_train = load_dataset(dataset_name, file_path=args.train_path)
             df_train = df_train.sample(frac=1.0).reset_index(drop=True)
 
-            logging.info(f"Building sampling dataset (preset_config={experiment_config['dataset']}) with "
+            logging.info(f"Building sampling dataset (preset_config={dataset_name}) with "
                          f"{df_train.shape[0]} examples")
             used_tokenizer = model.tokenizer if args.method == "ime" else generator.tokenizer
             used_length = args.model_max_seq_len if args.method == "ime" else args.generator_max_seq_len
             try:
-                train_set = TransformerSeqDataset.build_dataset(experiment_config["dataset"], df_train,
+                train_set = TransformerSeqDataset.build_dataset(dataset_name, df_train,
                                                                 tokenizer=used_tokenizer, max_seq_len=used_length)
             except NotImplementedError:
-                train_set = TransformerSeqPairDataset.build_dataset(experiment_config["dataset"], df_train,
+                train_set = TransformerSeqPairDataset.build_dataset(dataset_name, df_train,
                                                                     tokenizer=used_tokenizer, max_seq_len=used_length)
 
             data_weights = create_uniform_weights(train_set.input_ids, train_set.special_tokens_masks)
@@ -200,7 +244,7 @@ if __name__ == "__main__":
         # These hold encoded perturbed samples, which will be embedded with model and used in distribution detection
         input_ids, modeling_data = [], {}
 
-        raw_examples = df_sample[PRESET_COLNAMES[experiment_config["dataset"]]].values
+        raw_examples = df_sample[PRESET_COLNAMES[dataset_name]].values
         raw_examples = list(map(lambda row: row[0] if len(row) == 1 else tuple(row), raw_examples))
 
         # For each instance, sample 1 perturbation
@@ -261,6 +305,7 @@ if __name__ == "__main__":
             idx_selected = np.random.randint(1 if args.method_class == "lime" else 0,
                                              len(samples))
             input_ids.append(samples[idx_selected])
+            text_data.append(model.tokenizer.decode(input_ids[-1], skip_special_tokens=False))
 
             # First example: initialize lists for additional data
             if len(modeling_data.keys()) == 0:
@@ -290,3 +335,7 @@ if __name__ == "__main__":
 
     np.save(os.path.join(mini_experiment_path, "sample.npy"), sample_embeddings)
     np.save(os.path.join(mini_experiment_path, "other.npy"), other_embeddings)
+
+    if len(text_data) > 0:
+        with open(os.path.join(mini_experiment_path, "perturbations.txt"), "w") as f:
+            f.writelines(text_data)
