@@ -47,6 +47,8 @@ general_parser.add_argument("--strategy", type=str, default="top_p",
                             choices=["top_k", "top_p"])
 general_parser.add_argument("--top_p", type=float, default=0.0001)  # = greedy
 general_parser.add_argument("--top_k", type=int, default=3)
+general_parser.add_argument("--threshold", type=float, default=0.1)
+general_parser.add_argument("--unique_dropout", type=float, default=0.0)
 
 methods_parser = argparse.ArgumentParser()
 subparsers = methods_parser.add_subparsers(dest="method_class")
