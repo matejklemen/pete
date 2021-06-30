@@ -252,7 +252,7 @@ if __name__ == "__main__":
             model=model, generator=generator,
             used_sample_data=used_sample_data, data_weights=data_weights,
             experiment_type="required_samples", return_generated_samples=True,
-            kernel_width=1.0, shared_vocabulary=True, num_generated_samples=10
+            kernel_width=1.0, shared_vocabulary=True, num_generated_samples=5
         )
 
         # These hold encoded perturbed samples, which will be embedded with model and used in distribution detection
