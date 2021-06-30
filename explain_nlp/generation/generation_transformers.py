@@ -793,9 +793,9 @@ class RobertaForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizati
 if __name__ == "__main__":
     NUM_SAMPLES = 10
     GENERATOR_HANDLE = "/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm"
-    generator = SimplifiedBertForMaskedLMGenerator(tokenizer_name=GENERATOR_HANDLE, model_name=GENERATOR_HANDLE,
-                                                   batch_size=10, max_seq_len=41,
-                                                   device="cpu", strategy=["unique", "top_k"], top_k=3)
+    generator = BertForMaskedLMGenerator(tokenizer_name=GENERATOR_HANDLE, model_name=GENERATOR_HANDLE,
+                                         batch_size=10, max_seq_len=41,
+                                         device="cpu", strategy=["unique", "top_k"], top_k=3)
 
     ex = ("A shirtless man skateboards on a ledge", "A man without a shirt")
     pretokenized_ex = (ex[0].split(" "), ex[1].split(" "))

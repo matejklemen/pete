@@ -23,13 +23,12 @@ general_parser.add_argument("--test_path", type=str,
                             default="/home/matej/Documents/data/snli/snli_1.0_test_xs.txt")
 
 general_parser.add_argument("--model_dir", type=str,
-                            default="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased")
+                            default="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/classifiers/snli_bert_uncased")
 general_parser.add_argument("--model_max_seq_len", type=int, default=41)
 general_parser.add_argument("--model_batch_size", type=int, default=8)
 
-general_parser.add_argument("--generator_type", type=str, default="bert_simplified_mlm",
-                            choices=["bert_mlm", "roberta_mlm",
-                                     "bert_simplified_mlm", "bert_cmlm", "bert_simplified_cmlm",
+general_parser.add_argument("--generator_type", type=str, default="bert_mlm",
+                            choices=["bert_mlm", "bert_cmlm", "roberta_mlm",
                                      "gpt_lm", "gpt_clm",
                                      "cblstm_lm"])
 general_parser.add_argument("--generator_dir", type=str,
@@ -53,8 +52,6 @@ general_parser.add_argument("--aggregation_strategy", choices=["subword_sum", "s
                                  "by summing word importance, taking the max word importance or by using sentences as "
                                  "primary explanation units",
                             default="sentence")
-# TODO: this is only required for simplified models
-general_parser.add_argument("--num_references", type=int, default=10)
 
 methods_parser = argparse.ArgumentParser()
 subparsers = methods_parser.add_subparsers(dest="method_class")
