@@ -42,12 +42,21 @@ class IMEExternalLMExplainer(IMEExplainer):
         generator_instance = self.generator.to_internal([pretokenized_text_data if is_split_into_units else text_data],
                                                         is_split_into_units=is_split_into_units)
 
+        if hasattr(self.generator, "label_weights"):
+            randomly_selected_label = torch.multinomial(self.generator.label_weights,
+                                                        num_samples=self.num_generated_samples,
+                                                        replacement=True)
+            randomly_selected_label = [self.generator.control_labels_str[i] for i in randomly_selected_label]
+        else:
+            randomly_selected_label = [None] * self.num_generated_samples
+
         # Generate new samples in representation of generator
-        # TODO: custom_features should be given into generator
+        # TODO: should custom_features be given into generator?
         generator_res = self.generator.generate(input_ids=generator_instance["input_ids"],
                                                 perturbable_mask=generator_instance["perturbable_mask"],
                                                 num_samples=self.num_generated_samples,
                                                 label=label,
+                                                control_labels=randomly_selected_label,
                                                 **generator_instance["aux_data"])
 
         # Convert from representation of generator to text
@@ -343,19 +352,19 @@ if __name__ == "__main__":
     from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
     from explain_nlp.experimental.data import load_nli
 
-    model = InterpretableBertForSequenceClassification(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
-                                                       model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
+    model = InterpretableBertForSequenceClassification(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/classifiers/snli_bert_uncased",
+                                                       model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/classifiers/snli_bert_uncased",
                                                        batch_size=10,
                                                        max_seq_len=41,
                                                        device="cpu")
-    generator = BertForControlledMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
-                                                   model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
+    generator = BertForControlledMaskedLMGenerator(tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/language_models/bert_snli_clm_best",
+                                                   model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/language_models/bert_snli_clm_best",
                                                    max_seq_len=41,
                                                    control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"],
                                                    batch_size=10,
-                                                   strategy="top_k",
-                                                   top_k=3,
-                                                   device="cpu")
+                                                   strategy="top_p", top_p=0.0001,
+                                                   device="cpu",
+                                                   monte_carlo_dropout=True)
 
     METHOD = "ime_elm"
     if METHOD == "ime_ilm":
@@ -375,7 +384,7 @@ if __name__ == "__main__":
         df_data = load_nli("/home/matej/Documents/data/snli/snli_1.0_dev.txt")
         data = generator.to_internal(list(zip(df_data["sentence1"].values, df_data["sentence2"].values)))
         weights = create_uniform_weights(data["input_ids"], torch.logical_not(data["perturbable_mask"]))
-        explainer = HybridIMEExplainer(model=model, generator=generator,
+        explainer = IMEHybridExplainer(model=model, generator=generator,
                                        sample_data_generator=data["input_ids"],
                                        data_weights=weights,
                                        return_num_samples=True,
