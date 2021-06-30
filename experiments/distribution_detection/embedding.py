@@ -28,6 +28,9 @@ from explain_nlp.modeling.modeling_transformers import InterpretableBertForSeque
 """
 general_parser = argparse.ArgumentParser(add_help=False)
 general_parser.add_argument("--experiment_dir", type=str, default="debug_snli")
+general_parser.add_argument("--mini_experiment_name", type=str, default=None,
+                            help="Use a custom name for this mini-experiment. By default, experiments are named after "
+                                 "used methods, but this can be problematic if using same method with different params")
 general_parser.add_argument("--random_seed", type=int, default=None)
 general_parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU")
 general_parser.add_argument("--custom_features", type=str, default=None,
@@ -134,7 +137,12 @@ if __name__ == "__main__":
     assert os.path.exists(sample_path)
     df_sample = pd.read_csv(sample_path)
 
-    mini_experiment_path = os.path.join(args.experiment_dir, args.method)
+    if args.mini_experiment_name is not None:
+        mini_experiment_path = os.path.join(args.experiment_dir, args.mini_experiment_name)
+    else:
+        mini_experiment_path = os.path.join(args.experiment_dir, args.method)
+
+    logging.info(f"Saving mini-experiment results to '{mini_experiment_path}'")
     if not os.path.exists(mini_experiment_path):
         os.makedirs(mini_experiment_path)
 
