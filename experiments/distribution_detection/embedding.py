@@ -45,7 +45,7 @@ general_parser.add_argument("--generator_batch_size", type=int, default=8)
 general_parser.add_argument("--generator_max_seq_len", type=int, default=41)
 general_parser.add_argument("--strategy", type=str, default="top_p",
                             choices=["top_k", "top_p"])
-general_parser.add_argument("--top_p", type=float, default=0.0001)  # = greedy
+general_parser.add_argument("--top_p", type=float, default=0.0001)  # = greedy by default
 general_parser.add_argument("--top_k", type=int, default=3)
 general_parser.add_argument("--threshold", type=float, default=0.1)
 general_parser.add_argument("--unique_dropout", type=float, default=0.0)
@@ -278,7 +278,7 @@ if __name__ == "__main__":
 
             if args.method_class == "lime":
                 res = method.explain_text(raw_input, label=predicted_label,
-                                          num_samples=5, explanation_length=args.explanation_length,
+                                          num_samples=5, explanation_length=None,
                                           custom_features=feature_groups)
                 samples = res["samples"]
             else:
