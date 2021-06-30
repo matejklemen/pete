@@ -352,4 +352,5 @@ if __name__ == "__main__":
 
     if len(text_data) > 0:
         with open(os.path.join(mini_experiment_path, "perturbations.txt"), "w") as f:
-            f.writelines(text_data)
+            for line in text_data:
+                print(line, file=f)
