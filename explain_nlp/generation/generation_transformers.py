@@ -559,6 +559,12 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
                                                                  is_split_into_words=True))
         self.control_labels_str = control_labels
 
+        # make it impossible to sample control labels (those are set in place)
+        def mask_control(logits, **kwargs):
+            logits[:, self.control_labels] = -float("inf")
+            return logits
+        self.filters = [mask_control] + self.filters
+
         self.label_weights = label_weights
         if self.label_weights is None:
             self.label_weights = [1.0] * len(self.control_labels)
