@@ -2,7 +2,8 @@ import warnings
 from typing import Optional, List, Union, Tuple, Dict
 
 import torch
-from transformers import OpenAIGPTLMHeadModel, BertForMaskedLM, RobertaForMaskedLM
+from transformers import OpenAIGPTLMHeadModel, BertForMaskedLM, RobertaForMaskedLM, XLMRobertaTokenizerFast, \
+    XLMRobertaForMaskedLM
 from transformers import OpenAIGPTTokenizerFast, BertTokenizerFast, RobertaTokenizerFast
 
 from explain_nlp.generation.generation_base import SampleGenerator
@@ -639,8 +640,7 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
 
 class RobertaForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizationMixin):
     def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
-                 strategy="top_k", top_p=0.9, top_k=5, threshold=0.1, monte_carlo_dropout: Optional[bool] = False,
-                 allowed_values: Optional[List[torch.Tensor]] = None):
+                 strategy="top_k", top_p=0.9, top_k=5, threshold=0.1, monte_carlo_dropout: Optional[bool] = False):
         super().__init__(max_seq_len=max_seq_len, batch_size=batch_size, device=device,
                          strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
         self.tokenizer_name = tokenizer_name
@@ -654,24 +654,7 @@ class RobertaForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizati
             self.generator.eval()
 
         self.aux_data_keys = ["attention_mask"]
-        self.new_word_offset = 1
         self.special_tokens_set = set(self.tokenizer.all_special_ids)
-
-        if allowed_values is not None:
-            assert len(allowed_values) == self.max_seq_len
-            self.impossible_values_mask = torch.ones((self.max_seq_len, len(self.tokenizer)), dtype=torch.bool)
-            for idx_feature, curr_possible in enumerate(allowed_values):
-                self.impossible_values_mask[idx_feature, curr_possible] = False
-
-            def mask_impossible(curr_logits, position):
-                curr_logits[:, self.impossible_values_mask[position, :]] = -float("inf")
-                return curr_logits
-        else:
-            def mask_impossible(curr_logits, position):
-                return curr_logits
-
-        self.allowed_values = allowed_values
-        self.mask_impossible = mask_impossible
 
     @property
     def mask_token(self) -> str:
@@ -703,7 +686,7 @@ class RobertaForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizati
                 return [self.tokenizer.decode(curr_id, **decode_kwargs).strip() for curr_id in input_ids]
         else:
             def decoding_fn(input_ids, **decode_kwargs):
-                return list(map(lambda curr_tok: curr_tok.strip(), self.tokenizer.decode(input_ids, **decode_kwargs)))
+                return self.tokenizer.decode(input_ids, **decode_kwargs).strip()
 
         decoded_data = []
         for idx_example in range(num_ex):
@@ -796,12 +779,32 @@ class RobertaForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizati
         return eff_input_ids
 
 
+class XLMRobertaForMaskedLMGenerator(RobertaForMaskedLMGenerator, TransformersAlignedTokenizationMixin):
+    def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
+                 strategy="top_k", top_p=0.9, top_k=5, threshold=0.1, monte_carlo_dropout: Optional[bool] = False):
+        SampleGenerator.__init__(self, max_seq_len=max_seq_len, batch_size=batch_size, device=device,
+                                 strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
+        self.tokenizer_name = tokenizer_name
+        self.model_name = model_name
+
+        self.tokenizer = XLMRobertaTokenizerFast.from_pretrained(self.tokenizer_name, add_prefix_space=True)
+        self.generator = XLMRobertaForMaskedLM.from_pretrained(self.model_name, return_dict=True).to(self.device)
+        if monte_carlo_dropout:
+            self.generator.train()
+        else:
+            self.generator.eval()
+
+        self.aux_data_keys = ["attention_mask"]
+        self.special_tokens_set = set(self.tokenizer.all_special_ids)
+
+
 if __name__ == "__main__":
     NUM_SAMPLES = 10
-    GENERATOR_HANDLE = "/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm"
-    generator = BertForMaskedLMGenerator(tokenizer_name=GENERATOR_HANDLE, model_name=GENERATOR_HANDLE,
-                                         batch_size=10, max_seq_len=41,
-                                         device="cpu", strategy=["unique", "top_k"], top_k=3)
+    GENERATOR_HANDLE = "/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/language_models/xlm-roberta-xnli-mlm"
+    generator = XLMRobertaForMaskedLMGenerator(tokenizer_name=GENERATOR_HANDLE, model_name=GENERATOR_HANDLE,
+                                               batch_size=4, max_seq_len=41,
+                                               device="cpu", strategy="top_p", top_p=0.0001,
+                                               monte_carlo_dropout=True)
 
     ex = ("A shirtless man skateboards on a ledge", "A man without a shirt")
     pretokenized_ex = (ex[0].split(" "), ex[1].split(" "))

@@ -1,7 +1,8 @@
 from typing import Union, Optional, List, Tuple
 
 import torch
-from transformers import BertTokenizerFast, RobertaTokenizerFast
+from transformers import BertTokenizerFast, RobertaTokenizerFast, XLMRobertaTokenizerFast, \
+    XLMRobertaForSequenceClassification
 from transformers import BertForSequenceClassification, RobertaForSequenceClassification, BertForMaskedLM
 
 from explain_nlp.modeling.modeling_base import InterpretableModel
@@ -185,7 +186,7 @@ class InterpretableBertForSequenceClassification(InterpretableBertBase):
 
 
 class InterpretableRobertaBase(InterpretableModel, TransformersAlignedTokenizationMixin):
-    tokenizer: RobertaTokenizerFast
+    tokenizer: Union[RobertaTokenizerFast, XLMRobertaTokenizerFast]
 
     @property
     def mask_token(self):
@@ -239,7 +240,7 @@ class InterpretableRobertaBase(InterpretableModel, TransformersAlignedTokenizati
 
         else:
             def decoding_fn(input_ids, **decode_kwargs):
-                return list(map(lambda curr_tok: curr_tok.strip(), self.tokenizer.decode(input_ids, **decode_kwargs)))
+                return self.tokenizer.decode(input_ids, **decode_kwargs).strip()
 
         decoded_data = []
         for idx_example in range(num_ex):
@@ -314,3 +315,17 @@ class InterpretableRobertaForSequenceClassification(InterpretableRobertaBase):
             probas[s_b: e_b] = torch.softmax(res["logits"], dim=-1)
 
         return probas
+
+
+class InterpretableXLMRobertaForSequenceClassification(InterpretableRobertaForSequenceClassification):
+    def __init__(self, tokenizer_name, model_name, batch_size=8, max_seq_len=64,
+                 device="cuda"):
+        InterpretableRobertaBase.__init__(self, max_seq_len=max_seq_len, batch_size=batch_size, device=device)
+        self.tokenizer_name = tokenizer_name
+        self.model_name = model_name
+
+        self.tokenizer = XLMRobertaTokenizerFast.from_pretrained(tokenizer_name, add_prefix_space=True)
+        self.model = XLMRobertaForSequenceClassification.from_pretrained(model_name, return_dict=True).to(self.device)
+        self.model.eval()
+
+        self.aux_data_keys = ["attention_mask"]
