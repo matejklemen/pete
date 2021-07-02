@@ -7,6 +7,7 @@ from torch.utils.data import Dataset
 
 LABEL_TO_IDX = {
     "snli": {"entailment": 0, "neutral": 1, "contradiction": 2},
+    "xnli": {"entailment": 0, "neutral": 1, "contradiction": 2},
     "sentinews": {"neutral": 0, "negative": 1, "positive": 2},
     "imsypp": {0: 0, 1: 1},  # no-op, labels are pre-encoded
     "semeval5": {0: 0, 1: 1},  # no-op, labels are pre-encoded
@@ -37,13 +38,18 @@ PRESET_COLNAMES = {
 
 
 class TransformerSeqPairDataset(Dataset):
-    def __init__(self, input_ids, token_type_ids, attention_mask, special_tokens_mask, labels, max_seq_len: int = 41):
+    def __init__(self, input_ids, attention_mask, special_tokens_mask, labels, token_type_ids=None,
+                 max_seq_len: int = 41):
         self.input_ids = input_ids
-        self.segments = token_type_ids
-        self.attn_masks = attention_mask
+        self.token_type_ids = token_type_ids
+        self.attention_mask = attention_mask
         self.special_tokens_masks = special_tokens_mask
         self.labels = labels
         self.max_seq_len = max_seq_len
+
+        self.valid_keys = ["input_ids", "attention_mask", "special_tokens_mask", "labels"]
+        if token_type_ids is not None:
+            self.valid_keys.append("token_type_ids")
 
     @staticmethod
     def build(first: Iterable[str], second: Iterable[str], labels: Iterable[int],
@@ -77,13 +83,7 @@ class TransformerSeqPairDataset(Dataset):
         return TransformerSeqPairDataset.build(first, second, labels, tokenizer=tokenizer, max_seq_len=max_seq_len)
 
     def __getitem__(self, idx):
-        return {
-            "input_ids": self.input_ids[idx],
-            "token_type_ids": self.segments[idx],
-            "attention_mask": self.attn_masks[idx],
-            "special_tokens_mask": self.special_tokens_masks[idx],
-            "labels": self.labels[idx]
-        }
+        return {k: getattr(self, k)[idx] for k in self.valid_keys}
 
     def __len__(self):
         return self.input_ids.shape[0]

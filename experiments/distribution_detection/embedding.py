@@ -17,10 +17,12 @@ from explain_nlp.experimental.data import TransformerSeqDataset, TransformerSeqP
     IDX_TO_LABEL, PRESET_COLNAMES
 from explain_nlp.experimental.handle_explainer import load_explainer
 from explain_nlp.experimental.handle_generator import load_generator
+from explain_nlp.experimental.handle_model import load_model
 from explain_nlp.generation.decoding import filter_factory
 from explain_nlp.methods.features import extract_groups
 from explain_nlp.methods.ime_lm import create_uniform_weights
-from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification
+from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification, \
+    InterpretableXLMRobertaForSequenceClassification
 
 """ 
     This is copypasted and trimmed from arguments in arguments.py in order to minimize redundant arguments that are 
@@ -37,6 +39,7 @@ general_parser.add_argument("--custom_features", type=str, default=None,
                             choices=[None, "words", "dependency_parsing"])
 general_parser.add_argument("--model_dir", type=str,
                             default="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/classifiers/snli_bert_uncased")
+general_parser.add_argument("--model_type", type=str, default="bert_sequence")
 general_parser.add_argument("--model_max_seq_len", type=int, default=41)
 general_parser.add_argument("--model_batch_size", type=int, default=8)
 
@@ -83,6 +86,18 @@ def bert_embeddings(model: InterpretableBertForSequenceClassification, input_ids
                               **{attr: modeling_kwargs[attr].to(model.device)
                                  for attr in ["token_type_ids", "attention_mask"]})
     return output["pooler_output"]  # [num_examples, hidden_size]
+
+
+@torch.no_grad()
+def xlm_roberta_embeddings(model: InterpretableXLMRobertaForSequenceClassification, input_ids, **modeling_kwargs):
+    # take <s> token, passed through another linear layer:
+    # see forward function of XLM-R/RoBERTa seq. classifier in `transformers`
+    outputs = model.model.roberta(input_ids=input_ids.to(model.device),
+                                  **{attr: modeling_kwargs[attr].to(model.device)
+                                     for attr in ["attention_mask"]})
+    zeroeth_token = outputs[0][:, 0, :]  # [num_examples, hidden_size]
+
+    return torch.tanh(model.model.classifier.dense(zeroeth_token))
 
 
 def stanza_tokenize(stanza_pipeline, data, dataset_name):
@@ -137,6 +152,10 @@ if __name__ == "__main__":
     assert os.path.exists(sample_path)
     df_sample = pd.read_csv(sample_path)
 
+    if dataset_name == "xnli":
+        # Sort examples by language to minimize the number of times the Stanza tokenizer is reloaded for a different lg
+        df_sample = df_sample.sort_values("language").reset_index(drop=True)
+
     if args.mini_experiment_name is not None:
         mini_experiment_path = os.path.join(args.experiment_dir, args.mini_experiment_name)
     else:
@@ -158,12 +177,15 @@ if __name__ == "__main__":
         logger.addHandler(curr_handler)
     log_arguments(args)
 
-    # Load interpreted model (TODO: generalize if using other model classes)
-    model = InterpretableBertForSequenceClassification(
-        model_name=args.model_dir, tokenizer_name=args.model_dir,
-        batch_size=args.model_batch_size, max_seq_len=args.model_max_seq_len,
-        device="cpu" if args.use_cpu else "cuda"
-    )
+    model = load_model(model_type=args.model_type, model_name=args.model_dir, tokenizer_name=args.model_dir,
+                       batch_size=args.model_batch_size, max_seq_len=args.model_max_seq_len,
+                       device="cpu" if args.use_cpu else "cuda")
+    if args.model_type == "bert_sequence":
+        model_embeddings = bert_embeddings
+    elif args.model_type == "xlmr_sequence":
+        model_embeddings = xlm_roberta_embeddings
+    else:
+        raise NotImplementedError(f"Unsupported model type in embeddings.py: '{args.model_type}'")
 
     logging.info(f"Building sample dataset (preset_config={dataset_name}) with "
                  f"{df_sample.shape[0]} examples")
@@ -185,6 +207,9 @@ if __name__ == "__main__":
         control_path = os.path.join(args.experiment_dir, "control.csv")
         df_control = pd.read_csv(control_path)
 
+        if dataset_name == "xnli":
+            df_control = df_control.sort_values("language").reset_index(drop=True)
+
         logging.info(f"Building control dataset (preset_config={dataset_name}) with "
                      f"{df_control.shape[0]} examples")
         try:
@@ -198,7 +223,7 @@ if __name__ == "__main__":
 
         logging.info("Embedding control dataset with interpreted model")
         for curr_batch in tqdm(DataLoader(control_dataset, batch_size=args.model_batch_size)):
-            other_embeddings.append(bert_embeddings(model, **curr_batch).cpu())
+            other_embeddings.append(model_embeddings(model, **curr_batch).cpu())
     else:
         # Assumption: all used models use control labels, formatted as "<LABEL_NAME>"
         possible_labels = IDX_TO_LABEL[dataset_name]
@@ -208,17 +233,29 @@ if __name__ == "__main__":
         if generator is not None:
             logging.info(f"Loaded generator ({args.generator_type})")
 
-        nlp = stanza.Pipeline(lang="en", processors="tokenize", use_gpu=not args.use_cpu, tokenize_no_ssplit=True)
+        used_stanza_lang = "sl" if dataset_name in ["sentinews", "imsypp"] else "en"
+        nlp = stanza.Pipeline(lang=used_stanza_lang, processors="tokenize", tokenize_no_ssplit=True,
+                              use_gpu=not args.use_cpu)
         pretokenized_test_data = [None for _ in range(df_sample.shape[0])]
         if args.custom_features is not None:
             logging.info(f"Tokenizing explained instances with Stanza")
-            pretokenized_test_data = stanza_tokenize(nlp, df_sample, dataset_name)
+
+            if dataset_name == "xnli":
+                # TODO: at least Thai and Swahili currently do not have Stanza tokenizers, so they will need fallbacks
+                pretokenized_test_data = []
+                for lang, group in df_sample.groupby("language"):
+                    pretokenized_test_data.extend(
+                        stanza_tokenize(stanza.Pipeline(lang, processors="tokenize"), group, dataset_name)
+                    )
+            else:
+                pretokenized_test_data = stanza_tokenize(nlp, df_sample, dataset_name)
 
             assert args.custom_features in ["words"], f"In distribution detection experiment, " \
                                                       f"'{args.custom_features}' is unsupported"
 
             if args.custom_features == "dependency_parsing":
-                nlp = stanza.Pipeline(lang="en", processors="tokenize,lemma,pos,depparse")
+                # TODO: XNLI will need to handle this differently
+                nlp = stanza.Pipeline(lang=used_stanza_lang, processors="tokenize,lemma,pos,depparse")
 
         # Special restriction: ensure generated tokens are unique - otherwise, it is theoretically possible to achieve
         #  perfect score (~50% discrimination accuracy) by just copying the input
@@ -227,10 +264,16 @@ if __name__ == "__main__":
             generator.filters = [filter_factory("unique")] + generator.filters
 
         used_sample_data, data_weights = None, None
+        xnli_lang_to_indices = {}
         if args.method in {"ime", "ime_hybrid"}:
             logging.info(f"Loading sampling data (dataset={dataset_name})")
             df_train = load_dataset(dataset_name, file_path=args.train_path)
             df_train = df_train.sample(frac=1.0).reset_index(drop=True)
+
+            # track indices of examples belonging to each language in XNLI so only relevant examples are used in IME
+            if dataset_name == "xnli":
+                for lang, group in df_train.groupby("language"):
+                    xnli_lang_to_indices[lang] = group.index.tolist()
 
             logging.info(f"Building sampling dataset (preset_config={dataset_name}) with "
                          f"{df_train.shape[0]} examples")
@@ -261,9 +304,12 @@ if __name__ == "__main__":
         raw_examples = df_sample[PRESET_COLNAMES[dataset_name]].values
         raw_examples = list(map(lambda row: row[0] if len(row) == 1 else tuple(row), raw_examples))
 
+        xnli_curr_used_Lang = None
+
         # For each instance, sample 1 perturbation
         logging.info("Sampling perturbations")
-        for raw_input, pretok_input in tqdm(zip(raw_examples, pretokenized_test_data), total=len(raw_examples)):
+        for idx_ex, (raw_input, pretok_input) in enumerate(tqdm(zip(raw_examples, pretokenized_test_data),
+                                                                total=len(raw_examples))):
             is_pretok = pretok_input is not None
 
             # Obtain the predicted label, which the instance will be explained for
@@ -272,7 +318,7 @@ if __name__ == "__main__":
                 is_split_into_units=is_pretok
             )
             probas = model.score(input_ids=encoded_example["input_ids"],
-                                 **{k: encoded_example["aux_data"][k] for k in ["token_type_ids", "attention_mask"]})
+                                 **encoded_example["aux_data"])
             predicted_label = int(torch.argmax(probas))
 
             feature_groups = None
@@ -295,6 +341,18 @@ if __name__ == "__main__":
                     method.prepare_data(raw_input, label=predicted_label,
                                         pretokenized_text_data=pretok_input,
                                         custom_features=feature_groups)
+                # Make sure IME only uses data from same language as example for sampling perturbations
+                elif args.method == "ime" and dataset_name == "xnli":
+                    lang_of_example = df_sample.iloc[idx_ex]["language"]
+
+                    if lang_of_example != xnli_curr_used_Lang:
+                        logging.info(f"[XNLI] Updating sample data to '{lang_of_example}'")
+                        xnli_curr_used_Lang = lang_of_example
+
+                        new_indices = xnli_lang_to_indices[lang_of_example]
+                        new_weights = data_weights[new_indices]
+                        new_data = used_sample_data[new_indices]
+                        method.update_sample_data(new_data, new_weights)
 
                 # In IME, select random sample from a random explained feature
                 perturbable_indices = \
@@ -336,15 +394,15 @@ if __name__ == "__main__":
         for idx_batch in tqdm(range(num_batches), total=num_batches):
             s_b, e_b = idx_batch * args.model_batch_size, (idx_batch + 1) * args.model_batch_size
             other_embeddings.append(
-                bert_embeddings(model, input_ids[s_b: e_b],
-                                **{attr: attr_values[s_b: e_b] for attr, attr_values in modeling_data.items()}).cpu()
+                model_embeddings(model, input_ids[s_b: e_b],
+                                 **{attr: attr_values[s_b: e_b] for attr, attr_values in modeling_data.items()}).cpu()
             )
 
     other_embeddings = torch.cat(other_embeddings).numpy()
 
     sample_embeddings = []
     for curr_batch in tqdm(DataLoader(sample_dataset, batch_size=args.model_batch_size)):
-        sample_embeddings.append(bert_embeddings(model, **curr_batch).cpu())
+        sample_embeddings.append(model_embeddings(model, **curr_batch).cpu())
     sample_embeddings = torch.cat(sample_embeddings).numpy()
 
     np.save(os.path.join(mini_experiment_path, "sample.npy"), sample_embeddings)
