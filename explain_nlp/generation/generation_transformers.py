@@ -497,9 +497,12 @@ class BertForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizationM
         if input_ids.shape[0] == 1:
             eff_input_ids = input_ids.repeat((num_samples, 1))
 
-        # Note: currently assuming generation additional data is same for all samples
-        eff_aux_data = {k: generation_kwargs[k].repeat((self.batch_size, 1)).to(self.device)
-                        for k in ["token_type_ids", "attention_mask"]}
+        # Either specific additional data is provided or additional data is same for all samples
+        eff_aux_data = {}
+        for k in ["token_type_ids", "attention_mask"]:
+            eff_aux_data[k] = generation_kwargs[k]
+            if generation_kwargs[k].shape[0] == 1:
+                eff_aux_data[k] = generation_kwargs[k].repeat((num_samples, 1))
 
         _generation_mask = generation_mask.to(self.device)
 
@@ -514,7 +517,6 @@ class BertForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizationM
         for idx_batch in range(num_batches):
             s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
             curr_indices = inds_masked_examples[s_b: e_b]
-            curr_batch_size = curr_indices.shape[0]
 
             curr_inputs = eff_input_ids[curr_indices].to(self.device)
             orig_tokens = curr_inputs.clone()
@@ -528,7 +530,7 @@ class BertForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizationM
                 is_feature_masked = curr_masked[:, s_c: e_c]
 
                 curr_inputs[:, s_c: e_c][is_feature_masked] = self.tokenizer.mask_token_id
-                curr_aux_data = {k: v[: curr_batch_size] for k, v in eff_aux_data.items()}
+                curr_aux_data = {k: v[curr_indices].to(self.device) for k, v in eff_aux_data.items()}
 
                 logits = self.generator(input_ids=curr_inputs, **curr_aux_data)["logits"]
                 curr_logits = logits[:, s_c, :]
@@ -615,9 +617,13 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator):
             eff_input_ids = eff_input_ids.repeat((num_samples, 1))
         eff_generation_mask = extend_tensor(generation_mask)
 
-        # Note: currently assuming generation additional data is same for all samples
-        eff_aux_data = {k: generation_kwargs[k].repeat((self.batch_size, 1)).to(self.device)
-                        for k in ["token_type_ids", "attention_mask"]}
+        # Either specific additional data is provided or additional data is same for all samples
+        eff_aux_data = {}
+        for k in ["token_type_ids", "attention_mask"]:
+            eff_aux_data[k] = generation_kwargs[k]
+            if generation_kwargs[k].shape[0] == 1:
+                eff_aux_data[k] = generation_kwargs[k].repeat((num_samples, 1))
+
         eff_aux_data = {k: extend_tensor(v) for k, v in eff_aux_data.items()}
         # Control labels are attendable
         eff_aux_data["attention_mask"][:, 1] = 1
@@ -736,8 +742,12 @@ class RobertaForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizati
             eff_input_ids = input_ids.repeat((num_samples, 1))
 
         # Note: currently assuming generation additional data is same for all samples
-        eff_aux_data = {k: generation_kwargs[k].repeat((self.batch_size, 1)).to(self.device)
-                        for k in ["attention_mask"]}
+        # Either specific additional data is provided or additional data is same for all samples
+        eff_aux_data = {}
+        for k in ["attention_mask"]:
+            eff_aux_data[k] = generation_kwargs[k]
+            if generation_kwargs[k].shape[0] == 1:
+                eff_aux_data[k] = generation_kwargs[k].repeat((num_samples, 1))
 
         mask_size = 1
         num_batches = (num_samples + self.batch_size - 1) // self.batch_size
@@ -763,7 +773,7 @@ class RobertaForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizati
                     continue
 
                 curr_inputs[:, s_c: e_c][is_feature_masked] = self.tokenizer.mask_token_id
-                curr_aux_data = {k: v[: curr_batch_size] for k, v in eff_aux_data.items()}
+                curr_aux_data = {k: v[s_b: e_b].to(self.device) for k, v in eff_aux_data.items()}
 
                 logits = self.generator(input_ids=curr_inputs.to(self.device), **curr_aux_data)["logits"]
                 for pos in range(curr_mask_size):
