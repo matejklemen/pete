@@ -169,7 +169,7 @@ def mock_lime(explained_instances: torch.Tensor, perturbable_masks: torch.Tensor
         curr_example = explained_instances[idx_ex].clone()
         curr_groups = eff_feature_groups[idx_ex]
 
-        num_replaced = torch.randint(len(curr_groups), ())
+        num_replaced = torch.randint(1, len(curr_groups) + 1, ())
         replace_groups = torch.randperm(len(curr_groups))[: num_replaced].tolist()
         replace_features = list_indexer(curr_groups, replace_groups)
 
