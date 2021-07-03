@@ -19,7 +19,7 @@ LABEL_TO_IDX = {
 IDX_TO_LABEL = {dataset: {i: lbl for lbl, i in label_mapping.items()}
                 for dataset, label_mapping in LABEL_TO_IDX.items()}
 IDX_TO_LABEL["semeval5"] = {0: "clean", 1: "toxic"}
-IDX_TO_LABEL["imsypp"] = {0: "clean", 1: "hateful"}
+IDX_TO_LABEL["imsypp"] = {0: "clean", 1: "hate"}
 IDX_TO_LABEL["24sata"] = {0: "clean", 1: "hateful"}
 IDX_TO_LABEL["imdb"] = {0: "negative", 1: "positive"}
 IDX_TO_LABEL["qqp"] = {0: "different", 1: "duplicate"}
