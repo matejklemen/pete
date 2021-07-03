@@ -43,7 +43,7 @@ class TransformerSeqPairDataset(Dataset):
         self.input_ids = input_ids
         self.token_type_ids = token_type_ids
         self.attention_mask = attention_mask
-        self.special_tokens_masks = special_tokens_mask
+        self.special_tokens_mask = special_tokens_mask
         self.labels = labels
         self.max_seq_len = max_seq_len
 
@@ -90,13 +90,18 @@ class TransformerSeqPairDataset(Dataset):
 
 
 class TransformerSeqDataset(Dataset):
-    def __init__(self, input_ids, token_type_ids, attention_mask, special_tokens_mask, labels, max_seq_len: int = 41):
+    def __init__(self, input_ids, attention_mask, special_tokens_mask, labels, token_type_ids=None,
+                 max_seq_len: int = 41):
         self.input_ids = input_ids
-        self.segments = token_type_ids
-        self.attn_masks = attention_mask
-        self.special_tokens_masks = special_tokens_mask
+        self.token_type_ids = token_type_ids
+        self.attention_mask = attention_mask
+        self.special_tokens_mask = special_tokens_mask
         self.labels = labels
         self.max_seq_len = max_seq_len
+
+        self.valid_keys = ["input_ids", "attention_mask", "special_tokens_mask", "labels"]
+        if token_type_ids is not None:
+            self.valid_keys.append("token_type_ids")
 
     @staticmethod
     def build(sequences: Iterable[str], labels: Iterable[int],
@@ -134,13 +139,7 @@ class TransformerSeqDataset(Dataset):
         return TransformerSeqDataset.build(sequences, labels, tokenizer=tokenizer, max_seq_len=max_seq_len)
 
     def __getitem__(self, idx):
-        return {
-            "input_ids": self.input_ids[idx],
-            "token_type_ids": self.segments[idx],
-            "attention_mask": self.attn_masks[idx],
-            "special_tokens_mask": self.special_tokens_masks[idx],
-            "labels": self.labels[idx]
-        }
+        return {k: getattr(self, k)[idx] for k in self.valid_keys}
 
     def __len__(self):
         return self.input_ids.shape[0]
