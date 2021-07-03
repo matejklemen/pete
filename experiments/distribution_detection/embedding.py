@@ -130,7 +130,7 @@ def mock_ime_elm(explained_instances: torch.Tensor, perturbable_masks: torch.Ten
         generator_res = generator.generate(input_ids=explained_instances[[idx_ex]],
                                            perturbable_mask=perturbable_masks[[idx_ex]],
                                            num_samples=1,
-                                           control_labels=randomly_selected_label[idx_ex],
+                                           control_labels=[randomly_selected_label[idx_ex]],
                                            **{k: v[[idx_ex]] for k, v in modeling_kwargs.items()})
         generated_samples.append(generator_res["input_ids"][0])
 
