@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import sys
-from typing import Tuple
+from typing import Tuple, List
 
 import numpy as np
 import pandas as pd
@@ -15,14 +15,169 @@ from tqdm import tqdm
 from explain_nlp.experimental.arguments import log_arguments
 from explain_nlp.experimental.data import TransformerSeqDataset, TransformerSeqPairDataset, load_dataset, \
     IDX_TO_LABEL, PRESET_COLNAMES
-from explain_nlp.experimental.handle_explainer import load_explainer
 from explain_nlp.experimental.handle_generator import load_generator
 from explain_nlp.experimental.handle_model import load_model
 from explain_nlp.generation.decoding import filter_factory
-from explain_nlp.methods.features import extract_groups
 from explain_nlp.methods.ime_lm import create_uniform_weights
+from explain_nlp.methods.utils import list_indexer
 from explain_nlp.modeling.modeling_transformers import InterpretableBertForSequenceClassification, \
     InterpretableXLMRobertaForSequenceClassification
+
+"""
+    These functions contain simplistic implementations of perturbations as seen in IME/LIME/their variants using LMs.
+    Assumptions:
+    - feature representations are same for model and generator (meaning no conversion needs to take place)
+"""
+
+
+def mock_ime(explained_instances: torch.Tensor, perturbable_masks: torch.Tensor,
+             sample_data: torch.Tensor, feature_groups: List[List[int]] = None):
+    num_instances = explained_instances.shape[0]
+    num_features = explained_instances.shape[1]
+
+    eff_feature_groups = feature_groups
+    if feature_groups is None:
+        eff_feature_groups = []
+        for curr_mask in perturbable_masks:
+            perturbable_indices = torch.arange(num_features)[curr_mask]
+            eff_feature_groups.append([[_i.item()] for _i in perturbable_indices])
+
+    perturbed_ids = []
+    randomly_selected_examples = torch.randint(sample_data.shape[0], (num_instances,))
+    # replace between 0 and `len(feature_groups)` feature groups /w corresponding values in randomly selected instances
+    for idx_ex in range(num_instances):
+        curr_example = explained_instances[idx_ex].clone()
+        curr_groups = eff_feature_groups[idx_ex]
+        replace_with = randomly_selected_examples[idx_ex]
+
+        num_replaced = torch.randint(len(curr_groups), ())
+        replace_groups = torch.randperm(len(curr_groups))[: num_replaced].tolist()
+        replace_features = list_indexer(curr_groups, replace_groups)
+
+        curr_example[replace_features] = sample_data[replace_with, replace_features]
+        perturbed_ids.append(curr_example)
+
+    return torch.stack(perturbed_ids)
+
+
+def mock_ime_ilm(explained_instances: torch.Tensor, perturbable_masks: torch.Tensor,
+                 generator, feature_groups: List[List[int]] = None,
+                 **modeling_kwargs):
+    num_instances = explained_instances.shape[0]
+    num_features = explained_instances.shape[1]
+
+    eff_feature_groups = feature_groups
+    if feature_groups is None:
+        eff_feature_groups = []
+        for curr_mask in perturbable_masks:
+            perturbable_indices = torch.arange(num_features)[curr_mask]
+            eff_feature_groups.append([[_i.item()] for _i in perturbable_indices])
+
+    if hasattr(generator, "label_weights"):
+        randomly_selected_label = torch.multinomial(generator.label_weights,
+                                                    num_samples=num_instances,
+                                                    replacement=True)
+        randomly_selected_label = [generator.control_labels_str[i] for i in randomly_selected_label]
+    else:
+        randomly_selected_label = [None] * num_instances
+
+    is_masked = torch.zeros((num_instances, num_features), dtype=torch.bool)
+    # re-generate between 0 and `len(feature_groups)` feature groups
+    for idx_ex in range(num_instances):
+        curr_groups = eff_feature_groups[idx_ex]
+
+        num_masked = torch.randint(len(curr_groups), ())
+        mask_groups = torch.randperm(len(curr_groups))[: num_masked].tolist()
+        mask_features = list_indexer(curr_groups, mask_groups)
+        is_masked[idx_ex, mask_features] = True
+
+    _explained_instances = explained_instances.clone()
+    perturbed_ids = generator.generate_masked_samples(explained_instances,
+                                                      generation_mask=is_masked,
+                                                      control_labels=randomly_selected_label,
+                                                      **modeling_kwargs)
+
+    assert perturbed_ids.shape[0] == _explained_instances.shape[0]
+
+    return perturbed_ids
+
+
+def mock_ime_elm(explained_instances: torch.Tensor, perturbable_masks: torch.Tensor,
+                 generator, feature_groups: List[List[int]] = None,
+                 **modeling_kwargs):
+    # This is still a naive version because conversion is not as straightforward
+    # TODO: see if I can update generate() to work with either a single ex or multiple ex
+    num_instances = explained_instances.shape[0]
+    num_features = explained_instances.shape[1]
+
+    eff_feature_groups = feature_groups
+    if feature_groups is None:
+        eff_feature_groups = []
+        for curr_mask in perturbable_masks:
+            perturbable_indices = torch.arange(num_features)[curr_mask]
+            eff_feature_groups.append([[_i.item()] for _i in perturbable_indices])
+
+    if hasattr(generator, "label_weights"):
+        randomly_selected_label = torch.multinomial(generator.label_weights,
+                                                    num_samples=num_instances,
+                                                    replacement=True)
+        randomly_selected_label = [generator.control_labels_str[i] for i in randomly_selected_label]
+    else:
+        randomly_selected_label = [None] * num_instances
+
+    generated_samples = []
+    for idx_ex in range(num_instances):
+        generator_res = generator.generate(input_ids=explained_instances[[idx_ex]],
+                                           perturbable_mask=perturbable_masks[[idx_ex]],
+                                           num_samples=1,
+                                           control_labels=randomly_selected_label[idx_ex],
+                                           **{k: v[[idx_ex]] for k, v in modeling_kwargs.items()})
+        generated_samples.append(generator_res["input_ids"][0])
+
+    generated_samples = torch.stack(generated_samples)
+    perturbed_ids = []
+    # replace between 0 and `len(feature_groups)` feature groups /w corresponding values in randomly selected instances
+    for idx_ex in range(num_instances):
+        curr_example = explained_instances[idx_ex].clone()
+        curr_groups = eff_feature_groups[idx_ex]
+
+        num_replaced = torch.randint(len(curr_groups), ())
+        replace_groups = torch.randperm(len(curr_groups))[: num_replaced].tolist()
+        replace_features = list_indexer(curr_groups, replace_groups)
+
+        curr_example[replace_features] = generated_samples[idx_ex, replace_features]
+        perturbed_ids.append(curr_example)
+
+    return torch.stack(perturbed_ids)
+
+
+def mock_lime(explained_instances: torch.Tensor, perturbable_masks: torch.Tensor, replace_with_token: int,
+              feature_groups: List[List[int]] = None):
+    num_instances = explained_instances.shape[0]
+    num_features = explained_instances.shape[1]
+
+    eff_feature_groups = feature_groups
+    if feature_groups is None:
+        eff_feature_groups = []
+        for curr_mask in perturbable_masks:
+            perturbable_indices = torch.arange(num_features)[curr_mask]
+            eff_feature_groups.append([[_i.item()] for _i in perturbable_indices])
+
+    perturbed_ids = []
+    # replace between 0 and `len(feature_groups)` feature groups /w corresponding values in randomly selected instances
+    for idx_ex in range(num_instances):
+        curr_example = explained_instances[idx_ex].clone()
+        curr_groups = eff_feature_groups[idx_ex]
+
+        num_replaced = torch.randint(len(curr_groups), ())
+        replace_groups = torch.randperm(len(curr_groups))[: num_replaced].tolist()
+        replace_features = list_indexer(curr_groups, replace_groups)
+
+        curr_example[replace_features] = replace_with_token
+        perturbed_ids.append(curr_example)
+
+    return torch.stack(perturbed_ids)
+
 
 """ 
     This is copypasted and trimmed from arguments in arguments.py in order to minimize redundant arguments that are 
@@ -46,7 +201,7 @@ general_parser.add_argument("--model_batch_size", type=int, default=8)
 general_parser.add_argument("--generator_type", type=str, default="bert_mlm",
                             choices=["bert_mlm", "bert_cmlm"])
 general_parser.add_argument("--generator_dir", type=str,
-                            default="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert-base-uncased-snli-mlm")
+                            default="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/language_models/bert-base-uncased-snli-mlm")
 general_parser.add_argument("--generator_batch_size", type=int, default=8)
 general_parser.add_argument("--generator_max_seq_len", type=int, default=41)
 general_parser.add_argument("--strategy", type=str, default="top_p",
@@ -207,9 +362,6 @@ if __name__ == "__main__":
         control_path = os.path.join(args.experiment_dir, "control.csv")
         df_control = pd.read_csv(control_path)
 
-        if dataset_name == "xnli":
-            df_control = df_control.sort_values("language").reset_index(drop=True)
-
         logging.info(f"Building control dataset (preset_config={dataset_name}) with "
                      f"{df_control.shape[0]} examples")
         try:
@@ -233,12 +385,12 @@ if __name__ == "__main__":
         if generator is not None:
             logging.info(f"Loaded generator ({args.generator_type})")
 
-        used_stanza_lang = "sl" if dataset_name in ["sentinews", "imsypp"] else "en"
-        nlp = stanza.Pipeline(lang=used_stanza_lang, processors="tokenize", tokenize_no_ssplit=True,
-                              use_gpu=not args.use_cpu)
-        pretokenized_test_data = [None for _ in range(df_sample.shape[0])]
+        # TODO: Add support for units bigger than subwords
         if args.custom_features is not None:
             logging.info(f"Tokenizing explained instances with Stanza")
+            used_stanza_lang = "sl" if dataset_name in ["sentinews", "imsypp"] else "en"
+            nlp = stanza.Pipeline(lang=used_stanza_lang, processors="tokenize", tokenize_no_ssplit=True,
+                                  use_gpu=not args.use_cpu)
 
             if dataset_name == "xnli":
                 # TODO: at least Thai and Swahili currently do not have Stanza tokenizers, so they will need fallbacks
@@ -263,17 +415,16 @@ if __name__ == "__main__":
             logging.info("Adding unique filter to generator used in IME method")
             generator.filters = [filter_factory("unique")] + generator.filters
 
-        used_sample_data, data_weights = None, None
-        xnli_lang_to_indices = {}
-        if args.method in {"ime", "ime_hybrid"}:
+        raw_examples = df_sample[PRESET_COLNAMES[dataset_name]].values
+        raw_examples = list(map(lambda row: row[0] if len(row) == 1 else tuple(row), raw_examples))
+
+        encoded_sample = model.to_internal(raw_examples)
+        modeling_data = encoded_sample["aux_data"]
+
+        if args.method == "ime":
             logging.info(f"Loading sampling data (dataset={dataset_name})")
             df_train = load_dataset(dataset_name, file_path=args.train_path)
             df_train = df_train.sample(frac=1.0).reset_index(drop=True)
-
-            # track indices of examples belonging to each language in XNLI so only relevant examples are used in IME
-            if dataset_name == "xnli":
-                for lang, group in df_train.groupby("language"):
-                    xnli_lang_to_indices[lang] = group.index.tolist()
 
             logging.info(f"Building sampling dataset (preset_config={dataset_name}) with "
                          f"{df_train.shape[0]} examples")
@@ -286,109 +437,50 @@ if __name__ == "__main__":
                 train_set = TransformerSeqPairDataset.build_dataset(dataset_name, df_train,
                                                                     tokenizer=used_tokenizer, max_seq_len=used_length)
 
-            data_weights = create_uniform_weights(train_set.input_ids, train_set.special_tokens_masks)
             used_sample_data = train_set.input_ids
+            data_weights = create_uniform_weights(train_set.input_ids, train_set.special_tokens_mask)
 
-        logging.info("Instantiating explanation method")
-        method, method_type = load_explainer(
-            method_class=args.method_class, method=args.method,
-            model=model, generator=generator,
-            used_sample_data=used_sample_data, data_weights=data_weights,
-            experiment_type="required_samples", return_generated_samples=True,
-            kernel_width=1.0, shared_vocabulary=True, num_generated_samples=5
-        )
+            # XNLI: handle each language on its own in order to use sampling data only from that language
+            if dataset_name == "xnli":
+                xnli_lang_to_indices = {}
+                for lang, group in df_train.groupby("language"):
+                    xnli_lang_to_indices[lang] = group.index.tolist()
 
-        # These hold encoded perturbed samples, which will be embedded with model and used in distribution detection
-        input_ids, modeling_data = [], {}
+                input_ids, modeling_data = [], {}
+                for curr_lang, curr_group in df_sample.groupby("language"):
+                    logging.info(f"[XNLI] lg='{curr_lang}', {curr_group.shape[0]} examples")
+                    encoded_sample = model.to_internal(list(zip(curr_group["sentence1"].tolist(),
+                                                                curr_group["sentence2"].tolist())))
+                    input_ids.append(mock_ime(encoded_sample["input_ids"], encoded_sample["perturbable_mask"],
+                                              sample_data=used_sample_data[xnli_lang_to_indices[curr_lang]],
+                                              feature_groups=None))
+                    for k, v in encoded_sample["aux_data"].items():
+                        if k not in modeling_data:
+                            modeling_data[k] = [v]
+                        else:
+                            modeling_data[k].append(v)
 
-        raw_examples = df_sample[PRESET_COLNAMES[dataset_name]].values
-        raw_examples = list(map(lambda row: row[0] if len(row) == 1 else tuple(row), raw_examples))
-
-        xnli_curr_used_Lang = None
-
-        # For each instance, sample 1 perturbation
-        logging.info("Sampling perturbations")
-        for idx_ex, (raw_input, pretok_input) in enumerate(tqdm(zip(raw_examples, pretokenized_test_data),
-                                                                total=len(raw_examples))):
-            is_pretok = pretok_input is not None
-
-            # Obtain the predicted label, which the instance will be explained for
-            encoded_example = model.to_internal(
-                text_data=[pretok_input if is_pretok else raw_input],
-                is_split_into_units=is_pretok
-            )
-            probas = model.score(input_ids=encoded_example["input_ids"],
-                                 **encoded_example["aux_data"])
-            predicted_label = int(torch.argmax(probas))
-
-            feature_groups = None
-            if args.custom_features is not None:
-                word_ids = encoded_example["aux_data"]["alignment_ids"][0]
-                # TODO: dependency_parsing
-                if args.custom_features == "words":
-                    feature_groups = extract_groups(word_ids)
-                else:
-                    raise NotImplementedError(f"Unsupported custom features: '{args.custom_features}'")
-
-            if args.method_class == "lime":
-                res = method.explain_text(raw_input, label=predicted_label,
-                                          num_samples=5, explanation_length=None,
-                                          custom_features=feature_groups)
-                samples = res["samples"]
+                input_ids = torch.cat(input_ids)
+                modeling_data = {k: torch.cat(v) for k, v in modeling_data.items()}
             else:
-                # For IME with external LM, sampling data is generated on the fly
-                if args.method == "ime_elm":
-                    method.prepare_data(raw_input, label=predicted_label,
-                                        pretokenized_text_data=pretok_input,
-                                        custom_features=feature_groups)
-                # Make sure IME only uses data from same language as example for sampling perturbations
-                elif args.method == "ime" and dataset_name == "xnli":
-                    lang_of_example = df_sample.iloc[idx_ex]["language"]
+                input_ids = mock_ime(encoded_sample["input_ids"], encoded_sample["perturbable_mask"],
+                                     sample_data=used_sample_data, feature_groups=None)
+        elif args.method == "lime":
+            input_ids = mock_lime(encoded_sample["input_ids"], encoded_sample["perturbable_mask"],
+                                  replace_with_token=model.pad_token_id, feature_groups=None)
+        elif args.method == "ime_elm":
+            input_ids = mock_ime_elm(encoded_sample["input_ids"], encoded_sample["perturbable_mask"],
+                                     generator, feature_groups=None, **encoded_sample["aux_data"])
+        # LIME + LM and IME + internal LM use generators in the same way
+        elif args.method in ["lime_lm", "ime_ilm"]:
+            input_ids = mock_ime_ilm(encoded_sample["input_ids"], encoded_sample["perturbable_mask"],
+                                     generator, feature_groups=None, **encoded_sample["aux_data"])
+        else:
+            raise NotImplementedError(f"Invalid method '{args.method}'")
 
-                    if lang_of_example != xnli_curr_used_Lang:
-                        logging.info(f"[XNLI] Updating sample data to '{lang_of_example}'")
-                        xnli_curr_used_Lang = lang_of_example
-
-                        new_indices = xnli_lang_to_indices[lang_of_example]
-                        new_weights = data_weights[new_indices]
-                        new_data = used_sample_data[new_indices]
-                        method.update_sample_data(new_data, new_weights)
-
-                # In IME, select random sample from a random explained feature
-                perturbable_indices = \
-                    torch.arange(encoded_example["input_ids"].shape[1])[encoded_example["perturbable_mask"][0]]
-                num_groups = perturbable_indices.shape[0] if feature_groups is None else len(feature_groups)
-                if feature_groups is None:
-                    selected_feature = perturbable_indices[torch.randint(num_groups, ())].item()
-                else:
-                    selected_feature = torch.randint(num_groups, ()).item()
-
-                # IMPORTANT: assuming shared vocabulary, so we do not need to convert anything to generator's repr.
-                res = method.estimate_feature_importance(idx_feature=selected_feature,
-                                                         instance=encoded_example["input_ids"],
-                                                         num_samples=2,
-                                                         perturbable_mask=encoded_example["perturbable_mask"],
-                                                         feature_groups=feature_groups,
-                                                         **encoded_example["aux_data"])
-
-                samples = res["samples"]
-
-            # sample[0] is by convention the original sample in LIME, which does not use LIME's masking strategy
-            idx_selected = np.random.randint(1 if args.method_class == "lime" else 0,
-                                             len(samples))
-            input_ids.append(samples[idx_selected])
-            text_data.append(model.tokenizer.decode(input_ids[-1], skip_special_tokens=False))
-
-            # First example: initialize lists for additional data
-            if len(modeling_data.keys()) == 0:
-                for k in encoded_example["aux_data"].keys():
-                    modeling_data[k] = [encoded_example["aux_data"][k][0]]
-            else:
-                for k in modeling_data.keys():
-                    modeling_data[k].append(encoded_example["aux_data"][k][0])
-
-        input_ids = torch.tensor(input_ids)
-        modeling_data = {k: torch.stack(v) for k, v in modeling_data.items()}
+        assert input_ids.shape[0] == len(raw_examples)
+        for _i in range(len(raw_examples)):
+            text_data.append(model.tokenizer.decode(input_ids[_i]))
 
         num_batches = (input_ids.shape[0] + args.model_batch_size - 1) // args.model_batch_size
         for idx_batch in tqdm(range(num_batches), total=num_batches):
