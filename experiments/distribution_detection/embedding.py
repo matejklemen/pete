@@ -501,6 +501,6 @@ if __name__ == "__main__":
     np.save(os.path.join(mini_experiment_path, "other.npy"), other_embeddings)
 
     if len(text_data) > 0:
-        with open(os.path.join(mini_experiment_path, "perturbations.txt"), "w") as f:
+        with open(os.path.join(mini_experiment_path, "perturbations.txt"), "w", encoding="utf-8") as f:
             for line in text_data:
                 print(line, file=f)
