@@ -52,8 +52,7 @@ class SampleGenerator:
         `allow_truncation` specifies whether overflowing tokens (past max_seq_len) are allowed to be dropped. """
         raise NotImplementedError
 
-    def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor, num_samples: int,
-                 label: int, **aux_data) -> Dict:
+    def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor, num_samples: int, **aux_data) -> Dict:
         raise NotImplementedError
 
     def generate_masked_samples(self, input_ids: torch.Tensor,
