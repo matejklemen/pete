@@ -729,6 +729,64 @@ class RobertaForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizati
                                    is_split_into_units=is_split_into_units,
                                    truncation_strategy=truncation_strategy)
 
+    @torch.no_grad()
+    def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
+                 num_samples: Optional[int], **generation_kwargs):
+        # Note: currently assuming generation additional data is same for all samples
+        eff_input_ids = input_ids
+        if eff_input_ids.shape[0] == 1:
+            eff_input_ids = eff_input_ids.repeat((num_samples, 1))
+
+        eff_aux_data = {}
+        for attr_name in ["attention_mask"]:
+            attr_value = generation_kwargs[attr_name]
+            if attr_value.shape[0] == 1:
+                attr_value = attr_value.repeat((self.batch_size, 1))
+
+            attr_value = attr_value.to(self.device)
+            eff_aux_data[attr_name] = attr_value
+
+        num_attrs = eff_input_ids.shape[1]
+        perturbable_inds = torch.arange(num_attrs)[perturbable_mask[0]]
+
+        # Shuffle generation order to introduce some variance (needed especially if using greedy decoding)
+        weights = torch.zeros_like(eff_input_ids, dtype=torch.float32)
+        weights[:, perturbable_inds] = 1
+        generation_order = torch.multinomial(weights, num_samples=perturbable_inds.shape[0], replacement=False)
+
+        num_batches = (num_samples + self.batch_size - 1) // self.batch_size
+        for idx_batch in range(num_batches):
+            s_b, e_b = idx_batch * self.batch_size, (idx_batch + 1) * self.batch_size
+            curr_input_ids = eff_input_ids[s_b: e_b]  # view
+            curr_gen_order = generation_order[s_b: e_b]
+            orig_tokens = curr_input_ids.clone()
+
+            curr_batch_size = curr_input_ids.shape[0]
+            batch_indexer = torch.arange(curr_batch_size)
+
+            for i in range(curr_gen_order.shape[1]):
+                curr_indices = curr_gen_order[:, i]
+                curr_input_ids[batch_indexer, curr_indices] = self.tokenizer.mask_token_id
+
+                curr_aux_data = {k: v[: curr_batch_size] for k, v in eff_aux_data.items()}
+
+                logits = self.generator(input_ids=curr_input_ids.to(self.device),
+                                        **curr_aux_data)["logits"]
+
+                curr_logits = logits[batch_indexer, curr_indices, :]
+                for curr_filter in self.filters:
+                    curr_logits = curr_filter(curr_logits, orig_values=orig_tokens[batch_indexer, curr_indices])
+
+                probas = torch.softmax(curr_logits, dim=-1)
+                preds = torch.multinomial(probas, num_samples=1)[:, 0].cpu()
+
+                curr_input_ids[batch_indexer, curr_indices] = preds
+
+        return {
+            "input_ids": eff_input_ids
+        }
+
+    @torch.no_grad()
     def generate_masked_samples(self, input_ids: torch.Tensor, generation_mask: torch.Tensor, **generation_kwargs):
         num_samples = generation_mask.shape[0]
         num_features = input_ids.shape[1]
@@ -808,22 +866,121 @@ class XLMRobertaForMaskedLMGenerator(RobertaForMaskedLMGenerator, TransformersAl
         self.special_tokens_set = set(self.tokenizer.all_special_ids)
 
 
+class XLMRobertaForControlledMaskedLMGenerator(XLMRobertaForMaskedLMGenerator, TransformersAlignedTokenizationMixin):
+    def __init__(self, tokenizer_name, model_name, control_labels: List[str], max_seq_len, batch_size=8, device="cuda",
+                 strategy="top_k", top_p=0.9, top_k=5, threshold=0.1, label_weights: Optional[List] = None,
+                 monte_carlo_dropout: Optional[bool] = False):
+        super().__init__(tokenizer_name=tokenizer_name, model_name=model_name, max_seq_len=max_seq_len,
+                         batch_size=batch_size, device=device, strategy=strategy, top_p=top_p, top_k=top_k,
+                         threshold=threshold, monte_carlo_dropout=monte_carlo_dropout)
+
+        assert all(curr_control in self.tokenizer.all_special_tokens for curr_control in control_labels)
+        self.control_labels = torch.tensor(self.tokenizer.encode(control_labels, add_special_tokens=False,
+                                                                 is_split_into_words=True))
+        self.control_labels_str = control_labels
+
+        # make it impossible to sample control labels (those are set in place)
+        def mask_control(logits, **kwargs):
+            logits[:, self.control_labels] = -float("inf")
+            return logits
+        self.filters = [mask_control] + self.filters
+
+        self.label_weights = label_weights
+        if self.label_weights is None:
+            self.label_weights = [1.0] * len(self.control_labels)
+        self.label_weights = torch.tensor(self.label_weights)
+        self.label_weights /= torch.sum(self.label_weights)
+
+    @torch.no_grad()
+    def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
+                 num_samples: Optional[int], **generation_kwargs):
+        # Note: currently assuming generation additional data is same for all samples
+        # Make room for control label at start of sequence (at pos. 1)
+        extended_input_ids = extend_tensor(input_ids)
+        if extended_input_ids.shape[0] == 1:
+            extended_input_ids = extended_input_ids.repeat((num_samples, 1))
+
+        extended_pert_mask = extend_tensor(perturbable_mask)
+        eff_aux_data = {k: extend_tensor(generation_kwargs[k]) for k in ["attention_mask"]}
+
+        # Control labels are attendable
+        eff_aux_data["attention_mask"][:, 1] = 1
+
+        selected_control_labels = self.tokenizer.encode(generation_kwargs["control_labels"], add_special_tokens=False,
+                                                        is_split_into_words=True)
+        selected_control_labels = torch.tensor(selected_control_labels)
+        extended_input_ids[:, 1] = selected_control_labels
+
+        generated_res = super().generate(input_ids=extended_input_ids,
+                                         perturbable_mask=extended_pert_mask,
+                                         num_samples=num_samples, **eff_aux_data)
+
+        # Remove the control label
+        valid_tokens = torch.ones_like(extended_pert_mask)
+        valid_tokens[0, 1] = False
+
+        return {
+            "input_ids": generated_res["input_ids"][:, valid_tokens[0]]
+        }
+
+    @torch.no_grad()
+    def generate_masked_samples(self, input_ids: torch.Tensor,
+                                generation_mask: torch.Tensor,
+                                **generation_kwargs):
+        num_samples = generation_mask.shape[0]
+
+        eff_input_ids = extend_tensor(input_ids)
+        if eff_input_ids.shape[0] != num_samples:
+            eff_input_ids = eff_input_ids.repeat((num_samples, 1))
+        eff_generation_mask = extend_tensor(generation_mask)
+
+        # Either specific additional data is provided or additional data is same for all samples
+        eff_aux_data = {}
+        for k in ["attention_mask"]:
+            eff_aux_data[k] = generation_kwargs[k]
+            if generation_kwargs[k].shape[0] == 1:
+                eff_aux_data[k] = generation_kwargs[k].repeat((num_samples, 1))
+
+        eff_aux_data = {k: extend_tensor(v) for k, v in eff_aux_data.items()}
+        # Control labels are attendable
+        eff_aux_data["attention_mask"][:, 1] = 1
+        eff_generation_mask[:, 1] = False
+
+        control_labels = generation_kwargs["control_labels"]
+        encoded_control_labels = self.tokenizer.encode(control_labels, add_special_tokens=False,
+                                                       is_split_into_words=True)
+        eff_input_ids[:, 1] = torch.tensor(encoded_control_labels)
+
+        all_examples = super().generate_masked_samples(input_ids=eff_input_ids,
+                                                       generation_mask=eff_generation_mask,
+                                                       **eff_aux_data)
+
+        valid_tokens = torch.ones(eff_input_ids.shape[1], dtype=torch.bool)
+        valid_tokens[1] = False
+
+        return all_examples[:, valid_tokens]
+
+
 if __name__ == "__main__":
     NUM_SAMPLES = 10
-    GENERATOR_HANDLE = "/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/language_models/xlm-roberta-xnli-mlm"
-    generator = XLMRobertaForMaskedLMGenerator(tokenizer_name=GENERATOR_HANDLE, model_name=GENERATOR_HANDLE,
-                                               batch_size=4, max_seq_len=41,
-                                               device="cpu", strategy="top_p", top_p=0.0001,
-                                               monte_carlo_dropout=True)
+    GENERATOR_HANDLE = "/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/language_models/xlm-roberta-base-xnli-cmlm"
+    generator = XLMRobertaForControlledMaskedLMGenerator(tokenizer_name=GENERATOR_HANDLE, model_name=GENERATOR_HANDLE,
+                                                         batch_size=4, max_seq_len=42,
+                                                         device="cpu", strategy="top_p", top_p=0.0001,
+                                                         monte_carlo_dropout=True,
+                                                         control_labels=["<ENTAILMENT>", "<NEUTRAL>", "<CONTRADICTION>"])
 
     ex = ("A shirtless man skateboards on a ledge", "A man without a shirt")
     pretokenized_ex = (ex[0].split(" "), ex[1].split(" "))
     encoded = generator.to_internal([pretokenized_ex], is_split_into_units=True)
     mask = torch.logical_and(torch.randint(2, (NUM_SAMPLES, encoded["input_ids"].shape[1])),
                              encoded["perturbable_mask"].repeat((NUM_SAMPLES, 1)))
-    generated = generator.generate_masked_samples(encoded["input_ids"],
-                                                  generation_mask=mask,
-                                                  **encoded["aux_data"])
+    # generated = generator.generate_masked_samples(encoded["input_ids"],
+    #                                               generation_mask=mask,
+    #                                               **encoded["aux_data"])
+    generated = generator.generate(encoded["input_ids"], encoded["perturbable_mask"], num_samples=10,
+                                   control_labels=["<CONTRADICTION>" for _ in range(10)],
+                                   **encoded["aux_data"])["input_ids"]
 
     for curr_ex in generator.from_internal(generated, skip_special_tokens=False, **encoded["aux_data"]):
         print(curr_ex)
