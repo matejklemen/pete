@@ -171,11 +171,9 @@ class IMEInternalLMExplainer(IMEExplainer):
         if hasattr(self.generator, "label_weights"):
             randomly_selected_label = torch.multinomial(self.generator.label_weights, num_samples=num_samples,
                                                         replacement=True)
-            # A pair belonging to same sample is assigned the same label
-            randomly_selected_label = torch.stack((randomly_selected_label, randomly_selected_label)).T.flatten()
             randomly_selected_label = [self.generator.control_labels_str[i] for i in randomly_selected_label]
         else:
-            randomly_selected_label = [None] * (2 * num_samples)
+            randomly_selected_label = [None] * num_samples
 
         est_instance_features = eff_feature_groups[idx_superfeature]
 
@@ -185,19 +183,23 @@ class IMEInternalLMExplainer(IMEExplainer):
                                       num_permutations=num_samples)
         feature_pos = torch.nonzero(indices == idx_superfeature, as_tuple=False)
 
-        is_masked = torch.zeros((2 * num_samples, num_features), dtype=torch.bool)
+        is_masked = torch.zeros((num_samples, num_features), dtype=torch.bool)
         for idx_sample in range(num_samples):
             curr_feature_pos = int(feature_pos[idx_sample, 1])
             changed_features = self.indexer(eff_feature_groups, indices[idx_sample, curr_feature_pos + 1:])
 
-            # 1 sample with, 1 sample without current feature fixed
-            is_masked[2 * idx_sample: 2 * idx_sample + 2, changed_features] = True
-            is_masked[2 * idx_sample + 1, est_instance_features] = True
+            # Only the sample with more masked features is generated (i.e. one without fixed `est_instance_features`)
+            is_masked[idx_sample, changed_features] = True
+            is_masked[idx_sample, est_instance_features] = True
 
         all_examples = self.generator.generate_masked_samples(instance,
                                                               generation_mask=is_masked,
                                                               control_labels=randomly_selected_label,
                                                               **generation_kwargs)
+
+        # one example with, one without estimated feature fixed to its original value
+        all_examples = torch.repeat_interleave(all_examples, 2, dim=0)
+        all_examples[::2, est_instance_features] = instance[0, est_instance_features]
 
         text_examples = self.generator.from_internal(all_examples, **generation_kwargs)
         model_examples = self.model.to_internal(text_examples)
@@ -284,10 +286,9 @@ class IMEHybridExplainer(IMEExplainer):
             randomly_selected_label = torch.multinomial(self.generator.label_weights, num_samples=num_samples,
                                                         replacement=True)
             # A pair belonging to same sample is assigned the same label
-            randomly_selected_label = torch.stack((randomly_selected_label, randomly_selected_label)).T.flatten()
             randomly_selected_label = [self.generator.control_labels_str[i] for i in randomly_selected_label]
         else:
-            randomly_selected_label = [None] * (2 * num_samples)
+            randomly_selected_label = [None] * num_samples
 
         est_instance_features = eff_feature_groups[idx_superfeature]
 
@@ -308,21 +309,23 @@ class IMEHybridExplainer(IMEExplainer):
         else:
             randomly_selected_val = instance[0, est_instance_features].repeat((num_samples, 1))
 
-        is_masked = torch.zeros((2 * num_samples, num_features), dtype=torch.bool)
-        samples = instance.repeat((2 * num_samples, 1))
+        is_masked = torch.zeros((num_samples, num_features), dtype=torch.bool)
         for idx_sample in range(num_samples):
             curr_feature_pos = int(feature_pos[idx_sample, 1])
             changed_features = self.indexer(eff_feature_groups, indices[idx_sample, curr_feature_pos + 1:])
 
             # 1 sample with, 1 sample "without" current feature fixed:
             # current feature randomized in second sample, but using sample data instead of a generator
-            is_masked[2 * idx_sample: 2 * idx_sample + 2, changed_features] = True
-            samples[2 * idx_sample + 1, est_instance_features] = randomly_selected_val[idx_sample]
+            is_masked[idx_sample, changed_features] = True
 
-        all_examples = self.generator.generate_masked_samples(samples,
+        all_examples = self.generator.generate_masked_samples(instance,
                                                               generation_mask=is_masked,
                                                               control_labels=randomly_selected_label,
                                                               **generation_kwargs)
+
+        # hybrid step: the example that doesn't have fixed feature value obtains it from randomly chosen example
+        all_examples = torch.repeat_interleave(all_examples, 2, dim=0)
+        all_examples[::2, est_instance_features] = randomly_selected_val
 
         text_examples = self.generator.from_internal(all_examples, **generation_kwargs)
         model_examples = self.model.to_internal(text_examples)
