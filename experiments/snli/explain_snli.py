@@ -90,7 +90,7 @@ lime_parser.add_argument("--kernel_width", type=float, default=1.0)
 
 
 if __name__ == "__main__":
-    args = methods_parser.parse_args(["ime"])
+    args = methods_parser.parse_args()
     dataset_name = "snli"  # some arguments can be automatically extracted from presets
     args = runtime_parse_args(args)
     compute_required = args.method_class == "ime" and args.experiment_type == "required_samples"
