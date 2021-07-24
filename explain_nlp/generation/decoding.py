@@ -18,7 +18,7 @@ def top_k_decoding(logits: torch.Tensor, top_k: int):
     return top_i[torch.arange(logits.shape[0]), torch.flatten(selected)].unsqueeze(1)
 
 
-def filter_factory(strategy="top_p", top_p=0.9, top_k=5, threshold=0.1,
+def filter_factory(strategy="top_p", top_p=0.9, top_k=5,
                    allowed_values: List[torch.Tensor] = None):
     if strategy is None:
         # no-op, used to simplify code
@@ -30,8 +30,6 @@ def filter_factory(strategy="top_p", top_p=0.9, top_k=5, threshold=0.1,
     elif strategy == "top_k":
         def strategy_fn(logits, **strategy_kwargs):
             return top_k_filtering(logits, top_k=top_k)
-    elif strategy == "threshold":
-        raise NotImplementedError("TODO")
     elif strategy == "unique":
         def strategy_fn(logits, orig_values, **strategy_kwargs):
             return filter_unique(logits, orig_values=orig_values)

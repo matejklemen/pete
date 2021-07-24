@@ -37,10 +37,9 @@ general_parser.add_argument("--generator_dir", type=str,
 general_parser.add_argument("--generator_batch_size", type=int, default=8)
 general_parser.add_argument("--generator_max_seq_len", type=int, default=41)
 general_parser.add_argument("--strategy", type=str, default="top_p",
-                            choices=["top_k", "top_p", "threshold", "greedy"])
+                            choices=["top_k", "top_p", "greedy"])
 general_parser.add_argument("--top_p", type=float, default=0.95)
 general_parser.add_argument("--top_k", type=int, default=3)
-general_parser.add_argument("--threshold", type=float, default=0.1)
 general_parser.add_argument("--unique_dropout", type=float, default=0.0)
 general_parser.add_argument("--shared_vocabulary", action="store_true",
                             help="If set, methods assume the model and generator use same vocabulary and do not need "

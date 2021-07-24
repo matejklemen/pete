@@ -7,15 +7,13 @@ from explain_nlp.generation.decoding import filter_factory
 
 class SampleGenerator:
     def __init__(self, max_seq_len: int, batch_size: int = 8, device: str = "cuda",
-                 strategy: Union[str, List] = "top_p", top_p: Optional[float] = None, top_k: Optional[int] = 5,
-                 threshold: Optional[float] = 0.1):
+                 strategy: Union[str, List] = "top_p", top_p: Optional[float] = None, top_k: Optional[int] = 5):
         self.max_seq_len = max_seq_len
         self.batch_size = batch_size
         self.device = device
         self.strategy = strategy
         self.top_p = top_p
         self.top_k = top_k
-        self.threshold = threshold
 
         assert self.device in ["cpu", "cuda"]
         if self.device == "cuda" and not torch.cuda.is_available():
@@ -26,7 +24,7 @@ class SampleGenerator:
         for curr_strategy in strategy_list:
             if isinstance(curr_strategy, str):
                 self.filters.append(filter_factory(strategy=curr_strategy,
-                                                   top_p=top_p, top_k=top_k, threshold=threshold))
+                                                   top_p=top_p, top_k=top_k))
             else:
                 # custom function: (logits, **kwargs) => new_logits
                 self.filters.append(curr_strategy)

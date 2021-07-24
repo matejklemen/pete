@@ -10,10 +10,9 @@ from explain_nlp.utils.tokenization_utils import TransformersAlignedTokenization
 
 class TrigramForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizationMixin):
     def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
-                 strategy="top_p", top_p=0.9, top_k=5, threshold=0.1,
-                 generate_cover: Optional[bool] = False):
+                 strategy="top_p", top_p=0.9, top_k=5, generate_cover: Optional[bool] = False):
         super().__init__(max_seq_len=max_seq_len, batch_size=batch_size, device=device,
-                         strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
+                         strategy=strategy, top_p=top_p, top_k=top_k)
 
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
@@ -102,9 +101,9 @@ class TrigramForMaskedLMGenerator(SampleGenerator, TransformersAlignedTokenizati
 
 class UnigramLMGenerator(SampleGenerator, TransformersAlignedTokenizationMixin):
     def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
-                 strategy="top_k", top_p=0.9, top_k=5, threshold=0.1):
+                 strategy="top_k", top_p=0.9, top_k=5):
         super().__init__(max_seq_len=max_seq_len, batch_size=batch_size, device=device,
-                         strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
+                         strategy=strategy, top_p=top_p, top_k=top_k)
 
         if device == "cuda":
             warnings.warn("Device 'cuda' is not supported for UnigramLMGenerator, defaulting to cpu")
@@ -210,10 +209,10 @@ class UnigramLMGenerator(SampleGenerator, TransformersAlignedTokenizationMixin):
 
 class PositionalUnigramLMGenerator(UnigramLMGenerator):
     def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
-                 strategy="top_k", top_p=0.9, top_k=5, threshold=0.1):
+                 strategy="top_k", top_p=0.9, top_k=5):
         super().__init__(tokenizer_name=tokenizer_name, model_name=model_name,
                          max_seq_len=max_seq_len, batch_size=batch_size, device=device,
-                         strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
+                         strategy=strategy, top_p=top_p, top_k=top_k)
         assert self.generator.max_length is not None
         assert max_seq_len <= self.generator.max_length
 
@@ -250,11 +249,11 @@ class PositionalUnigramLMGenerator(UnigramLMGenerator):
 
 class UnigramControlledLMGenerator(UnigramLMGenerator):
     def __init__(self, tokenizer_name, model_name, control_labels: List[str], max_seq_len,
-                 batch_size=8, device="cuda", strategy="top_k", top_p=0.9, top_k=5, threshold=0.1,
+                 batch_size=8, device="cuda", strategy="top_k", top_p=0.9, top_k=5,
                  label_weights: Optional[List] = None):
         super().__init__(tokenizer_name=tokenizer_name, model_name=model_name,
                          max_seq_len=max_seq_len, batch_size=batch_size, device=device,
-                         strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
+                         strategy=strategy, top_p=top_p, top_k=top_k)
 
         assert all(curr_control in self.tokenizer.all_special_tokens for curr_control in control_labels)
         self.control_labels = torch.tensor(self.tokenizer.encode(control_labels, add_special_tokens=False))

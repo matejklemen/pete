@@ -19,8 +19,7 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                              device="cpu" if args.use_cpu else "cuda",
                                              strategy=args.strategy,
                                              top_p=args.top_p,
-                                             top_k=args.top_k,
-                                             threshold=args.threshold)
+                                             top_k=args.top_k)
     elif args.generator_type == "bert_cmlm":
         generator = BertForControlledMaskedLMGenerator(tokenizer_name=args.generator_dir,
                                                        model_name=args.generator_dir,
@@ -32,7 +31,6 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                                        strategy=args.strategy,
                                                        top_p=args.top_p,
                                                        top_k=args.top_k,
-                                                       threshold=args.threshold,
                                                        unique_dropout=args.unique_dropout)
     elif args.generator_type == "xlmr_mlm":
         generator = XLMRobertaForMaskedLMGenerator(tokenizer_name=args.generator_dir,
@@ -42,8 +40,7 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                                    device="cpu" if args.use_cpu else "cuda",
                                                    strategy=args.strategy,
                                                    top_p=args.top_p,
-                                                   top_k=args.top_k,
-                                                   threshold=args.threshold)
+                                                   top_k=args.top_k)
     elif args.generator_type == "xlmr_cmlm":
         generator = XLMRobertaForControlledMaskedLMGenerator(tokenizer_name=args.generator_dir,
                                                              model_name=args.generator_dir,
@@ -54,8 +51,7 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                                              device="cpu" if args.use_cpu else "cuda",
                                                              strategy=args.strategy,
                                                              top_p=args.top_p,
-                                                             top_k=args.top_k,
-                                                             threshold=args.threshold)
+                                                             top_k=args.top_k)
     elif args.generator_type == "roberta_mlm":
         generator = RobertaForMaskedLMGenerator(tokenizer_name=args.generator_dir,
                                                 model_name=args.generator_dir,
@@ -64,8 +60,7 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                                 device="cpu" if args.use_cpu else "cuda",
                                                 strategy=args.strategy,
                                                 top_p=args.top_p,
-                                                top_k=args.top_k,
-                                                threshold=args.threshold)
+                                                top_k=args.top_k)
     elif args.generator_type == "cblstm_lm":
         generator = ContextualBiLSTMLMGenerator(tokenizer_name=args.generator_dir,
                                                 model_name=args.generator_dir,
@@ -74,8 +69,7 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                                 device="cpu" if args.use_cpu else "cuda",
                                                 strategy=args.strategy,
                                                 top_p=args.top_p,
-                                                top_k=args.top_k,
-                                                threshold=args.threshold)
+                                                top_k=args.top_k)
     else:
         raise NotImplementedError(f"'{args.generator_type}' is not a supported generator type")
 

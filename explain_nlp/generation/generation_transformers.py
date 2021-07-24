@@ -215,9 +215,9 @@ class TransformersCMLMGenerationMixin(TransformersMLMGenerationMixin):
 # TODO: rework generate, but first think about whether it will follow MLM-style generation or something else
 class GPTLMGenerator(SampleGenerator, TransformersAlignedTokenizationMixin):
     def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=2, device="cuda",
-                 strategy="top_p", top_p=0.9, top_k=5, threshold=0.1):
+                 strategy="top_p", top_p=0.9, top_k=5):
         super().__init__(max_seq_len=max_seq_len, batch_size=batch_size, device=device,
-                         strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
+                         strategy=strategy, top_p=top_p, top_k=top_k)
 
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
@@ -440,11 +440,10 @@ class GPTLMGenerator(SampleGenerator, TransformersAlignedTokenizationMixin):
 
 class GPTControlledLMGenerator(GPTLMGenerator):
     def __init__(self, tokenizer_name, model_name, control_labels: List[str], max_seq_len,
-                 batch_size=2, device="cuda", strategy="greedy", top_p=0.9, top_k=5, threshold=0.1,
+                 batch_size=2, device="cuda", strategy="greedy", top_p=0.9, top_k=5,
                  label_weights: Optional[List] = None):
         super().__init__(tokenizer_name=tokenizer_name, model_name=model_name, batch_size=batch_size,
-                         max_seq_len=max_seq_len, device=device, top_p=top_p, top_k=top_k, threshold=threshold,
-                         strategy=strategy)
+                         max_seq_len=max_seq_len, device=device, top_p=top_p, top_k=top_k, strategy=strategy)
 
         assert all(curr_control in self.tokenizer.all_special_tokens for curr_control in control_labels)
         self.control_labels = torch.tensor(self.tokenizer.encode(control_labels, add_special_tokens=False))
@@ -534,10 +533,9 @@ class GPTControlledLMGenerator(GPTLMGenerator):
 
 class BertForMaskedLMGenerator(SampleGenerator, TransformersMLMGenerationMixin, TransformersAlignedTokenizationMixin):
     def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
-                 strategy="top_k", top_p=0.9, top_k=5, threshold=0.1,
-                 monte_carlo_dropout: Optional[bool] = False):
+                 strategy="top_k", top_p=0.9, top_k=5, monte_carlo_dropout: Optional[bool] = False):
         super().__init__(max_seq_len=max_seq_len, batch_size=batch_size, device=device,
-                         strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
+                         strategy=strategy, top_p=top_p, top_k=top_k)
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
 
@@ -638,13 +636,12 @@ class BertForMaskedLMGenerator(SampleGenerator, TransformersMLMGenerationMixin, 
 
 class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator, TransformersCMLMGenerationMixin):
     def __init__(self, tokenizer_name, model_name, control_labels: List[str], max_seq_len,
-                 batch_size=8, device="cuda", strategy="top_p", top_p=0.9, top_k=5, threshold=0.1,
+                 batch_size=8, device="cuda", strategy="top_p", top_p=0.9, top_k=5,
                  label_weights: Optional[List] = None, unique_dropout: Optional[float] = 0.0,
                  monte_carlo_dropout: Optional[bool] = False):
         super().__init__(tokenizer_name=tokenizer_name, model_name=model_name,
                          batch_size=batch_size, max_seq_len=max_seq_len, device=device,
-                         strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold,
-                         monte_carlo_dropout=monte_carlo_dropout)
+                         strategy=strategy, top_p=top_p, top_k=top_k, monte_carlo_dropout=monte_carlo_dropout)
 
         assert all(curr_control in self.tokenizer.all_special_tokens for curr_control in control_labels)
         self.control_labels = torch.tensor(self.tokenizer.encode(control_labels, add_special_tokens=False,
@@ -682,9 +679,9 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator, TransformersC
 class RobertaForMaskedLMGenerator(SampleGenerator, TransformersMLMGenerationMixin,
                                   TransformersAlignedTokenizationMixin):
     def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
-                 strategy="top_k", top_p=0.9, top_k=5, threshold=0.1, monte_carlo_dropout: Optional[bool] = False):
+                 strategy="top_k", top_p=0.9, top_k=5, monte_carlo_dropout: Optional[bool] = False):
         super().__init__(max_seq_len=max_seq_len, batch_size=batch_size, device=device,
-                         strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
+                         strategy=strategy, top_p=top_p, top_k=top_k)
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
 
@@ -778,9 +775,9 @@ class RobertaForMaskedLMGenerator(SampleGenerator, TransformersMLMGenerationMixi
 
 class XLMRobertaForMaskedLMGenerator(RobertaForMaskedLMGenerator, TransformersAlignedTokenizationMixin):
     def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
-                 strategy="top_k", top_p=0.9, top_k=5, threshold=0.1, monte_carlo_dropout: Optional[bool] = False):
+                 strategy="top_k", top_p=0.9, top_k=5, monte_carlo_dropout: Optional[bool] = False):
         SampleGenerator.__init__(self, max_seq_len=max_seq_len, batch_size=batch_size, device=device,
-                                 strategy=strategy, top_p=top_p, top_k=top_k, threshold=threshold)
+                                 strategy=strategy, top_p=top_p, top_k=top_k)
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
 
@@ -798,11 +795,11 @@ class XLMRobertaForMaskedLMGenerator(RobertaForMaskedLMGenerator, TransformersAl
 class XLMRobertaForControlledMaskedLMGenerator(XLMRobertaForMaskedLMGenerator, TransformersCMLMGenerationMixin,
                                                TransformersAlignedTokenizationMixin):
     def __init__(self, tokenizer_name, model_name, control_labels: List[str], max_seq_len, batch_size=8, device="cuda",
-                 strategy="top_k", top_p=0.9, top_k=5, threshold=0.1, label_weights: Optional[List] = None,
+                 strategy="top_k", top_p=0.9, top_k=5, label_weights: Optional[List] = None,
                  monte_carlo_dropout: Optional[bool] = False):
         super().__init__(tokenizer_name=tokenizer_name, model_name=model_name, max_seq_len=max_seq_len,
                          batch_size=batch_size, device=device, strategy=strategy, top_p=top_p, top_k=top_k,
-                         threshold=threshold, monte_carlo_dropout=monte_carlo_dropout)
+                         monte_carlo_dropout=monte_carlo_dropout)
 
         assert all(curr_control in self.tokenizer.all_special_tokens for curr_control in control_labels)
         self.control_labels = torch.tensor(self.tokenizer.encode(control_labels, add_special_tokens=False,
