@@ -297,6 +297,7 @@ class IMEExplainer:
         # If not all perturbable features are covered, new custom features can get automatically added
         if new_custom_features is not None:
             custom_features = new_custom_features
+            num_additional = len(custom_features)
 
         feature_to_group_index = dict(zip(used_inds, range(len(used_inds))))
 

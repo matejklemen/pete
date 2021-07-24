@@ -81,6 +81,7 @@ class LIMEExplainer:
         # If not all perturbable features are covered, new custom features can get automatically added
         if new_custom_features is not None:
             custom_features = new_custom_features
+            num_additional = len(new_custom_features)
 
         num_used = len(used_inds)
         used_inds = torch.tensor(used_inds)
