@@ -637,8 +637,7 @@ class BertForMaskedLMGenerator(SampleGenerator, TransformersMLMGenerationMixin, 
 class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator, TransformersCMLMGenerationMixin):
     def __init__(self, tokenizer_name, model_name, control_labels: List[str], max_seq_len,
                  batch_size=8, device="cuda", strategy="top_p", top_p=0.9, top_k=5,
-                 label_weights: Optional[List] = None, unique_dropout: Optional[float] = 0.0,
-                 monte_carlo_dropout: Optional[bool] = False):
+                 label_weights: Optional[List] = None, monte_carlo_dropout: Optional[bool] = False):
         super().__init__(tokenizer_name=tokenizer_name, model_name=model_name,
                          batch_size=batch_size, max_seq_len=max_seq_len, device=device,
                          strategy=strategy, top_p=top_p, top_k=top_k, monte_carlo_dropout=monte_carlo_dropout)

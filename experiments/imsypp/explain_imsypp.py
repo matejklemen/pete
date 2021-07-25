@@ -56,7 +56,6 @@ general_parser.add_argument("--strategy", type=str, default="top_p",
                             choices=["top_k", "top_p", "greedy"])
 general_parser.add_argument("--top_p", type=float, default=0.95)
 general_parser.add_argument("--top_k", type=int, default=3)
-general_parser.add_argument("--unique_dropout", type=float, default=0.0)
 general_parser.add_argument("--shared_vocabulary", action="store_true",
                             help="If set, methods assume the model and generator use same vocabulary and do not need "
                                  "conversion between representations")

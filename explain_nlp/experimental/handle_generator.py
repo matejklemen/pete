@@ -30,8 +30,7 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                                        device="cpu" if args.use_cpu else "cuda",
                                                        strategy=args.strategy,
                                                        top_p=args.top_p,
-                                                       top_k=args.top_k,
-                                                       unique_dropout=args.unique_dropout)
+                                                       top_k=args.top_k)
     elif args.generator_type == "xlmr_mlm":
         generator = XLMRobertaForMaskedLMGenerator(tokenizer_name=args.generator_dir,
                                                    model_name=args.generator_dir,

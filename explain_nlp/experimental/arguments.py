@@ -40,7 +40,6 @@ general_parser.add_argument("--strategy", type=str, default="top_p",
                             choices=["top_k", "top_p", "greedy"])
 general_parser.add_argument("--top_p", type=float, default=0.95)
 general_parser.add_argument("--top_k", type=int, default=3)
-general_parser.add_argument("--unique_dropout", type=float, default=0.0)
 general_parser.add_argument("--shared_vocabulary", action="store_true",
                             help="If set, methods assume the model and generator use same vocabulary and do not need "
                                  "conversion between representations")
@@ -73,10 +72,10 @@ ime_parser.add_argument("--num_generated_samples", type=int, default=100,
 lime_parser = subparsers.add_parser("lime", parents=[general_parser])
 lime_parser.add_argument("--method", type=str, default="lime",
                          choices=["lime", "lime_lm"])
-lime_parser.add_argument("--num_samples", type=int, default=10,
+lime_parser.add_argument("--num_samples", type=int, default=100,
                          help="Number of samples to take when generating neighbourhood")
 lime_parser.add_argument("--explanation_length", type=int, default=None)
-lime_parser.add_argument("--kernel_width", type=float, default=25.0)
+lime_parser.add_argument("--kernel_width", type=float, default=1.0)
 
 
 def runtime_parse_args(args):
