@@ -50,7 +50,6 @@ if __name__ == "__main__":
     # Our implementation (part 1: estimate required number of samples to satisfy the max allowed error constraint)
     custom_implementation = IMEExplainer(model=InterpretableLR(skl_model=model),
                                          sample_data=torch.from_numpy(X_tr.values),
-                                         return_variance=True,
                                          return_num_samples=True)
     res = custom_implementation.explain(torch.from_numpy(chosen_instance),
                                         min_samples_per_feature=1000, max_samples=8*1000)
@@ -64,7 +63,7 @@ if __name__ == "__main__":
     )
     print(f"Required max samples: {required_max_samples}")
 
-    # SHAP implementation of IME (seems to be a modified version of the original algorithm though)
+    # SHAP implementation of IME
     shap_implementation = shap.SamplingExplainer(model=model.predict, data=X_tr)
     shap_importances = shap_implementation.explain(chosen_instance, min_samples_per_feature=1000,
                                                    nsamples=int(required_max_samples))
