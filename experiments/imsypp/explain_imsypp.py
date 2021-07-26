@@ -9,7 +9,7 @@ import torch
 
 from explain_nlp.experimental.arguments import runtime_parse_args, log_arguments
 from explain_nlp.experimental.core import MethodData
-from explain_nlp.experimental.data import load_dataset, TransformerSeqPairDataset, IDX_TO_LABEL, LABEL_TO_IDX
+from explain_nlp.experimental.data import load_dataset, TransformerSeqDataset, IDX_TO_LABEL, LABEL_TO_IDX
 from explain_nlp.experimental.handle_explainer import load_explainer
 from explain_nlp.experimental.handle_generator import load_generator
 from explain_nlp.experimental.handle_model import load_model
@@ -29,7 +29,7 @@ general_parser.add_argument("--until", type=int, default=None, help="Until which
 general_parser.add_argument("--random_seed", type=int, default=None)
 general_parser.add_argument("--use_cpu", action="store_true", help="Use CPU instead of GPU")
 
-general_parser.add_argument("--custom_features", type=str, default="words",
+general_parser.add_argument("--custom_features", type=str, default=None,
                             choices=[None, "words", "sentences", "dependency_parsing"])
 general_parser.add_argument("--return_generated_samples", action="store_true")
 general_parser.add_argument("--return_model_scores", action="store_true")
@@ -148,9 +148,9 @@ if __name__ == "__main__":
         # Hybrid IME estimates feature importance in generator's representation
         used_tokenizer = model.tokenizer if args.method == "ime" else generator.tokenizer
         used_max_seq_len = model.max_seq_len if args.method == "ime" else generator.max_seq_len
-        train_set = TransformerSeqPairDataset.build_dataset(dataset_name, df_train,
-                                                            tokenizer=used_tokenizer,
-                                                            max_seq_len=used_max_seq_len)
+        train_set = TransformerSeqDataset.build_dataset(dataset_name, df_train,
+                                                        tokenizer=used_tokenizer,
+                                                        max_seq_len=used_max_seq_len)
 
         data_weights = create_uniform_weights(train_set.input_ids, train_set.special_tokens_mask)
         used_sample_data = train_set.input_ids
