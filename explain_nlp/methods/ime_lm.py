@@ -201,8 +201,14 @@ class IMEInternalLMExplainer(IMEExplainer):
         all_examples = torch.repeat_interleave(all_examples, 2, dim=0)
         all_examples[::2, est_instance_features] = instance[0, est_instance_features]
 
-        text_examples = self.generator.from_internal(all_examples, **generation_kwargs)
-        model_examples = self.model.to_internal(text_examples)
+        if self.shared_vocabulary:
+            model_examples = {
+                "input_ids": all_examples,
+                "aux_data": generation_kwargs
+            }
+        else:
+            text_examples = self.generator.from_internal(all_examples, **generation_kwargs)
+            model_examples = self.model.to_internal(text_examples)
 
         scores = self.model.score(model_examples["input_ids"], **model_examples["aux_data"])
         scores_with = scores[::2]
@@ -327,8 +333,14 @@ class IMEHybridExplainer(IMEExplainer):
         all_examples = torch.repeat_interleave(all_examples, 2, dim=0)
         all_examples[::2, est_instance_features] = randomly_selected_val
 
-        text_examples = self.generator.from_internal(all_examples, **generation_kwargs)
-        model_examples = self.model.to_internal(text_examples)
+        if self.shared_vocabulary:
+            model_examples = {
+                "input_ids": all_examples,
+                "aux_data": generation_kwargs
+            }
+        else:
+            text_examples = self.generator.from_internal(all_examples, **generation_kwargs)
+            model_examples = self.model.to_internal(text_examples)
 
         scores = self.model.score(model_examples["input_ids"], **model_examples["aux_data"])
         scores_with = scores[::2]
@@ -369,7 +381,7 @@ if __name__ == "__main__":
                                                    device="cpu",
                                                    monte_carlo_dropout=True)
 
-    METHOD = "ime_elm"
+    METHOD = "ime_ilm"
     if METHOD == "ime_ilm":
         explainer = IMEInternalLMExplainer(model=model,
                                            generator=generator,

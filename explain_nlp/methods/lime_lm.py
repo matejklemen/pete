@@ -60,8 +60,14 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
                                                                     generation_mask=removal_mask,
                                                                     control_labels=randomly_selected_label,
                                                                     **generation_kwargs)
-        text_examples = self.generator.from_internal(generated_examples, **generation_kwargs)
-        model_examples = self.model.to_internal(text_examples)
+        if self.shared_vocabulary:
+            model_examples = {
+                "input_ids": generated_examples,
+                "aux_data": generation_kwargs
+            }
+        else:
+            text_examples = self.generator.from_internal(generated_examples, **generation_kwargs)
+            model_examples = self.model.to_internal(text_examples)
 
         return model_examples["input_ids"]
 
@@ -73,16 +79,16 @@ if __name__ == "__main__":
     from explain_nlp.visualizations.internal import visualize_lime_internals
 
     model = InterpretableBertForSequenceClassification(
-        model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
-        tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
+        model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/classifiers/snli_bert_uncased",
+        tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/classifiers/snli_bert_uncased",
         batch_size=8,
         max_seq_len=41,
         device="cpu"
     )
 
     generator = BertForControlledMaskedLMGenerator(
-        model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
-        tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/bert_snli_clm_best",
+        model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/language_models/bert_snli_clm_best",
+        tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/language_models/bert_snli_clm_best",
         batch_size=8,
         max_seq_len=42,
         device="cpu",
