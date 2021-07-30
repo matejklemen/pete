@@ -86,10 +86,24 @@ class SentenceExplainer(StanzaExplainer):
 
 class DependencyTreeExplainer(StanzaExplainer):
     def __init__(self, explainer: Union[LIMEExplainer, IMEExplainer], stanza_pipeline: stanza.Pipeline,
-                 return_steps=False):
+                 allow_sentence_explanations=False, return_steps=False):
+        """ Explain a sequence with units determined by the dependency structure.
+
+        Args:
+            explainer:
+                Used explanation method
+            stanza_pipeline:
+                A stanza.Pipeline object, initialized with the "dependency_parsing" processor
+            allow_sentence_explanations:
+                Whether to allow unit grouping to happen at depth 0, i.e. if the whole sentence can be treated as a
+                single unit
+            return_steps:
+                Whether to return ALL steps of optimization instead of just the final result
+        """
         self.explainer = explainer
         self.stanza_pipe = stanza_pipeline
         self.return_steps = return_steps
+        self.min_considered_depth = 0 if allow_sentence_explanations else 1
 
         assert "depparse" in self.stanza_pipe.processors
 
@@ -119,7 +133,6 @@ class DependencyTreeExplainer(StanzaExplainer):
         pretokenized_example = self.word_tokenize(truncated_text_data)
 
         encoded_input = self.explainer.model.to_internal([pretokenized_example], is_split_into_units=True)
-
         features = stanza_word_features(truncated_text_data, pipe=self.stanza_pipe, do_depparse=True)
         # Map root of each subtree to its children
         parent_to_children = {}
@@ -130,7 +143,9 @@ class DependencyTreeExplainer(StanzaExplainer):
 
         # Sort subtrees (roots) by (1) depth and (2) position in word, both ascending, i.e.
         #  we consider options by decreasing depth in left-to-right order
-        merge_options = sorted([(parent, features["word_id_to_depth"][parent]) for parent in parent_to_children],
+        merge_options = sorted([(parent, features["word_id_to_depth"][parent])
+                                for parent in parent_to_children
+                                if features["word_id_to_depth"][parent] >= self.min_considered_depth],
                                key=lambda tup: (-tup[1], tup[0]))
 
         word_ids = encoded_input["aux_data"]["alignment_ids"][0]
@@ -194,8 +209,8 @@ if __name__ == "__main__":
 
     nlp = stanza.Pipeline(lang="en", processors="tokenize,pos,lemma,depparse")
     model = InterpretableBertForSequenceClassification(
-        model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
-        tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
+        model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/classifiers/snli_bert_uncased",
+        tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/classifiers/snli_bert_uncased",
         batch_size=2,
         max_seq_len=41,
         device="cpu"
@@ -205,7 +220,7 @@ if __name__ == "__main__":
                                         return_steps=True)
     res = explainer.explain_text(text_data=example,
                                  label=EXPLAINED_LABEL,
-                                 num_samples=10)
+                                 num_samples=100)
 
     if explainer.return_steps:
         highlight_plot(list(map(lambda step: step["input"], res)),
