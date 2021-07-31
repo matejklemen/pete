@@ -118,7 +118,7 @@ if __name__ == "__main__":
         pretokenized_test_data = []
         for idx_subset in range((df_test.shape[0] + STANZA_BATCH_SIZE - 1) // STANZA_BATCH_SIZE):
             s, e = idx_subset * STANZA_BATCH_SIZE, (1 + idx_subset) * STANZA_BATCH_SIZE
-            for s0 in nlp("\n\n".join(df_test["besedilo"].iloc[s: e].values)).sentences:
+            for s0 in nlp("\n\n".join(df_test["content"].iloc[s: e].values)).sentences:
                 pretokenized_test_data.append([token.words[0].text for token in s0.tokens])
 
     raw_examples = df_test["content"].tolist()
