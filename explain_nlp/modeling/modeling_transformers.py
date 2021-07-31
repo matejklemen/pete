@@ -226,12 +226,13 @@ class InterpretableRobertaBase(InterpretableModel, TransformersAlignedTokenizati
                                  f"Either provide a single tensor or one tensor per instance")
 
         if return_tokens:
+            special_token_ids_set = self.special_token_ids
             def decoding_fn(input_ids, **decode_kwargs):
                 decoded_ids = []
                 for curr_id in input_ids:
                     str_token = self.tokenizer.decode(curr_id, **decode_kwargs).strip()
                     # Happens if trying to decode special token with skip_special_tokens=True
-                    if not str_token:
+                    if not str_token and curr_id in special_token_ids_set:
                         continue
 
                     decoded_ids.append(str_token)
