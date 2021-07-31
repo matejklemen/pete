@@ -233,7 +233,6 @@ if __name__ == "__main__":
             method = load_custom_explainer(explanation_method=base_method,
                                            custom_features=args.custom_features,
                                            lang=lang_of_example)
-            curr_lang = lang_of_example
 
         encoded_example = model.to_internal(
             text_data=[pretokenized_test_data[idx_example]
@@ -255,6 +254,7 @@ if __name__ == "__main__":
         else:  # IME*
             # Only use sampling data corresponding to the language of the explained instance
             if lang_of_example != curr_lang and args.method in {"ime", "ime_hybrid"}:
+                logging.info(f"Updating sampling data to samples for '{lang_of_example}'")
                 curr_indices = xnli_lang_to_indices[lang_of_example]
                 method.update_sample_data(used_sample_data[curr_indices], data_weights[curr_indices])
 
@@ -300,6 +300,8 @@ if __name__ == "__main__":
                                 model_scores=[[] if scores is None else scores
                                               for scores in res["scores"]] if args.return_model_scores else [],
                                 **side_results)
+
+        curr_lang = lang_of_example
 
         if (1 + idx_example) % args.save_every_n_examples == 0:
             logging.info(f"Saving data to {args.experiment_dir}")
