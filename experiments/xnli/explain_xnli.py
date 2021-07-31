@@ -119,7 +119,7 @@ def load_custom_explainer(explanation_method, custom_features, lang):
 
 
 if __name__ == "__main__":
-    args = methods_parser.parse_args(["lime"])
+    args = methods_parser.parse_args()
 
     dataset_name = "xnli"  # some arguments can be automatically extracted from presets
     args = runtime_parse_args(args)
