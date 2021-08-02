@@ -106,7 +106,7 @@ def snr_score(sentence_scores: np.ndarray, gt: np.ndarray):
 
 
 def prediction_flip(interpreted_model: InterpretableModel, explanations: List[Dict],
-                    texts=None, pretokenized_texts=None):
+                    texts=None, pretokenized_texts=None, allow_truncation=False):
     """ Computes the prediction flip metric. It measures the number of required deletions in order to go from the class
     predicted originally to some other class. The deletion candidates are explained units, taken in descending order
     of their importance.
@@ -126,6 +126,9 @@ def prediction_flip(interpreted_model: InterpretableModel, explanations: List[Di
         pretokenized_texts:
             Pretokenized text examples, to which `explanations` belong. Useful when specific word boundaries need to be
             taken into account
+        allow_truncation:
+            Whether to allow truncating input sequence when converting to model's representation. Set to True if using
+            texts that are not pre-truncated (i.e. obtained directly from explanations)
 
     Returns:
         dictionary, containing prediction flip metric based on number of deleted feature groups ("pred_flip_groups") or
@@ -158,7 +161,7 @@ def prediction_flip(interpreted_model: InterpretableModel, explanations: List[Di
         used_feature_groups = curr_explanation.get("custom_features", None)
         encoded = interpreted_model.to_internal([curr_example],
                                                 is_split_into_units=use_pretok,
-                                                allow_truncation=False)
+                                                allow_truncation=allow_truncation)
         num_features = encoded["input_ids"].shape[1]
         perturbable_inds = torch.arange(num_features)[encoded["perturbable_mask"][0]]
 
@@ -206,7 +209,7 @@ def prediction_flip(interpreted_model: InterpretableModel, explanations: List[Di
 
 
 def posthoc_accuracy(interpreted_model: InterpretableModel, explanations: List[Dict], top_k: Union[int, List[int]] = 1,
-                     texts=None, pretokenized_texts=None):
+                     texts=None, pretokenized_texts=None, allow_truncation=False):
     """ Computes the post-hoc accuracy metric. It measures if the prediction using only top k most important units is
     the same as model's prediction using entire input. It is closely related to sufficiency.
 
@@ -228,6 +231,9 @@ def posthoc_accuracy(interpreted_model: InterpretableModel, explanations: List[D
         pretokenized_texts:
             Pretokenized text examples, to which `explanations` belong. Useful when specific word boundaries need to be
             taken into account
+        allow_truncation:
+            Whether to allow truncating input sequence when converting to model's representation. Set to True if using
+            texts that are not pre-truncated (i.e. obtained directly from explanations)
 
     Returns:
         dictionary, containing the post-hoc accuracy for each k in `top_k`
@@ -249,7 +255,8 @@ def posthoc_accuracy(interpreted_model: InterpretableModel, explanations: List[D
     final_results = {k: [] for k in used_k_asc}
 
     for curr_example, curr_explanation in zip(used_input_text, explanations):
-        encoded = interpreted_model.to_internal([curr_example], is_split_into_units=use_pretok, allow_truncation=False)
+        encoded = interpreted_model.to_internal([curr_example], is_split_into_units=use_pretok,
+                                                allow_truncation=allow_truncation)
 
         original_scores = interpreted_model.score(encoded["input_ids"], **encoded["aux_data"])
         original_pred = torch.argmax(original_scores[0])
