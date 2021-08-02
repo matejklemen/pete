@@ -8,7 +8,7 @@ import logging
 
 from explain_nlp.modeling.modeling_base import InterpretableModel
 from explain_nlp.methods.utils import sample_permutations, incremental_mean, incremental_var, \
-    list_indexer, estimate_feature_samples, handle_custom_features
+    list_indexer, handle_custom_features
 
 
 class IMEExplainer:
@@ -214,6 +214,7 @@ class IMEExplainer:
         diff = scores_with - scores_without
 
         results = {
+            "diff": diff,
             "diff_mean": torch.mean(diff, dim=0),
             "diff_var": torch.var(diff, dim=0)
         }
@@ -339,56 +340,57 @@ class IMEExplainer:
             if self.return_scores:
                 feature_debug_data[idx_feature]["scores"].append(res["scores"])
 
-        # Calculate required samples to satisfy constraint and call method recursively
-        if self.error_constraint_given and exact_samples_per_feature is None:
-            required_samples_per_feature = estimate_feature_samples(importance_vars,
-                                                                    alpha=(1 - self.confidence_interval),
-                                                                    max_abs_error=self.max_abs_error).long()
+        # Allocate remaining samples according to the estimated variance of each feature (divide by proportion of
+        # total feature variance). This is not in the original IME algorithm:
+        # this allocates samples suboptimally (-), but enables batched computation (+)
+        sum_of_var_diffs = torch.sum(importance_vars[used_inds])
+        if sum_of_var_diffs == 0:
+            var_prop = torch.ones(used_inds, dtype=torch.float32) / len(used_inds)
+        else:
+            var_prop = importance_vars[used_inds] / sum_of_var_diffs
 
-            # Either take min_samples_per_feature or number of required samples, whichever is greater
-            need_additional = torch.gt(required_samples_per_feature, samples_per_feature)
-            _required_samples_per_feature = required_samples_per_feature.clone()
-            _required_samples_per_feature[used_inds] = min_samples_per_feature
-            _required_samples_per_feature[need_additional] = required_samples_per_feature[need_additional]
+        remaining_samples = eff_max_samples - taken_samples
+        remaining_samples_per_feature = torch.zeros_like(samples_per_feature, dtype=torch.int32)
+        remaining_samples_per_feature[used_inds] = (var_prop * remaining_samples).int()
 
-            return self.explain(instance, label, perturbable_mask=eff_perturbable_mask,
-                                min_samples_per_feature=min_samples_per_feature, max_samples=max_samples,
-                                exact_samples_per_feature=_required_samples_per_feature.unsqueeze(0),
-                                custom_features=custom_features,
-                                **modeling_kwargs)
+        leftovers = remaining_samples - torch.sum(remaining_samples_per_feature)
+        if leftovers > 0:
+            _, inds_with_highest_var = torch.topk(var_prop, k=leftovers)
 
-        while taken_samples < eff_max_samples:
-            var_diffs = self.criterion(importance_vars, samples_per_feature)
-            idx_feature = int(torch.argmax(var_diffs))
+            remaining_samples_per_feature[torch.tensor(used_inds)[inds_with_highest_var]] += 1
 
+        for idx_feature in torch.tensor(used_inds)[remaining_samples_per_feature[used_inds] > 0].tolist():
             res = self.estimate_feature_importance(feature_to_group_index[idx_feature],
                                                    feature_groups=feature_groups,
-                                                   instance=instance,
-                                                   num_samples=1,
-                                                   perturbable_mask=eff_perturbable_mask,
-                                                   **modeling_kwargs)
-            curr_imp = res["diff_mean"][label]
-            samples_per_feature[idx_feature] += 1
-            taken_samples += 1
+                                                   instance=generator_instance["input_ids"],
+                                                   num_samples=remaining_samples_per_feature[idx_feature],
+                                                   perturbable_mask=generator_instance["perturbable_mask"],
+                                                   **generator_instance["aux_data"])
+
+            # Incrementally update mean and variance
+            # TODO: there's gotta be a batched version of this
+            for _idx_sample in range(remaining_samples_per_feature[idx_feature]):
+                _curr_sample = res["diff"][_idx_sample, label]
+                samples_per_feature[idx_feature] += 1
+                taken_samples += 1
+
+                updated_mean = incremental_mean(curr_mean=importance_means[idx_feature],
+                                                new_value=_curr_sample,
+                                                n=samples_per_feature[idx_feature])
+                updated_var = incremental_var(curr_mean=importance_means[idx_feature],
+                                              curr_var=importance_vars[idx_feature],
+                                              new_mean=updated_mean,
+                                              new_value=_curr_sample,
+                                              n=samples_per_feature[idx_feature])
+
+                importance_means[idx_feature] = updated_mean
+                importance_vars[idx_feature] = updated_var
 
             if self.return_samples:
                 feature_debug_data[idx_feature]["samples"].append(res["samples"])
 
             if self.return_scores:
                 feature_debug_data[idx_feature]["scores"].append(res["scores"])
-
-            # Incremental mean and variance calculation - http://datagenetics.com/blog/november22017/index.html
-            updated_mean = incremental_mean(curr_mean=importance_means[idx_feature],
-                                            new_value=curr_imp,
-                                            n=samples_per_feature[idx_feature])
-            updated_var = incremental_var(curr_mean=importance_means[idx_feature],
-                                          curr_var=importance_vars[idx_feature],
-                                          new_mean=updated_mean,
-                                          new_value=curr_imp,
-                                          n=samples_per_feature[idx_feature])
-
-            importance_means[idx_feature] = updated_mean
-            importance_vars[idx_feature] = updated_var
 
         # Convert from variance of the differences (sigma^2) to variance of the importances (sigma^2 / m)
         importance_vars /= samples_per_feature
@@ -445,8 +447,8 @@ if __name__ == "__main__":
     logger.setLevel(logging.DEBUG)
 
     model = InterpretableBertForSequenceClassification(
-        model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
-        tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/snli_bert_uncased",
+        model_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/classifiers/snli_bert_uncased",
+        tokenizer_name="/home/matej/Documents/embeddia/interpretability/explain_nlp/resources/weights/classifiers/snli_bert_uncased",
         batch_size=2,
         max_seq_len=41,
         device="cpu"
@@ -469,6 +471,6 @@ if __name__ == "__main__":
                              return_scores=True)
 
     ex = "The big brown fox jumps over the lazy dog."
-    res = explainer.explain_text(ex, label=2, min_samples_per_feature=10)
+    res = explainer.explain_text(ex, label=2, min_samples_per_feature=2, max_samples=50)
     print(res["importance"])
 
