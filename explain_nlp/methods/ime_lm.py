@@ -217,6 +217,7 @@ class IMEInternalLMExplainer(IMEExplainer):
         diff = scores_with - scores_without
 
         results = {
+            "diff": diff,
             "diff_mean": torch.mean(diff, dim=0),
             "diff_var": torch.var(diff, dim=0)
         }
@@ -349,6 +350,7 @@ class IMEHybridExplainer(IMEExplainer):
         diff = scores_with - scores_without
 
         results = {
+            "diff": diff,
             "diff_mean": torch.mean(diff, dim=0),
             "diff_var": torch.var(diff, dim=0)
         }
