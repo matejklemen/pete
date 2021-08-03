@@ -16,8 +16,7 @@ class IMEExplainer:
                  data_weights: Optional[torch.FloatTensor] = None,
                  confidence_interval: Optional[float] = None, max_abs_error: Optional[float] = None,
                  return_num_samples: Optional[bool] = False, return_samples: Optional[bool] = False,
-                 return_scores: Optional[bool] = False, criterion: Optional[str] = "squared_error",
-                 shared_vocabulary: Optional[bool] = False):
+                 return_scores: Optional[bool] = False, shared_vocabulary: Optional[bool] = False):
         """ Explain instances using IME.
 
         Args:
@@ -38,9 +37,6 @@ class IMEExplainer:
                 Return the created perturbations used to estimate feature importances.
             return_scores:
                 Return the scores (e.g. probabilities) returned by model for perturbed samples.
-            criterion:
-                Which criterion to use when allocating the samples after initial variance estimation. Can be either
-                "absolute_error" or "squared_error".
             shared_vocabulary:
                 Whether model and generator use the same vocabulary: setting this to True can prevent some unnecessary
                 breaking of words.
@@ -61,16 +57,6 @@ class IMEExplainer:
         self.indexer = list_indexer
         self.shared_vocabulary = shared_vocabulary
         self.feature_varies = None
-
-        # TODO: move to functions
-        if criterion == "absolute_error":
-            self.criterion = \
-                lambda importance_vars, taken_samples: torch.sqrt(importance_vars / taken_samples) - torch.sqrt(importance_vars / (taken_samples + 1))
-        elif criterion == "squared_error":
-            self.criterion = \
-                lambda importance_vars, taken_samples: (importance_vars / taken_samples) - (importance_vars / (taken_samples + 1))
-        else:
-            raise ValueError(f"Unsupported criterion: '{criterion}'")
 
         self.update_sample_data(self.sample_data, self.weights)
 

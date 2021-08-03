@@ -21,13 +21,12 @@ class IMEExternalLMExplainer(IMEExplainer):
     def __init__(self, model: InterpretableModel, generator: SampleGenerator,
                  confidence_interval: Optional[float] = None,  max_abs_error: Optional[float] = None,
                  num_generated_samples: Optional[int] = 10, return_num_samples: Optional[bool] = False,
-                 return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 criterion: Optional[str] = "squared_error"):
+                 return_samples: Optional[bool] = False, return_scores: Optional[bool] = False):
         # IME requires sampling data so we give it dummy data and later override it with generated data
         dummy_sample_data = torch.randint(5, (1, 1), dtype=torch.long)
         super().__init__(sample_data=dummy_sample_data, model=model, confidence_interval=confidence_interval,
                          max_abs_error=max_abs_error, return_num_samples=return_num_samples,
-                         return_samples=return_samples, return_scores=return_scores, criterion=criterion,
+                         return_samples=return_samples, return_scores=return_scores,
                          shared_vocabulary=True)  # fixed to True because we want to use base IME's logic
 
         self.generator = generator
@@ -89,13 +88,12 @@ class IMEInternalLMExplainer(IMEExplainer):
     def __init__(self, model: InterpretableModel, generator: SampleGenerator,
                  confidence_interval: Optional[float] = None,  max_abs_error: Optional[float] = None,
                  return_num_samples: Optional[bool] = False, return_samples: Optional[bool] = False,
-                 return_scores: Optional[bool] = False, criterion: Optional[str] = "squared_error",
-                 shared_vocabulary: Optional[bool] = False):
+                 return_scores: Optional[bool] = False, shared_vocabulary: Optional[bool] = False):
         # IME requires sampling data on init, but it is not actually used for sampling in this variation of method
         dummy_sample_data = torch.randint(5, (1, 1), dtype=torch.long)
         super().__init__(sample_data=dummy_sample_data, model=model, confidence_interval=confidence_interval,
                          max_abs_error=max_abs_error, return_num_samples=return_num_samples,
-                         return_samples=return_samples, return_scores=return_scores, criterion=criterion,
+                         return_samples=return_samples, return_scores=return_scores,
                          shared_vocabulary=shared_vocabulary)
 
         self.generator = generator
@@ -237,11 +235,11 @@ class IMEHybridExplainer(IMEExplainer):
                  confidence_interval: Optional[float] = None, max_abs_error: Optional[float] = None,
                  return_num_samples: Optional[bool] = False,
                  return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 criterion: Optional[str] = "squared_error", shared_vocabulary: Optional[bool] = False):
+                 shared_vocabulary: Optional[bool] = False):
         super().__init__(sample_data=sample_data_generator, model=model, data_weights=data_weights,
                          confidence_interval=confidence_interval, max_abs_error=max_abs_error,
                          return_num_samples=return_num_samples, return_samples=return_samples,
-                         return_scores=return_scores, criterion=criterion, shared_vocabulary=shared_vocabulary)
+                         return_scores=return_scores, shared_vocabulary=shared_vocabulary)
         self.generator = generator
         self.feature_varies = None
 
