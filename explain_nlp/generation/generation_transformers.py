@@ -18,6 +18,7 @@ class TransformersMLMGenerationMixin:
     device: torch.device
     filters: List
     batch_size: int
+    mask_in_advance: bool = False
 
     # keys that are used in model beside input_ids, e.g. "attention_mask"
     aux_data_keys: List[str]
@@ -93,6 +94,10 @@ class TransformersMLMGenerationMixin:
         eff_input_ids = input_ids
         if input_ids.shape[0] == 1:
             eff_input_ids = input_ids.repeat((num_samples, 1))
+
+        # Mask all tokens to be generated in advance so the generated examples span across broader contexts
+        if self.mask_in_advance:
+            eff_input_ids[generation_mask] = self.tokenizer.mask_token_id
 
         # Note: currently assuming generation additional data is same for all samples
         # Either specific additional data is provided or additional data is same for all samples
@@ -533,7 +538,8 @@ class GPTControlledLMGenerator(GPTLMGenerator):
 
 class BertForMaskedLMGenerator(SampleGenerator, TransformersMLMGenerationMixin, TransformersAlignedTokenizationMixin):
     def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
-                 strategy="top_k", top_p=0.9, top_k=5, monte_carlo_dropout: Optional[bool] = False):
+                 strategy="top_k", top_p=0.9, top_k=5, monte_carlo_dropout: Optional[bool] = False,
+                 mask_in_advance: Optional[bool] = False):
         super().__init__(max_seq_len=max_seq_len, batch_size=batch_size, device=device,
                          strategy=strategy, top_p=top_p, top_k=top_k)
         self.tokenizer_name = tokenizer_name
@@ -547,6 +553,7 @@ class BertForMaskedLMGenerator(SampleGenerator, TransformersMLMGenerationMixin, 
             self.generator.train()
         else:
             self.generator.eval()
+        self.mask_in_advance = mask_in_advance
 
         self.special_tokens_set = set(self.tokenizer.all_special_ids)
         self.aux_data_keys = ["attention_mask", "token_type_ids"]
@@ -637,10 +644,12 @@ class BertForMaskedLMGenerator(SampleGenerator, TransformersMLMGenerationMixin, 
 class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator, TransformersCMLMGenerationMixin):
     def __init__(self, tokenizer_name, model_name, control_labels: List[str], max_seq_len,
                  batch_size=8, device="cuda", strategy="top_p", top_p=0.9, top_k=5,
-                 label_weights: Optional[List] = None, monte_carlo_dropout: Optional[bool] = False):
+                 label_weights: Optional[List] = None, monte_carlo_dropout: Optional[bool] = False,
+                 mask_in_advance: Optional[bool] = False):
         super().__init__(tokenizer_name=tokenizer_name, model_name=model_name,
                          batch_size=batch_size, max_seq_len=max_seq_len, device=device,
-                         strategy=strategy, top_p=top_p, top_k=top_k, monte_carlo_dropout=monte_carlo_dropout)
+                         strategy=strategy, top_p=top_p, top_k=top_k, monte_carlo_dropout=monte_carlo_dropout,
+                         mask_in_advance=mask_in_advance)
 
         assert all(curr_control in self.tokenizer.all_special_tokens for curr_control in control_labels)
         self.control_labels = torch.tensor(self.tokenizer.encode(control_labels, add_special_tokens=False,
@@ -662,9 +671,9 @@ class BertForControlledMaskedLMGenerator(BertForMaskedLMGenerator, TransformersC
     @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
                  num_samples: Optional[int], **generation_kwargs):
-       return TransformersCMLMGenerationMixin.generate(self, input_ids=input_ids, perturbable_mask=perturbable_mask,
-                                                       num_samples=num_samples,
-                                                       **generation_kwargs)
+        return TransformersCMLMGenerationMixin.generate(self, input_ids=input_ids, perturbable_mask=perturbable_mask,
+                                                        num_samples=num_samples,
+                                                        **generation_kwargs)
 
     @torch.no_grad()
     def generate_masked_samples(self, input_ids: torch.Tensor,
@@ -774,7 +783,8 @@ class RobertaForMaskedLMGenerator(SampleGenerator, TransformersMLMGenerationMixi
 
 class XLMRobertaForMaskedLMGenerator(RobertaForMaskedLMGenerator, TransformersAlignedTokenizationMixin):
     def __init__(self, tokenizer_name, model_name, max_seq_len, batch_size=8, device="cuda",
-                 strategy="top_k", top_p=0.9, top_k=5, monte_carlo_dropout: Optional[bool] = False):
+                 strategy="top_k", top_p=0.9, top_k=5, monte_carlo_dropout: Optional[bool] = False,
+                 mask_in_advance: Optional[bool] = False):
         SampleGenerator.__init__(self, max_seq_len=max_seq_len, batch_size=batch_size, device=device,
                                  strategy=strategy, top_p=top_p, top_k=top_k)
         self.tokenizer_name = tokenizer_name
@@ -786,6 +796,7 @@ class XLMRobertaForMaskedLMGenerator(RobertaForMaskedLMGenerator, TransformersAl
             self.generator.train()
         else:
             self.generator.eval()
+        self.mask_in_advance = mask_in_advance
 
         self.aux_data_keys = ["attention_mask"]
         self.special_tokens_set = set(self.tokenizer.all_special_ids)
@@ -795,10 +806,10 @@ class XLMRobertaForControlledMaskedLMGenerator(XLMRobertaForMaskedLMGenerator, T
                                                TransformersAlignedTokenizationMixin):
     def __init__(self, tokenizer_name, model_name, control_labels: List[str], max_seq_len, batch_size=8, device="cuda",
                  strategy="top_k", top_p=0.9, top_k=5, label_weights: Optional[List] = None,
-                 monte_carlo_dropout: Optional[bool] = False):
+                 monte_carlo_dropout: Optional[bool] = False, mask_in_advance: Optional[bool] = False):
         super().__init__(tokenizer_name=tokenizer_name, model_name=model_name, max_seq_len=max_seq_len,
                          batch_size=batch_size, device=device, strategy=strategy, top_p=top_p, top_k=top_k,
-                         monte_carlo_dropout=monte_carlo_dropout)
+                         monte_carlo_dropout=monte_carlo_dropout, mask_in_advance=mask_in_advance)
 
         assert all(curr_control in self.tokenizer.all_special_tokens for curr_control in control_labels)
         self.control_labels = torch.tensor(self.tokenizer.encode(control_labels, add_special_tokens=False,
