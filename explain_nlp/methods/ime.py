@@ -331,7 +331,7 @@ class IMEExplainer:
         # this allocates samples suboptimally (-), but enables batched computation (+)
         sum_of_var_diffs = torch.sum(importance_vars[used_inds])
         if sum_of_var_diffs == 0:
-            var_prop = torch.ones(used_inds, dtype=torch.float32) / len(used_inds)
+            var_prop = torch.ones(len(used_inds), dtype=torch.float32) / len(used_inds)
         else:
             var_prop = importance_vars[used_inds] / sum_of_var_diffs
 
