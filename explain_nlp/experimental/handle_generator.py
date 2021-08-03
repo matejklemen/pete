@@ -20,7 +20,8 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                              strategy=args.strategy,
                                              top_p=args.top_p,
                                              top_k=args.top_k,
-                                             monte_carlo_dropout=args.use_mcd)
+                                             monte_carlo_dropout=args.use_mcd,
+                                             mask_in_advance=args.mask_in_advance)
     elif args.generator_type == "bert_cmlm":
         generator = BertForControlledMaskedLMGenerator(tokenizer_name=args.generator_dir,
                                                        model_name=args.generator_dir,
@@ -32,7 +33,8 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                                        strategy=args.strategy,
                                                        top_p=args.top_p,
                                                        top_k=args.top_k,
-                                                       monte_carlo_dropout=args.use_mcd)
+                                                       monte_carlo_dropout=args.use_mcd,
+                                                       mask_in_advance=args.mask_in_advance)
     elif args.generator_type == "xlmr_mlm":
         generator = XLMRobertaForMaskedLMGenerator(tokenizer_name=args.generator_dir,
                                                    model_name=args.generator_dir,
@@ -42,7 +44,8 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                                    strategy=args.strategy,
                                                    top_p=args.top_p,
                                                    top_k=args.top_k,
-                                                   monte_carlo_dropout=args.use_mcd)
+                                                   monte_carlo_dropout=args.use_mcd,
+                                                   mask_in_advance=args.mask_in_advance)
     elif args.generator_type == "xlmr_cmlm":
         generator = XLMRobertaForControlledMaskedLMGenerator(tokenizer_name=args.generator_dir,
                                                              model_name=args.generator_dir,
@@ -54,7 +57,8 @@ def load_generator(args, clm_labels: Optional[List[str]] = None, **kwargs):
                                                              strategy=args.strategy,
                                                              top_p=args.top_p,
                                                              top_k=args.top_k,
-                                                             monte_carlo_dropout=args.use_mcd)
+                                                             monte_carlo_dropout=args.use_mcd,
+                                                             mask_in_advance=args.mask_in_advance)
     elif args.generator_type == "roberta_mlm":
         generator = RobertaForMaskedLMGenerator(tokenizer_name=args.generator_dir,
                                                 model_name=args.generator_dir,

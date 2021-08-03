@@ -62,6 +62,7 @@ general_parser.add_argument("--use_mcd", action="store_true",
 general_parser.add_argument("--shared_vocabulary", action="store_true",
                             help="If set, methods assume the model and generator use same vocabulary and do not need "
                                  "conversion between representations")
+general_parser.add_argument("--mask_in_advance", action="store_true")
 
 methods_parser = argparse.ArgumentParser()
 subparsers = methods_parser.add_subparsers(dest="method_class")
@@ -93,6 +94,7 @@ lime_parser.add_argument("--kernel_width", type=float, default=1.0)
 
 if __name__ == "__main__":
     args = methods_parser.parse_args()
+
     dataset_name = "snli"  # some arguments can be automatically extracted from presets
     args = runtime_parse_args(args)
     compute_required = args.method_class == "ime" and args.experiment_type == "required_samples"
