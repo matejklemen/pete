@@ -121,7 +121,7 @@ class IMEExplainer:
     def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor,
                                     num_samples: int, perturbable_mask: torch.Tensor,
                                     feature_groups: Optional[Union[torch.Tensor, List[List[int]]]] = None,
-                                    **modeling_kwargs):
+                                    label: Optional[int] = 0, **modeling_kwargs):
         """ Estimate importance of a single feature or a group of features for `instance` using `num_samples` samples,
         where each sample corresponds to a pair of perturbations (one with estimated feature set and another
         with estimated feature randomized).
@@ -139,6 +139,8 @@ class IMEExplainer:
             feature_groups:
                 Groups that define which features are to be taken as an atomic unit (are to be perturbed together).
                 If not provided, groups of single perturbable features are used.
+            label:
+                Explained label for instance.
             **modeling_kwargs:
                 Additional modeling data (e.g. attention masks,...)
         """
@@ -250,7 +252,7 @@ class IMEExplainer:
         instance:
             Instance that is being explained. Shape: [1, num_features].
         label: int
-            Predicted label for instance.
+            Explained label for instance.
         perturbable_mask:
             Mask, specifying features that can be perturbed. If not given, all features of instance are assumed to be
             perturbable. Shape: [1, num_features].
@@ -316,7 +318,7 @@ class IMEExplainer:
                                                    instance=generator_instance["input_ids"],
                                                    num_samples=samples_per_feature[idx_feature],
                                                    perturbable_mask=generator_instance["perturbable_mask"],
-                                                   **generator_instance["aux_data"])
+                                                   label=label, **generator_instance["aux_data"])
             importance_means[idx_feature] = res["diff_mean"][label]
             importance_vars[idx_feature] = res["diff_var"][label]
 
@@ -351,7 +353,7 @@ class IMEExplainer:
                                                    instance=generator_instance["input_ids"],
                                                    num_samples=remaining_samples_per_feature[idx_feature],
                                                    perturbable_mask=generator_instance["perturbable_mask"],
-                                                   **generator_instance["aux_data"])
+                                                   label=label, **generator_instance["aux_data"])
 
             # Incrementally update mean and variance
             # TODO: there's gotta be a batched version of this

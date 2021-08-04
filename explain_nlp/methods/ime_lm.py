@@ -129,7 +129,7 @@ class IMEInternalLMExplainer(IMEExplainer):
     def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor,
                                     num_samples: int, perturbable_mask: torch.Tensor,
                                     feature_groups: Optional[Union[torch.Tensor, List[List[int]]]] = None,
-                                    **generation_kwargs):
+                                    label: Optional[int] = 0, **generation_kwargs):
         """ Estimate importance of a single feature or a group of features for `instance` using `num_samples` samples,
         where each sample corresponds to a pair of perturbations (one with estimated feature set and another
         with estimated feature randomized).
@@ -152,6 +152,8 @@ class IMEInternalLMExplainer(IMEExplainer):
             feature_groups:
                 Groups that define which features are to be taken as an atomic unit (are to be perturbed together).
                 If not provided, groups of single perturbable features are used.
+            label:
+                Explained label for instance.
             **generation_kwargs:
                 Additional generation data (e.g. attention masks,...)
         """
@@ -275,7 +277,7 @@ class IMEHybridExplainer(IMEExplainer):
     def estimate_feature_importance(self, idx_feature: int, instance: torch.Tensor,
                                     num_samples: int, perturbable_mask: torch.Tensor,
                                     feature_groups: Optional[Union[torch.Tensor, List[List[int]]]] = None,
-                                    **generation_kwargs):
+                                    label: Optional[int] = 0, **generation_kwargs):
         # Note: instance is currently supposed to be of shape [1, num_features]
         num_features = int(len(instance[0]))
 
