@@ -12,6 +12,11 @@ def load_explainer(**kwargs):
     return_model_scores = kwargs.get("return_model_scores", False)
     return_generated_samples = kwargs.get("return_generated_samples", False)
 
+    custom_label_fn = None
+    if kwargs.get("use_contrastive_control", False):
+        contrastive_labels = kwargs["contrastive_labels"]
+        custom_label_fn = lambda curr_label, num_samples: [contrastive_labels[curr_label]] * num_samples
+
     if method_class == "ime":
         sample_constraints = {}
         if kwargs["experiment_type"] == "accurate_importances":
@@ -31,14 +36,14 @@ def load_explainer(**kwargs):
             method = IMEExternalLMExplainer(
                 model=model, generator=kwargs["generator"], num_generated_samples=kwargs["num_generated_samples"],
                 return_scores=return_model_scores, return_num_samples=True, return_samples=return_generated_samples,
-                **sample_constraints
+                label_func=custom_label_fn, **sample_constraints
             )
         elif method == "ime_ilm":
             method_type = MethodType.DEPENDENT_IME_MLM
             method = IMEInternalLMExplainer(
                 model=model, generator=kwargs["generator"], return_scores=return_model_scores, return_num_samples=True,
                 return_samples=return_generated_samples, shared_vocabulary=kwargs["shared_vocabulary"],
-                **sample_constraints
+                label_func=custom_label_fn, **sample_constraints
             )
         elif method == "ime_hybrid":
             method_type = MethodType.DEPENDENT_IME_MLM
@@ -46,7 +51,7 @@ def load_explainer(**kwargs):
                 model=model, generator=kwargs["generator"], sample_data_generator=kwargs["used_sample_data"],
                 data_weights=kwargs["data_weights"], return_scores=return_model_scores, return_num_samples=True,
                 return_samples=return_generated_samples, shared_vocabulary=kwargs["shared_vocabulary"],
-                **sample_constraints
+                label_func=custom_label_fn, **sample_constraints
             )
         else:
             raise NotImplementedError(f"Unsupported method: '{method}'")
@@ -62,7 +67,7 @@ def load_explainer(**kwargs):
             method = LIMEMaskedLMExplainer(
                 model=model, generator=kwargs["generator"], kernel_width=kwargs["kernel_width"],
                 return_samples=return_generated_samples, return_scores=return_model_scores,
-                shared_vocabulary=kwargs["shared_vocabulary"]
+                shared_vocabulary=kwargs["shared_vocabulary"], label_func=custom_label_fn
             )
         else:
             raise NotImplementedError(f"Unsupported method: '{method}'")

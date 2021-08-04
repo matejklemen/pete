@@ -63,6 +63,9 @@ general_parser.add_argument("--shared_vocabulary", action="store_true",
                             help="If set, methods assume the model and generator use same vocabulary and do not need "
                                  "conversion between representations")
 general_parser.add_argument("--mask_in_advance", action="store_true")
+general_parser.add_argument("--use_contrastive_control", action="store_true",
+                            help="If set, set all control labels to a semantically most different label, e.g., "
+                                 "if explanaining a hateful example, all control labels would be set to [CLEAN]")
 
 methods_parser = argparse.ArgumentParser()
 subparsers = methods_parser.add_subparsers(dest="method_class")
@@ -156,9 +159,17 @@ if __name__ == "__main__":
         data_weights = create_uniform_weights(train_set.input_ids, train_set.special_tokens_mask)
         used_sample_data = train_set.input_ids
 
+    contrastive_labels = None
+    if args.use_contrastive_control:
+        logging.info("Using contrastive control labels!")
+        contrastive_labels = {
+            LABEL_TO_IDX["imsypp"][0]: LABEL_TO_IDX["imsypp"][1],
+            LABEL_TO_IDX["imsypp"][1]: LABEL_TO_IDX["imsypp"][0]
+        }
+
     method, method_type = load_explainer(model=model, generator=generator,
                                          used_sample_data=used_sample_data, data_weights=data_weights,
-                                         **vars(args))
+                                         contrastive_labels=contrastive_labels, **vars(args))
 
     # Container that wraps debugging data and a lot of repetitive appends
     method_data = MethodData(method_type=method_type,
