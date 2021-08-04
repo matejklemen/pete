@@ -1,4 +1,4 @@
-from typing import Optional, Union, Tuple, List
+from typing import Optional, Union, Tuple, List, Callable
 
 import torch
 
@@ -21,7 +21,8 @@ class IMEExternalLMExplainer(IMEExplainer):
     def __init__(self, model: InterpretableModel, generator: SampleGenerator,
                  confidence_interval: Optional[float] = None,  max_abs_error: Optional[float] = None,
                  num_generated_samples: Optional[int] = 10, return_num_samples: Optional[bool] = False,
-                 return_samples: Optional[bool] = False, return_scores: Optional[bool] = False):
+                 return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
+                 label_func: Optional[Callable[[int, int], List[int]]] = None):
         # IME requires sampling data so we give it dummy data and later override it with generated data
         dummy_sample_data = torch.randint(5, (1, 1), dtype=torch.long)
         super().__init__(sample_data=dummy_sample_data, model=model, confidence_interval=confidence_interval,
@@ -31,6 +32,10 @@ class IMEExternalLMExplainer(IMEExplainer):
 
         self.generator = generator
         self.num_generated_samples = num_generated_samples
+
+        # Takes in (curr_label, num_samples), returns selected_labels
+        self.label_func = label_func
+        self.has_custom_label_func = self.label_func is not None
 
     def prepare_data(self, text_data: Union[str, Tuple[str, ...]], label: Optional[int] = 0,
                      pretokenized_text_data: Optional[Union[List[str], Tuple[List[str], ...]]] = None,
@@ -42,9 +47,12 @@ class IMEExternalLMExplainer(IMEExplainer):
                                                         is_split_into_units=is_split_into_units)
 
         if hasattr(self.generator, "label_weights"):
-            randomly_selected_label = torch.multinomial(self.generator.label_weights,
-                                                        num_samples=self.num_generated_samples,
-                                                        replacement=True)
+            if self.has_custom_label_func:
+                randomly_selected_label = self.label_func(label, self.num_generated_samples)
+            else:
+                randomly_selected_label = torch.multinomial(self.generator.label_weights,
+                                                            num_samples=self.num_generated_samples,
+                                                            replacement=True).tolist()
             randomly_selected_label = [self.generator.control_labels_str[i] for i in randomly_selected_label]
         else:
             randomly_selected_label = [None] * self.num_generated_samples
@@ -88,7 +96,8 @@ class IMEInternalLMExplainer(IMEExplainer):
     def __init__(self, model: InterpretableModel, generator: SampleGenerator,
                  confidence_interval: Optional[float] = None,  max_abs_error: Optional[float] = None,
                  return_num_samples: Optional[bool] = False, return_samples: Optional[bool] = False,
-                 return_scores: Optional[bool] = False, shared_vocabulary: Optional[bool] = False):
+                 return_scores: Optional[bool] = False, shared_vocabulary: Optional[bool] = False,
+                 label_func: Optional[Callable[[int, int], List[int]]] = None):
         # IME requires sampling data on init, but it is not actually used for sampling in this variation of method
         dummy_sample_data = torch.randint(5, (1, 1), dtype=torch.long)
         super().__init__(sample_data=dummy_sample_data, model=model, confidence_interval=confidence_interval,
@@ -97,6 +106,10 @@ class IMEInternalLMExplainer(IMEExplainer):
                          shared_vocabulary=shared_vocabulary)
 
         self.generator = generator
+
+        # Takes in (curr_label, num_samples), returns selected_labels
+        self.label_func = label_func
+        self.has_custom_label_func = self.label_func is not None
 
     def model_to_generator(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
                            **modeling_kwargs):
@@ -169,8 +182,11 @@ class IMEInternalLMExplainer(IMEExplainer):
             idx_superfeature = idx_feature
 
         if hasattr(self.generator, "label_weights"):
-            randomly_selected_label = torch.multinomial(self.generator.label_weights, num_samples=num_samples,
-                                                        replacement=True)
+            if self.has_custom_label_func:
+                randomly_selected_label = self.label_func(label, num_samples)
+            else:
+                randomly_selected_label = torch.multinomial(self.generator.label_weights, num_samples=num_samples,
+                                                            replacement=True).tolist()
             randomly_selected_label = [self.generator.control_labels_str[i] for i in randomly_selected_label]
         else:
             randomly_selected_label = [None] * num_samples
@@ -235,9 +251,9 @@ class IMEHybridExplainer(IMEExplainer):
     def __init__(self, sample_data_generator: torch.Tensor, model: InterpretableModel, generator: SampleGenerator,
                  data_weights: Optional[torch.Tensor] = None,
                  confidence_interval: Optional[float] = None, max_abs_error: Optional[float] = None,
-                 return_num_samples: Optional[bool] = False,
-                 return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 shared_vocabulary: Optional[bool] = False):
+                 return_num_samples: Optional[bool] = False, return_samples: Optional[bool] = False,
+                 return_scores: Optional[bool] = False, shared_vocabulary: Optional[bool] = False,
+                 label_func: Optional[Callable[[int, int], List[int]]] = None):
         super().__init__(sample_data=sample_data_generator, model=model, data_weights=data_weights,
                          confidence_interval=confidence_interval, max_abs_error=max_abs_error,
                          return_num_samples=return_num_samples, return_samples=return_samples,
@@ -246,6 +262,10 @@ class IMEHybridExplainer(IMEExplainer):
         self.feature_varies = None
 
         self.update_sample_data(sample_data_generator, data_weights=data_weights)
+
+        # Takes in (curr_label, num_samples), returns selected_labels
+        self.label_func = label_func
+        self.has_custom_label_func = self.label_func is not None
 
     def model_to_generator(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
                            **modeling_kwargs):
@@ -290,8 +310,11 @@ class IMEHybridExplainer(IMEExplainer):
             idx_superfeature = idx_feature
 
         if hasattr(self.generator, "label_weights"):
-            randomly_selected_label = torch.multinomial(self.generator.label_weights, num_samples=num_samples,
-                                                        replacement=True)
+            if self.has_custom_label_func:
+                randomly_selected_label = self.label_func(label, num_samples)
+            else:
+                randomly_selected_label = torch.multinomial(self.generator.label_weights, num_samples=num_samples,
+                                                            replacement=True).tolist()
             # A pair belonging to same sample is assigned the same label
             randomly_selected_label = [self.generator.control_labels_str[i] for i in randomly_selected_label]
         else:

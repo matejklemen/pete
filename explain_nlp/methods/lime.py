@@ -54,7 +54,8 @@ class LIMEExplainer:
             "mapping": {position: [int(i)] for position, i in enumerate(perturbable_indices)}
         }
 
-    def generate_neighbourhood(self, samples: torch.Tensor, removal_mask, **generation_kwargs):
+    def generate_neighbourhood(self, samples: torch.Tensor, removal_mask, label: Optional[int] = 0,
+                               **generation_kwargs):
         samples[removal_mask] = self.model.pad_token_id
         return samples
 
@@ -107,7 +108,8 @@ class LIMEExplainer:
             removed_mask[idx_sample + 1, curr_removed_features] = True
             feature_indicators[idx_sample + 1, used_inds[groups_to_remove]] = False
 
-        samples = self.generate_neighbourhood(samples, removal_mask=removed_mask, **generator_instance["aux_data"])
+        samples = self.generate_neighbourhood(samples, removal_mask=removed_mask, label=label,
+                                              **generator_instance["aux_data"])
 
         feature_indicators = feature_indicators.float()
         dists = 1.0 - torch.cosine_similarity(feature_indicators[[0]], feature_indicators)

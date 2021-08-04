@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List, Callable
 
 import torch
 
@@ -12,13 +12,18 @@ from explain_nlp.utils import EncodingException
 class LIMEMaskedLMExplainer(LIMEExplainer):
     def __init__(self, model: InterpretableModel, generator: SampleGenerator, kernel_width=1.0,
                  return_samples: Optional[bool] = False, return_scores: Optional[bool] = False,
-                 return_metrics: Optional[bool] = True, shared_vocabulary: Optional[bool] = False):
+                 return_metrics: Optional[bool] = True, shared_vocabulary: Optional[bool] = False,
+                 label_func: Optional[Callable[[int, int], List[int]]] = None):
         super().__init__(model=model, kernel_width=kernel_width, return_samples=return_samples,
                          return_scores=return_scores, return_metrics=return_metrics,
                          shared_vocabulary=shared_vocabulary)
         self.generator = generator
         # In order for the 0/1 simplified representation to make sense, 0 means that the word is different
         self.generator.filters = [filter_factory("unique")] + self.generator.filters
+
+        # Takes in (curr_label, num_samples), returns selected_labels
+        self.label_func = label_func
+        self.has_custom_label_func = self.label_func is not None
 
     def model_to_generator(self, input_ids: torch.Tensor, perturbable_mask: torch.Tensor,
                            **modeling_kwargs):
@@ -47,11 +52,15 @@ class LIMEMaskedLMExplainer(LIMEExplainer):
             "mapping": model2generator
         }
 
-    def generate_neighbourhood(self, samples: torch.Tensor, removal_mask, **generation_kwargs):
+    def generate_neighbourhood(self, samples: torch.Tensor, removal_mask, label: Optional[int] = 0,
+                               **generation_kwargs):
         num_samples = removal_mask.shape[0]
         if hasattr(self.generator, "label_weights"):
-            randomly_selected_label = torch.multinomial(self.generator.label_weights,
-                                                        num_samples=num_samples, replacement=True)
+            if self.has_custom_label_func:
+                randomly_selected_label = self.label_func(label, num_samples)
+            else:
+                randomly_selected_label = torch.multinomial(self.generator.label_weights,
+                                                            num_samples=num_samples, replacement=True).tolist()
             randomly_selected_label = [self.generator.control_labels_str[i] for i in randomly_selected_label]
         else:
             randomly_selected_label = [None] * num_samples
