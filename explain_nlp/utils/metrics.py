@@ -1,6 +1,7 @@
 import itertools
 import warnings
 from typing import Union, Dict, List
+from warnings import warn
 
 import numpy as np
 import torch
@@ -292,4 +293,99 @@ def posthoc_accuracy(interpreted_model: InterpretableModel, explanations: List[D
     for k in used_k_asc:
         final_results[k] = sum(final_results[k]) / len(final_results[k])
 
+    return final_results
+
+
+def aopc_comprehensiveness(interpreted_model: InterpretableModel, explanations: List[Dict], k: int = 10,
+                           texts=None, pretokenized_texts=None, allow_truncation=False):
+    """ Computes the area under the perturbation curve (AOPC) score, based on comprehensiveness. The score for a single
+    example is obtained by removing top-1, 2, ..., then top-k most important tokens (or groups) according to
+    provided explanations. The final score is a mean across all examples.
+
+    Note that this is the original AOPC metric, while one based on sufficiency also exist (which instead of
+    removing keeps only the top tokens), see DeYoung et al. (2020).
+
+    Args:
+        interpreted_model:
+            Model, which is being interpreted. Used to correctly transform text and score partially deleted input
+        explanations:
+            Explanations, obtained using some explanation method. Must contain key "importance" (torch.Tensor)
+        k:
+            Maximum number of tokens or groups to remove when calculating AOPC
+        texts:
+            Raw text examples, to which `explanations` belongs
+        pretokenized_texts:
+            Pretokenized text examples, to which `explanations` belong. Useful when specific word boundaries need to be
+            taken into account
+        allow_truncation:
+            Whether to allow truncating input sequence when converting to model's representation. Set to True if using
+                texts that are not pre-truncated (i.e. obtained directly from explanations)
+
+    Returns:
+        dictionary, containing the AOPC score for each example and a mean AOPC score
+
+    References:
+        W. Samek, A. Binder, G. Montavon, S. Lapuschkin and K. Müller, "Evaluating the Visualization of What a Deep
+        Neural Network Has Learned," in IEEE Transactions on Neural Networks and Learning Systems, vol. 28, no. 11,
+        pp. 2660-2673, Nov. 2017, doi: 10.1109/TNNLS.2016.2599820.
+
+        DeYoung, Jay & Jain, Sarthak & Rajani, Nazneen & Lehman, Eric & Xiong, Caiming & Socher, Richard & Wallace,
+        Byron. (2020). ERASER: A Benchmark to Evaluate Rationalized NLP Models. 4443-4458.
+        10.18653/v1/2020.acl-main.408.
+    """
+    use_pretok = pretokenized_texts is not None
+    assert use_pretok or texts is not None, \
+        "Either raw input text ('texts') or pretokenized input text ('pretokenized_texts') must be provided"
+
+    used_input_text = pretokenized_texts if use_pretok else texts
+    assert len(used_input_text) == len(explanations), \
+        "Number of provided explanations must match number of input texts " \
+        f"(got {len(explanations)} explanations and {len(used_input_text)} texts)"
+
+    final_results = {"aopc": []}
+
+    for curr_example, curr_explanation in zip(used_input_text, explanations):
+        used_feature_groups = curr_explanation.get("custom_features", None)
+        encoded = interpreted_model.to_internal([curr_example],
+                                                is_split_into_units=use_pretok,
+                                                allow_truncation=allow_truncation)
+        num_features = encoded["input_ids"].shape[1]
+        perturbable_inds = torch.arange(num_features)[encoded["perturbable_mask"][0]]
+
+        if used_feature_groups is None:
+            used_feature_groups = [[_i.item()] for _i in perturbable_inds]
+            used_importances = curr_explanation["importance"][perturbable_inds]
+        else:
+            used_importances = curr_explanation["importance"][num_features:]
+
+        assert used_importances.shape[0] > 0, "There are no valid importances in the provided explanation"
+
+        original_scores = interpreted_model.score(encoded["input_ids"], **encoded["aux_data"])
+        original_pred = torch.argmax(original_scores[0])
+
+        # elements where this is False get deleted
+        keep_mask = torch.ones(num_features, dtype=torch.bool)
+
+        # Descending order: features most indicative of explained class are tried first
+        sort_indices = torch.argsort(-used_importances).tolist()
+        _k = min(len(used_feature_groups), k)
+        if _k < k:
+            warn(f"Less than k={k} used feature groups, using k'={_k} instead")
+
+        # score differences between original sequence and sequence without top-1, top2, ..., top-k tokens/groups
+        partial_score_diffs = []
+
+        for rank, idx_group in enumerate(sort_indices[:_k], start=1):
+            curr_group = used_feature_groups[idx_group]
+            keep_mask[curr_group] = False
+
+            partial_input_ids = encoded["input_ids"][:, keep_mask]
+            partial_aux_data = {k: v[:, keep_mask] for k, v in encoded["aux_data"].items()}
+
+            new_scores = interpreted_model.score(partial_input_ids, **partial_aux_data)
+            partial_score_diffs.append(float(original_scores[0, original_pred] - new_scores[0, original_pred]))
+
+        final_results["aopc"].append(sum(partial_score_diffs) / len(partial_score_diffs))
+
+    final_results["mean_aopc"] = sum(final_results["aopc"]) / len(final_results["aopc"])
     return final_results
