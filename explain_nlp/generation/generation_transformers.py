@@ -798,6 +798,16 @@ class XLMRobertaForMaskedLMGenerator(RobertaForMaskedLMGenerator, TransformersAl
             self.generator.eval()
         self.mask_in_advance = mask_in_advance
 
+        # make it impossible to sample special tokens (typically not a problem anyway)
+        def mask_special(logits, **kwargs):
+            logits[:, self.tokenizer.bos_token_id] = -float("inf")
+            logits[:, self.tokenizer.sep_token_id] = -float("inf")
+            logits[:, self.tokenizer.eos_token_id] = -float("inf")
+            logits[:, self.tokenizer.pad_token_id] = -float("inf")
+            return logits
+
+        self.filters = [mask_special] + self.filters
+
         self.aux_data_keys = ["attention_mask"]
         self.special_tokens_set = set(self.tokenizer.all_special_ids)
 
@@ -816,11 +826,15 @@ class XLMRobertaForControlledMaskedLMGenerator(XLMRobertaForMaskedLMGenerator, T
                                                                  is_split_into_words=True))
         self.control_labels_str = control_labels
 
-        # make it impossible to sample control labels (those are set in place)
-        def mask_control(logits, **kwargs):
+        # make it impossible to sample control labels (those are set in place) and special tokens
+        def mask_tokens(logits, **kwargs):
             logits[:, self.control_labels] = -float("inf")
+            logits[:, self.tokenizer.bos_token_id] = -float("inf")
+            logits[:, self.tokenizer.sep_token_id] = -float("inf")
+            logits[:, self.tokenizer.eos_token_id] = -float("inf")
+            logits[:, self.tokenizer.pad_token_id] = -float("inf")
             return logits
-        self.filters = [mask_control] + self.filters
+        self.filters = [mask_tokens] + self.filters
 
         self.label_weights = label_weights
         if self.label_weights is None:
