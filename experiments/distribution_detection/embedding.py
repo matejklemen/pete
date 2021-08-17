@@ -288,6 +288,9 @@ def stanza_tokenize(stanza_pipeline, data, dataset_name):
 
 if __name__ == "__main__":
     args = methods_parser.parse_args()
+    args.use_mcd = False
+    args.mask_in_advance = False
+    args.use_contrastive_control = False
 
     assert os.path.exists(args.experiment_dir), \
         "--experiment_dir must point to a valid directory. Please run sample.py first in order to create it"
