@@ -18,34 +18,29 @@
 
 .example span {
     padding: 5px;
-    line-height: 30px;
 }
 
 .example-label {
     font-size: 16px;
 }
 
-span.example-unit:hover, .selected {
-    outline: 2px solid black;
-    outline-offset: -2px;
-}
-
-.step-details {
-    font-weight: bold;
-}
-
-.pair {
-    padding-bottom: 10px;
-}
-
-.pair-example {
-    border-radius: 2px;
-    padding: 5px;
+.example-unit {
+    border-radius: 3px;
 }
 
 .unit-id {
     display: inline;
-    margin: 0;
     font-weight: bold;
-    font-size: 12px;
+    margin-left: -5px;
+    font-size: 16px;
+}
+
+.square {
+    height: 16px;
+    width: 16px;
+    background-color: rgba(200, 200, 200, 1);
+    margin-bottom: -3px;
+    display: inline-block;
+    border: 1px solid black;
+    border-radius: 3px;
 }
