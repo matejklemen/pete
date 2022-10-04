@@ -2,8 +2,8 @@ from typing import Union, Optional, List, Tuple
 
 import torch
 from transformers import BertTokenizerFast, RobertaTokenizerFast, XLMRobertaTokenizerFast, \
-    XLMRobertaForSequenceClassification
-from transformers import BertForSequenceClassification, RobertaForSequenceClassification, BertForMaskedLM
+    XLMRobertaForSequenceClassification, AutoTokenizer, AutoModelForSequenceClassification
+from transformers import BertForSequenceClassification, BertForMaskedLM
 
 from explain_nlp.modeling.modeling_base import InterpretableModel
 from explain_nlp.utils.tokenization_utils import TransformersAlignedTokenizationMixin
@@ -290,8 +290,8 @@ class InterpretableRobertaForSequenceClassification(InterpretableRobertaBase):
         self.tokenizer_name = tokenizer_name
         self.model_name = model_name
 
-        self.tokenizer = RobertaTokenizerFast.from_pretrained(tokenizer_name, add_prefix_space=True)
-        self.model = RobertaForSequenceClassification.from_pretrained(model_name, return_dict=True).to(self.device)
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, add_prefix_space=True)
+        self.model = AutoModelForSequenceClassification.from_pretrained(model_name, return_dict=True).to(self.device)
         self.model.eval()
 
         self.aux_data_keys = ["attention_mask"]
